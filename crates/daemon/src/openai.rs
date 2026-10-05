@@ -148,13 +148,14 @@ pub async fn chat_completions(State(s): State<Shared>, body: axum::body::Bytes) 
     let include_usage = b["stream_options"]["include_usage"]
         .as_bool()
         .unwrap_or(false);
-    let run = match start(&s, req).await {
+    let run = match start(&s, "/v1/chat/completions", req).await {
         Ok(r) => r,
         Err((k, m)) => return error(status_of(k), k, &m),
     };
     let id = new_id("chatcmpl-");
     if stream {
         return sse(
+            s.clone(),
             run,
             ChunkEncoder {
                 id,
@@ -166,7 +167,7 @@ pub async fn chat_completions(State(s): State<Shared>, body: axum::body::Bytes) 
         )
         .into_response();
     }
-    let c = collect(run).await;
+    let c = collect(&s, run).await;
     if let Some((k, m)) = c.error {
         return error(status_of(k), k, &m);
     }

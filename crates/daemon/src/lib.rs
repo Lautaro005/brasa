@@ -1,15 +1,18 @@
 //! API HTTP local compatible con OpenAI (Chat Completions, Responses) y Anthropic (Messages),
-//! sobre los tipos internos de `brasa_core::chat` (ADR 0008).
+//! sobre los tipos internos de `brasa_core::chat` (ADR 0008). Incluye estado y métricas (U1).
 
 mod anthropic;
 mod common;
 pub mod engine;
+mod metrics;
 mod openai;
 mod responses;
+mod status;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Router;
 use axum::extract::State;
@@ -20,7 +23,8 @@ use brasa_runtime::Limits;
 use brasa_tokenizer::Tokenizer;
 use serde_json::json;
 
-use crate::engine::Engine;
+use crate::engine::{Engine, LoadedModel};
+use crate::metrics::Metrics;
 
 /// Configuración del servidor.
 #[derive(Debug, Clone)]
@@ -30,6 +34,8 @@ pub struct ServeConfig {
     pub model_id: String,
     pub limits: Limits,
     pub addr: SocketAddr,
+    /// Commit del binario (se informa en `/api/status`).
+    pub commit: String,
 }
 
 /// Estado compartido por los handlers.
@@ -41,6 +47,35 @@ pub struct AppState {
     pub model_id: String,
     /// Contexto real del perfil de memoria (no el nominal del modelo).
     pub ctx: usize,
+    /// Modelo cargado (plan de memoria, pesos, KV).
+    pub model: LoadedModel,
+    pub metrics: Arc<Metrics>,
+    pub started: Instant,
+    pub version: String,
+    pub commit: String,
+}
+
+impl AppState {
+    pub fn new(
+        engine: Engine,
+        tok: Tokenizer,
+        model_id: String,
+        model: LoadedModel,
+        commit: String,
+    ) -> Arc<Self> {
+        let ctx = model.ctx;
+        Arc::new(Self {
+            engine,
+            tok,
+            model_id,
+            ctx,
+            model,
+            metrics: Arc::new(Metrics::new()),
+            started: Instant::now(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            commit,
+        })
+    }
 }
 
 pub type Shared = Arc<AppState>;
@@ -49,6 +84,8 @@ pub fn router(state: Shared) -> Router {
     Router::new()
         .route("/", get(health).head(health))
         .route("/api/hello", get(health).head(health))
+        .route("/api/status", get(status::status))
+        .route("/api/metrics", get(status::metrics))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/responses", post(responses::create))
@@ -96,13 +133,8 @@ async fn models(State(s): State<Shared>, headers: HeaderMap) -> Response {
 /// Carga el modelo y sirve hasta que llegue Ctrl-C.
 pub fn serve(cfg: ServeConfig) -> Result<(), String> {
     let tok = Tokenizer::from_dir(&cfg.model_dir).map_err(|e| e.0)?;
-    let engine = Engine::start(cfg.model_dir.clone(), cfg.limits)?;
-    let state = Arc::new(AppState {
-        engine,
-        tok,
-        model_id: cfg.model_id.clone(),
-        ctx: cfg.limits.ctx,
-    });
+    let (engine, model) = Engine::start(cfg.model_dir.clone(), cfg.limits)?;
+    let state = AppState::new(engine, tok, cfg.model_id.clone(), model, cfg.commit.clone());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

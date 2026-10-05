@@ -173,7 +173,7 @@ bf16 → f32 → q4), documentá exactamente por qué y no lo des por cerrado.
 
 | Tarea | Estado | Commit | Notas |
 |---|---|---|---|
-| U1 | pendiente | | |
+| U1 | hecha | 42c37e2 | Tests del daemon con engine simulado (streaming y no streaming) y `/api/status`. Falta correr `brasa ps` contra un `serve` real a 2K: el usuario pidió no ejecutar `brasa`. |
 | U2 | pendiente | | |
 | U3 | pendiente | | |
 | U4 | pendiente | | |

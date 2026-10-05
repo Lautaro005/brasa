@@ -4,7 +4,9 @@ mod bench_once;
 mod benchmark;
 mod connect;
 mod doctor;
+mod http;
 mod plan;
+mod ps;
 mod run;
 mod serve;
 
@@ -42,6 +44,8 @@ enum Command {
     Plan(plan::PlanArgs),
     /// API local compatible con OpenAI y Anthropic para agentes.
     Serve(serve::ServeArgs),
+    /// Estado y métricas de un `serve` corriendo (endpoints /api/status y /api/metrics).
+    Ps(ps::PsArgs),
     /// Imprime la configuración para Codex, Claude Code, Cline u OpenCode.
     Connect(connect::ConnectArgs),
     /// Una corrida medida para `brasa benchmark` (uso interno).
@@ -55,6 +59,12 @@ fn main() {
         Command::Doctor { json } => doctor::run(json),
         Command::Serve(args) => {
             if let Err(e) = serve::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Ps(args) => {
+            if let Err(e) = ps::run(args) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

@@ -46,5 +46,6 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
             kv: a.kv,
         },
         addr,
+        commit: env!("BRASA_BUILD_COMMIT").to_string(),
     })
 }

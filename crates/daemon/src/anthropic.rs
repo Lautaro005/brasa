@@ -200,13 +200,14 @@ pub async fn messages(State(s): State<Shared>, body: axum::body::Bytes) -> Respo
     };
     let model = b["model"].as_str().unwrap_or(&s.model_id).to_string();
     let stream = b["stream"].as_bool().unwrap_or(false);
-    let run = match start(&s, req).await {
+    let run = match start(&s, "/v1/messages", req).await {
         Ok(r) => r,
         Err((k, m)) => return error(status_of(k), k, &m),
     };
     let id = new_id("msg_");
     if stream {
         return sse(
+            s.clone(),
             run,
             MsgEncoder {
                 id,
@@ -217,7 +218,7 @@ pub async fn messages(State(s): State<Shared>, body: axum::body::Bytes) -> Respo
         )
         .into_response();
     }
-    let c = collect(run).await;
+    let c = collect(&s, run).await;
     if let Some((k, m)) = c.error {
         return error(status_of(k), k, &m);
     }

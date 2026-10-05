@@ -212,6 +212,8 @@ dependencies = [
  "axum",
  "brasa-catalog",
  "brasa-core",
+ "brasa-memory",
+ "brasa-quant",
  "brasa-runtime",
  "brasa-tokenizer",
  "futures",
@@ -219,6 +221,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tower",
 ]
 
 [[package]]
