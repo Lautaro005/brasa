@@ -61,7 +61,7 @@ def main() -> None:
                 f"| {s['peak_footprint_bytes']['median'] / GIB:.2f} | {valid} "
                 f"| [{f.name}]({f.parent.name}/{f.name}) |"
             )
-        versions = sorted({f"{v[0]['engine']['name']} {v[0]['engine']['version']}" for _, v in rows})
+        versions = sorted({v[0]["engine"]["version"] if v[0]["engine"]["version"].startswith(v[0]["engine"]["name"]) else f"{v[0]['engine']['name']} {v[0]['engine']['version']}" for _, v in rows})
         commits = sorted({v[0]["brasa_commit"] for _, v in rows})
         weights = sorted({f"{v[0]['model']['source_repo']}@{v[0]['model']['source_commit'][:8]}" for _, v in rows})
         lines += [
@@ -72,6 +72,19 @@ def main() -> None:
         ]
         notes = sorted({n for _, v in rows for n in v[0]["notes"]})
         lines += [f"- Nota: {n}" for n in notes] + ([""] if notes else [])
+    lines += [
+        "## Notas",
+        "",
+        "- Cuantización: llama.cpp `Q4_0` ocupa 4,70 bits/peso efectivos (algunos tensores en más",
+        "  bits); MLX con grupos de 32 ocupa 5,0 bits/peso (escala y bias BF16 por grupo). Brasa",
+        "  apunta a Q4 g32 con escala FP16 (4,5 bits/peso en las matrices).",
+        "- `kv-q8`: llama.cpp con `-ctk q8_0 -ctv q8_0`, el perfil de agente de Brasa. Ahorra",
+        "  ~1 GiB en 16K pero baja el decode respecto de KV FP16.",
+        "- M2 8 GB: pendiente; se agrega al correr `scripts/validate-8gb.sh` en esa máquina." if not any(k[0].startswith("m2-") for k in best) else "",
+        "- Los reportes de llama.cpp con mmap (anteriores a ADR 0002 rev. `-lm none`) no entran en",
+        "  esta tabla porque su footprint no incluye los pesos.",
+        "",
+    ]
     (BENCH / "baseline.md").write_text("\n".join(lines))
     print(f"escrito {BENCH / 'baseline.md'}")
 
