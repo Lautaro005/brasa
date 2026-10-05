@@ -311,6 +311,8 @@ def anthropic_error_de_contexto():
         an().messages.create(model=MODEL, max_tokens=5, messages=[{"role": "user", "content": HUGE}])
     except anthropic.BadRequestError as e:
         assert e.body["error"]["type"] == "invalid_request_error", e.body
+        # Claude Code solo compacta ante un error que reconoce por este texto.
+        assert e.body["error"]["message"].startswith("prompt is too long"), e.body
         return
     raise AssertionError("se esperaba BadRequestError")
 

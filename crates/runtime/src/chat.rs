@@ -93,12 +93,16 @@ impl Session {
             }
         };
         let ctx = self.limits().ctx;
-        if ids.len() >= ctx {
+        // Como vLLM: si el cliente pide `max_tokens` explícito, prompt + salida tienen que entrar
+        // en el contexto; si no, se rechaza (el agente compacta) en vez de recortar la salida.
+        let need = ids.len() + req.max_tokens.unwrap_or(0);
+        if ids.len() >= ctx || need > ctx {
             on_event(ChatEvent::Error(
                 ErrorKind::ContextLength,
                 format!(
-                    "el prompt tiene {} tokens y el contexto de este perfil de memoria es de {ctx}",
-                    ids.len()
+                    "{need} tokens > {ctx} maximum (prompt {} + max_tokens {}; contexto del perfil de memoria)",
+                    ids.len(),
+                    req.max_tokens.unwrap_or(0)
                 ),
             ));
             return;
