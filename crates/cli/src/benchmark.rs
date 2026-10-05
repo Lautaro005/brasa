@@ -75,6 +75,15 @@ struct PromptEntry {
 const FIXTURES: &str = "fixtures/bench";
 
 pub fn run(args: BenchmarkArgs) -> Result<()> {
+    // El reporte registra el commit del repo; el binario tiene que ser de ese mismo código.
+    let built = env!("BRASA_BUILD_COMMIT");
+    let head = brasa_bench::measure::brasa_commit();
+    if built != head || head.ends_with("-dirty") {
+        return Err(BenchError(format!(
+            "el binario se compiló en {built} y el repo está en {head}; commitear los cambios y \
+             correr `cargo build --release -p brasa-cli` antes de medir"
+        )));
+    }
     let model = models::find(&args.model)
         .ok_or_else(|| BenchError(format!("modelo desconocido: {}", args.model)))?;
     let manifest: Manifest = serde_json::from_str(

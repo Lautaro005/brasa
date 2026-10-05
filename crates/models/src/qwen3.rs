@@ -519,7 +519,7 @@ impl Qwen3 {
     }
 
     /// Forward completo de `ids` desde `pos0`. Escribe en `logits` las filas de las últimas
-    /// `logit_rows` posiciones (`[logit_rows, vocab]`); 1 para generar.
+    /// `logit_rows` posiciones (`[logit_rows, vocab]`); 1 para generar. Devuelve el tiempo de GPU.
     pub fn forward(
         &mut self,
         ctx: &Context,
@@ -527,7 +527,7 @@ impl Qwen3 {
         pos0: usize,
         logit_rows: usize,
         logits: &mut [f32],
-    ) -> Result<()> {
+    ) -> Result<brasa_metal::GpuTiming> {
         let tokens = ids.len();
         self.check_tokens(tokens, pos0)?;
         if logit_rows == 0 || logit_rows > tokens.min(self.limits.max_logit_rows) {
@@ -565,8 +565,8 @@ impl Qwen3 {
             Arg::buf(&self.ws.logits),
             logit_rows,
         );
-        cmd.commit_and_wait()?;
+        let timing = cmd.commit_and_wait()?;
         logits.copy_from_slice(&self.ws.logits.as_slice()[..logit_rows * vocab]);
-        Ok(())
+        Ok(timing)
     }
 }

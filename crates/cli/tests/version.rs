@@ -8,8 +8,10 @@ fn imprime_version() {
         .expect("no se pudo ejecutar brasa");
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert_eq!(
-        stdout.trim(),
-        format!("brasa {}", env!("CARGO_PKG_VERSION"))
+    assert!(
+        stdout
+            .trim()
+            .starts_with(&format!("brasa {} (", env!("CARGO_PKG_VERSION"))),
+        "{stdout}"
     );
 }

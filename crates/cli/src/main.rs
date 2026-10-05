@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "brasa",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("BRASA_BUILD_COMMIT"), ")"),
     about = "Engine de inferencia local para Apple Silicon"
 )]
 struct Cli {
