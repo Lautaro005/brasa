@@ -2,9 +2,11 @@
 
 mod bench_once;
 mod benchmark;
+mod connect;
 mod doctor;
 mod plan;
 mod run;
+mod serve;
 
 use clap::{Parser, Subcommand};
 
@@ -33,6 +35,10 @@ enum Command {
     Run(run::RunArgs),
     /// Plan de memoria de un modelo y contexto, sin cargarlo.
     Plan(plan::PlanArgs),
+    /// API local compatible con OpenAI y Anthropic para agentes.
+    Serve(serve::ServeArgs),
+    /// Imprime la configuración para Codex, Claude Code, Cline u OpenCode.
+    Connect(connect::ConnectArgs),
     /// Una corrida medida para `brasa benchmark` (uso interno).
     #[command(hide = true)]
     BenchOnce(bench_once::BenchOnceArgs),
@@ -42,6 +48,13 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor { json } => doctor::run(json),
+        Command::Serve(args) => {
+            if let Err(e) = serve::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Connect(args) => connect::run(args),
         Command::BenchOnce(args) => {
             if let Err(e) = bench_once::run(args) {
                 eprintln!("error: {e}");

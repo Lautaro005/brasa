@@ -1,5 +1,7 @@
 //! Sesión de inferencia: prefill, decode, sampling y prefix cache.
 
+pub mod chat;
+pub mod qwen_output;
 pub mod sampler;
 pub mod session;
 

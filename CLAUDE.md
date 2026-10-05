@@ -56,6 +56,9 @@ cargo run -p brasa-cli -- doctor --json
 cargo run --release -p brasa-cli -- run qwen3-4b-q4                      # chat interactivo
 cargo run --release -p brasa-cli -- run qwen3-4b-q4 --no-think -p "Hola"  # una respuesta
 cargo run --release -p brasa-cli -- plan qwen3-4b-q4 --ctx 16384 [--perfil 8gb]  # planner, sin cargar
+cargo run --release -p brasa-cli -- serve qwen3-4b-q4 --ctx 16384        # API OpenAI/Anthropic en :8080
+cargo run --release -p brasa-cli -- connect codex|claude-code|cline|opencode  # config para agentes
+.venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
