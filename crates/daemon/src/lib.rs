@@ -59,6 +59,8 @@ pub struct AppState {
     pub model: LoadedModel,
     /// Presupuesto de memoria de esta máquina (para la barra de la GUI).
     pub budget: Budget,
+    /// Carpeta de reportes de `docs/bench/`, resuelta una vez al arrancar (no por pedido).
+    pub bench_dir: PathBuf,
     pub addr: SocketAddr,
     pub metrics: Arc<Metrics>,
     pub started: Instant,
@@ -73,6 +75,7 @@ pub struct ServerMeta {
     pub model_dir: PathBuf,
     pub addr: SocketAddr,
     pub budget: Budget,
+    pub bench_dir: PathBuf,
     pub commit: String,
 }
 
@@ -87,6 +90,7 @@ impl AppState {
             model_dir: meta.model_dir,
             model,
             budget: meta.budget,
+            bench_dir: meta.bench_dir,
             addr: meta.addr,
             metrics: Arc::new(Metrics::new()),
             started: Instant::now(),
@@ -97,6 +101,23 @@ impl AppState {
 }
 
 pub type Shared = Arc<AppState>;
+
+/// Contexto máximo aceptado en las entradas de la API (evita overflow y valores absurdos).
+pub const MAX_CTX: usize = 262_144;
+
+/// Parsea un `ctx` que llega por query string. `None` usa el `default`; vacío o fuera de rango
+/// devuelven un mensaje claro para responder 400.
+pub fn parse_ctx(raw: Option<&str>, default: usize) -> std::result::Result<usize, String> {
+    match raw {
+        None => Ok(default),
+        Some("") => Err(format!("ctx vacío: pasá un número entre 1 y {MAX_CTX}")),
+        Some(v) => match v.trim().parse::<usize>() {
+            Ok(n) if (1..=MAX_CTX).contains(&n) => Ok(n),
+            Ok(n) => Err(format!("ctx {n} fuera de rango (1..={MAX_CTX})")),
+            Err(_) => Err(format!("ctx {v:?} no es un número")),
+        },
+    }
+}
 
 pub fn router(state: Shared) -> Router {
     Router::new()
@@ -165,6 +186,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         model_dir: cfg.model_dir.clone(),
         addr: cfg.addr,
         budget,
+        bench_dir: bench::resolve_dir(),
         commit: cfg.commit.clone(),
     };
     let state = AppState::new(engine, tok, model, meta);

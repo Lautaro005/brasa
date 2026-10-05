@@ -98,12 +98,21 @@ export CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
 #[derive(Debug, Deserialize)]
 pub struct AgentsQuery {
     /// Contexto para el que se genera la config (por defecto, el del perfil en uso).
-    pub ctx: Option<usize>,
+    pub ctx: Option<String>,
 }
 
 /// `GET /api/agents?ctx=`: lo que imprime `brasa connect` para cada agente.
 pub async fn agents(State(s): State<Shared>, Query(q): Query<AgentsQuery>) -> Response {
-    let ctx = q.ctx.unwrap_or(s.ctx);
+    let ctx = match crate::parse_ctx(q.ctx.as_deref(), s.ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error": e})),
+            )
+                .into_response();
+        }
+    };
     let host = s.addr.ip().to_string();
     let port = s.addr.port();
     let mut tools = serde_json::Map::new();

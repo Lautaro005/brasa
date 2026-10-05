@@ -40,7 +40,7 @@ fn state() -> Arc<AppState> {
     let tok = Tokenizer::from_dir(&root().join("fixtures/qwen3-4b/tokenizer")).unwrap();
     let model = LoadedModel {
         path: "/tmp/falso/model.brasa".into(),
-        weights_sha256: "ab".repeat(32),
+        weights_sha256_declarado: "ab".repeat(32),
         weights_bytes: 2_000_000_000,
         family: "qwen3".into(),
         source_repo: "Qwen/Qwen3-4B".into(),
@@ -62,6 +62,7 @@ fn state() -> Arc<AppState> {
         model_dir: root().join("models/qwen3-4b-q4"),
         addr,
         budget: Budget::profile(16),
+        bench_dir: root().join("docs/bench"),
         commit: "test".into(),
     };
     AppState::new(engine, tok, model, meta)
@@ -185,6 +186,46 @@ async fn agents_devuelve_config_por_herramienta() {
         );
     }
     assert!(v["tools"]["claude-code"].as_str().unwrap().contains("4096"));
+}
+
+#[tokio::test]
+async fn plan_y_agents_validan_el_ctx() {
+    let app = brasa_daemon::router(state());
+    // Vacío, cero y fuera de rango son 400 con mensaje, no un pánico en debug.
+    for uri in [
+        "/api/plan?ctx=",
+        "/api/plan?ctx=0",
+        "/api/plan?ctx=999999999",
+        "/api/plan?ctx=abc",
+        "/api/agents?ctx=",
+        "/api/agents?ctx=0",
+    ] {
+        let resp = get(app.clone(), uri).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let v = json_body(resp).await;
+        assert!(v["error"].as_str().unwrap().contains("ctx"), "{uri}: {v}");
+    }
+    // Un ctx válido sigue funcionando.
+    let resp = get(app, "/api/agents?ctx=2048").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn bench_ignora_los_json_que_no_son_reportes() {
+    // La carpeta real trae `doctor.json`, que no es un reporte.
+    let app = brasa_daemon::router(state());
+    let v = json_body(get(app, "/api/bench").await).await;
+    assert!(v["reports"].is_array());
+    let ignorados = v["ignored"].as_array().unwrap();
+    assert!(
+        ignorados
+            .iter()
+            .any(|f| f.as_str().unwrap().contains("doctor.json")),
+        "{ignorados:?}"
+    );
+    for r in v["reports"].as_array().unwrap() {
+        assert!(r["engine"].as_str().is_some(), "{r}");
+    }
 }
 
 #[tokio::test]

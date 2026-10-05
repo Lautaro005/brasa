@@ -1,13 +1,19 @@
 //! `GET /api/bench`: lista los reportes JSON de `docs/bench/` (o `$BRASA_BENCH_DIR`) y extrae un
-//! resumen para la tabla y los gráficos de la GUI. Los reportes ilegibles o marcados como no
-//! válidos se informan aparte.
+//! resumen para la tabla y los gráficos de la GUI. Solo se toman los JSON que son reportes (con
+//! `schema` y `engine`); el resto de los archivos (por ejemplo `doctor.json`) se ignora.
 
 use std::path::{Path, PathBuf};
 
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-fn bench_dir() -> PathBuf {
+use crate::Shared;
+
+/// Carpeta de reportes: `$BRASA_BENCH_DIR` o `docs/bench`. Se resuelve **una vez** al arrancar,
+/// relativa a donde corre `serve`, no en cada pedido.
+pub fn resolve_dir() -> PathBuf {
     std::env::var_os("BRASA_BENCH_DIR").map_or_else(|| PathBuf::from("docs/bench"), PathBuf::from)
 }
 
@@ -31,6 +37,11 @@ fn num(v: &Value, path: &[&str]) -> Option<f64> {
         cur = &cur[*k];
     }
     cur.as_f64()
+}
+
+/// Un JSON es un reporte de benchmark si trae `schema` y `engine`.
+fn es_reporte(v: &Value) -> bool {
+    v.get("schema").is_some_and(|s| !s.is_null()) && v.get("engine").is_some_and(|e| !e.is_null())
 }
 
 fn one(dir: &Path, path: &Path) -> Result<Value, String> {
@@ -57,38 +68,55 @@ fn one(dir: &Path, path: &Path) -> Result<Value, String> {
     }))
 }
 
-pub async fn bench() -> Response {
-    let dir = bench_dir();
+/// Lee la carpeta completa; es I/O de disco, así que corre en `spawn_blocking`.
+fn load(dir: &Path) -> Value {
     if !dir.is_dir() {
-        return axum::Json(json!({
+        return json!({
             "dir": dir.display().to_string(),
             "exists": false,
             "reports": [],
             "errors": [],
-        }))
-        .into_response();
+            "ignored": [],
+        });
     }
     let mut files = Vec::new();
-    json_files(&dir, &mut files);
+    json_files(dir, &mut files);
     files.sort();
     let mut reports = Vec::new();
     let mut errors = Vec::new();
+    let mut ignored = Vec::new();
     for f in &files {
-        match one(&dir, f) {
-            Ok(v) => reports.push(v),
-            Err(e) => errors.push(json!({
-                "file": f.strip_prefix(&dir).unwrap_or(f).display().to_string(),
-                "error": e
-            })),
+        let rel = f.strip_prefix(dir).unwrap_or(f).display().to_string();
+        match std::fs::read_to_string(f)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        {
+            Some(v) if es_reporte(&v) => match one(dir, f) {
+                Ok(r) => reports.push(r),
+                Err(e) => errors.push(json!({"file": rel, "error": e})),
+            },
+            _ => ignored.push(rel),
         }
     }
-    axum::Json(json!({
+    json!({
         "dir": dir.display().to_string(),
         "exists": true,
         "reports": reports,
         "errors": errors,
-    }))
-    .into_response()
+        "ignored": ignored,
+    })
+}
+
+pub async fn bench(State(s): State<Shared>) -> Response {
+    let dir = s.bench_dir.clone();
+    match tokio::task::spawn_blocking(move || load(&dir)).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]
@@ -99,11 +127,7 @@ mod tests {
     fn extrae_resumen_de_un_reporte() {
         let dir = Path::new("/tmp");
         let p = Path::new("/tmp/x.json");
-        let json = r#"{"timestamp":"t","machine":{"chip":"M1 Pro"},"engine":{"name":"brasa","label":""},
-            "model":{"name":"qwen3-4b-q4","quant":"q4_0"},"ctx":2048,"prompt_tokens":1920,"gen_tokens":128,
-            "summary":{"ttft_ms":{"median":900.0,"min":1,"max":2},"prefill_tok_s":{"median":500.0},
-            "decode_tok_s":{"median":40.0},"peak_footprint_bytes":{"median":3.0e9}},
-            "valid":false,"invalid_reasons":["swap"]}"#;
+        let json = r#"{"schema":1,"timestamp":"t","machine":{"chip":"M1 Pro"},"engine":{"name":"brasa","label":""},"model":{"name":"qwen3-4b-q4","quant":"q4_0"},"ctx":2048,"prompt_tokens":1920,"gen_tokens":128,"summary":{"ttft_ms":{"median":900.0,"min":1,"max":2},"prefill_tok_s":{"median":500.0},"decode_tok_s":{"median":40.0},"peak_footprint_bytes":{"median":3.0e9}},"valid":false,"invalid_reasons":["swap"]}"#;
         let v: Value = serde_json::from_str(json).unwrap();
         let text = v.to_string();
         std::fs::write(p, text).unwrap();
@@ -112,5 +136,33 @@ mod tests {
         assert_eq!(r["engine"], "brasa");
         assert_eq!(r["valid"], false);
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn ignora_json_que_no_son_reportes() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Un doctor.json: tiene JSON, pero ni `schema` ni `engine`.
+        std::fs::write(
+            tmp.path().join("doctor.json"),
+            r#"{"brasa_version":"1","hardware":{},"memory":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("reporte.json"),
+            r#"{"schema":1,"engine":{"name":"brasa"},"model":{},"summary":{}}"#,
+        )
+        .unwrap();
+        let v = load(tmp.path());
+        assert_eq!(v["exists"], true);
+        assert_eq!(v["reports"].as_array().unwrap().len(), 1);
+        assert_eq!(v["ignored"].as_array().unwrap().len(), 1);
+        assert!(v["ignored"][0].as_str().unwrap().contains("doctor.json"));
+    }
+
+    #[test]
+    fn sin_carpeta_es_vacio() {
+        let v = load(Path::new("/ruta/que/no/existe"));
+        assert_eq!(v["exists"], false);
+        assert_eq!(v["reports"].as_array().unwrap().len(), 0);
     }
 }
