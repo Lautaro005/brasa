@@ -16,7 +16,7 @@ failures=0
 run() {
     echo
     echo "==> brasa benchmark $*"
-    if ! $brasa benchmark "$@" "${out_args[@]}"; then
+    if ! $brasa benchmark "$@" ${out_args[@]+"${out_args[@]}"}; then
         echo "FALLÓ: brasa benchmark $*"
         failures=$((failures + 1))
     fi

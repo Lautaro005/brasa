@@ -22,6 +22,25 @@ echo "==> T0.2 brasa doctor"
 cargo test -p brasa-cli --test doctor 2>&1 | tee "$out/doctor-test.log"
 grep -q "test result: ok" "$out/doctor-test.log"
 
+echo "==> T0.5 baselines (llama.cpp y MLX-LM, 2K/8K/16K)"
+# Prerrequisitos: Rust, Xcode + Metal Toolchain, `brew install llama.cpp`, Python 3.12.
+if [[ ! -x .venv/bin/python ]]; then
+    python3.12 -m venv .venv
+    .venv/bin/pip install -q -r tools/requirements.txt
+fi
+if [[ ! -f models/qwen3-4b-hf/config.json ]]; then
+    .venv/bin/hf download Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c \
+        --local-dir models/qwen3-4b-hf
+fi
+[[ -f models/qwen3-4b-q4_0.gguf ]] || tools/make_gguf.sh
+if [[ ! -d models/qwen3-4b-mlx-q4g32 ]]; then
+    .venv/bin/mlx_lm.convert --hf-path models/qwen3-4b-hf -q --q-bits 4 --q-group-size 32 \
+        --mlx-path models/qwen3-4b-mlx-q4g32
+fi
+echo "Cerrá las demás aplicaciones antes de seguir (Enter para continuar)."
+read -r _
+./scripts/run-baselines.sh "$out" 2>&1 | tee "$out/baselines.log" || true
+
 {
     echo "commit: $commit"
     echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
