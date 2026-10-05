@@ -76,6 +76,8 @@ cargo test -p brasa-tokenizer                  # T1.2: template y tokens contra 
 cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   # T1.3
 .venv/bin/python tools/make_fixtures.py q4     # fixtures/qwen3-4b-q4/: referencia con pesos decuantizados
 cargo test --release -p brasa-models --test layers -- --ignored --nocapture     # T1.5
+cargo test --release -p brasa-models --test forward -- --ignored --nocapture    # T1.6 (~8 min)
+cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4
 ```
 
 Previstos (todavía no existen):
