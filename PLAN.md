@@ -122,6 +122,22 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   medido; pérdida de top-1 98,38 %; KV de 16K 1,195 GiB. Falta medirla en la M2 8 GB.
 - **T3.5 Decode.** Fusiones y GEMV según perfil (`profile_decode`). Aceptación: decode a 2K ≥ 50,8 tok/s
   (llama.cpp).
+  Estado (2026-10-05), en curso. 42,8 tok/s a 2K: 22,7 ms de GPU + 0,66 ms de CPU por token.
+  Desglose medido con `decode_breakdown`:
+  - GEMV de pesos: 15,0 ms, a 145–174 GB/s, cerca del ancho de banda.
+  - Atención: 4,5–4,8 ms, con ~15 µs fijos por capa.
+  - `rms_norm` de H: 0,9–1,5 ms.
+  - Ops chicas: ~1 ms.
+
+  Probado sin éxito:
+  - tramos de atención de 32 o 64 (peor a 2K y a 16K);
+  - RMSNorm de 1024 hilos (peor);
+  - RMSNorm fusionada al GEMV: gate/up 5,8 → 8,0 ms, por las lecturas extra;
+  - GEMV con lecturas float4/ushort: 5,8 → 6,4 ms.
+
+  Sin cambiar precisión, lo que queda suma ~1,5 ms: fusiones de ops chicas, codificar el token
+  siguiente durante la GPU y el costo fijo de la atención. No alcanza; 50,8 pide además bajar el
+  lm_head de q8_0 (413 MB por token, 2,4 ms) a menos bits. Es decisión del usuario (ADR 0006).
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
 
