@@ -217,14 +217,14 @@ fn gemv_scaled3_y_swiglu_igual_a_las_llamadas_separadas() {
         Arg::buf(&ss),
         h,
     );
-    for i in 0..3 {
+    for (i, ai) in a.iter().take(3).enumerate() {
         k.gemv_scaled(
             &mut cmd,
             m(i),
             Arg::buf(&xw),
             Arg::buf(&ss),
             eps,
-            Arg::buf(&a[i]),
+            Arg::buf(ai),
         );
     }
     k.gemv_scaled(
