@@ -1,0 +1,86 @@
+# PLAN.md — Brasa
+
+Estado: fases 0 y 1 desglosadas; el resto está a nivel de objetivo. Cada tarea termina con un comando que demuestra el criterio.
+
+## Qué cambia por usar agentes con herramientas
+
+- **Prefix cache y tool calling suben de prioridad:** pasan de la fase 3 a la fase 2, porque sin ellos Codex y Claude Code no son usables.
+- **Contexto:** el perfil de agente apunta a 16K con KV Q8 (en Qwen3-4B, cerca de 1,2 GB de KV); 2K queda solo para tests. A confirmar con mediciones.
+- **Calidad de herramientas:** Qwen3-4B es chico para agentes complejos. Sirve para validar el engine; el valor se mide en latencia, memoria y estabilidad, no en que reemplace a un modelo grande.
+
+## Fase 0 — Base y contrato
+
+**T0.1 Workspace.** Crear el workspace de Rust con los crates vacíos de `CLAUDE.md`, CI local (`fmt`, `clippy`, `test`).
+Aceptación: `cargo test --workspace` pasa en limpio.
+
+**T0.2 `doctor`.** Detectar chip, GPU cores, RAM física, versión de macOS, familia Metal y presión de memoria actual.
+Aceptación: `brasa doctor` imprime los datos correctos en la M1 Pro 16 GB y en la M2 8 GB; salida también en `--json`.
+
+**T0.3 Telemetría de memoria.** Medir memoria residente del proceso y presión del sistema durante una ejecución.
+Aceptación: un test arranca un buffer de tamaño conocido y el reporte lo refleja dentro de un margen.
+
+**T0.4 Harness de benchmark.** Formato de reporte (chip, RAM, macOS, commit, modelo, cuantización, contexto, TTFT, prefill tok/s, decode tok/s, pico de memoria).
+Aceptación: `brasa benchmark --baseline llama.cpp` ejecuta Qwen3-4B Q4 con el mismo prompt y guarda un reporte JSON en `docs/bench/`.
+
+**T0.5 Baselines.** Medir llama.cpp y MLX-LM en las dos Macs con contextos 2K, 8K y 16K.
+Aceptación: tabla de referencia en `docs/bench/baseline.md`. Este es el número a superar.
+
+**T0.6 Fixtures.** Script en `tools/` que, con un runtime de referencia FP16, guarda tokens y logits de Qwen3-4B para un set fijo de prompts.
+Aceptación: `fixtures/qwen3-4b/` contiene prompts, tokens y logits con hash registrado.
+
+## Fase 1 — Núcleo correcto
+
+**T1.1 Runtime Metal mínimo.** Dispositivo, buffers compartidos, command queue, compilación de MSL desde fuente y cache de pipelines.
+Aceptación: un kernel de suma de vectores corre y se compara con CPU.
+
+**T1.2 Tokenizer y chat template de Qwen3.** BPE y plantilla, incluyendo formato de herramientas.
+Aceptación: tokens idénticos a la referencia en todos los prompts de `fixtures/`.
+
+**T1.3 Formato nativo Q4.** Empaquetado Q4 por grupos de 32, escalas junto al bloque, alineado a página, hash verificable. Conversor en `tools/` desde safetensors.
+Aceptación: desempaquetar y comparar contra los pesos originales dentro de la tolerancia de cuantización documentada.
+
+**T1.4 Kernels básicos con referencia CPU.** RMSNorm, matmul Q4 (GEMV y GEMM simples), RoPE, softmax, activación SwiGLU, embedding.
+Aceptación: cada kernel con test de equivalencia y microbenchmark; sin optimizar todavía.
+
+**T1.5 Atención con GQA y QK-norm.** Versión simple correcta, sin tiling.
+Aceptación: salida de una capa igual a la referencia dentro de tolerancia.
+
+**T1.6 Forward pass completo y KV cache.** Preasignada, contexto fijo por perfil.
+Aceptación: logits finales dentro de tolerancia en todos los fixtures; teacher forcing coincide.
+
+**T1.7 Sampling y `run`.** Greedy, temperatura, top-p, seed.
+Aceptación: `brasa run qwen3-4b-q4` genera texto coherente en la M1 Pro y en la M2 8 GB sin swap creciente.
+
+**T1.8 Planner de memoria v0.** Calcula pesos + KV + workspace + margen y rechaza lo que no entra.
+Aceptación: en la M2 8 GB rechaza un contexto que no cabe con un mensaje claro y acepta uno que sí.
+
+Compuerta de la fase 1: calidad correcta en las dos Macs. Todavía no se exige velocidad.
+
+## Fase 2 — API para agentes
+
+- `serve` con `/v1/chat/completions`, `/v1/responses` y `/v1/messages`, streaming, cancelación y `/v1/models` con contexto real.
+- Tool calling con parseo del template de Qwen3 y JSON válido.
+- Prefix cache de KV entre turnos.
+- `connect <herramienta>` genera la configuración para Codex, Claude Code, Cline y OpenCode.
+- Suite `conformance`.
+- Aceptación: Codex y Claude Code completan una tarea real contra el daemon local; el segundo turno con el mismo prefijo reduce el TTFT de forma medible.
+
+## Fase 3 — Velocidad
+
+GEMV de decode y GEMM de prefill especializados, atención tiled estilo FlashAttention, fusión validada, KV Q8, prefill por chunks.
+Aceptación: igualar o superar los baselines de T0.5 en cada contexto, sin salir de tolerancia de calidad.
+
+## Fase 4 — Autotuning y memoria
+
+Autotuner con fingerprint, base de tuning, perfiles 8 y 16 GB, Model Manager por API (`load`, `idle`, `pause`, `resume`, `stop`).
+Aceptación: quick tune menor a 1 minuto; en la M2 8 GB presión estable con el contexto declarado.
+
+## Fase 5 en adelante
+
+GUI web, segunda familia (Llama 3.2 3B), luego speculative decoding, Qwen3.5 (Gated DeltaNet) y MoE. Cada una entra solo si mejora una medición frente a la ruta base.
+
+## Decisiones abiertas
+
+- Confirmar `config.json` real de Qwen3-4B (capas, cabezas KV, dimensión) y recalcular la tabla de KV.
+- Verificar los formatos de API de Codex y Claude Code vigentes antes de la fase 2.
+- Licencia del repo: Apache-2.0 propuesta.
