@@ -1,3 +1,5 @@
+### Archivo: CLAUDE.md
+
 # CLAUDE.md — Brasa
 
 Brasa es un engine de inferencia local, propio y open source, optimizado para Apple Silicon. Se opera desde la terminal (`brasa`), expone una API local compatible con OpenAI y Anthropic, y más adelante tendrá una GUI web. Su uso principal es servir **agentes con herramientas** (Codex, Claude Code, Pi, Hermes, Cline, OpenCode), no chat general.
@@ -54,34 +56,13 @@ cargo test --workspace
 cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, macOS, Metal, presión
 cargo run -p brasa-cli -- doctor --json
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
-cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
-cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
-
-# Baselines (ver docs/adr/0002). Pesos en models/ (gitignored):
-.venv/bin/hf download Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c --local-dir models/qwen3-4b-hf
-tools/make_gguf.sh                             # models/qwen3-4b-q4_0.gguf
-.venv/bin/python tools/make_bench_prompts.py   # fixtures/bench/prompt-{2048,8192,16384}.txt
-cargo run --release -p brasa-cli -- benchmark --baseline llama.cpp --ctx 2048
-cargo run --release -p brasa-cli -- benchmark --baseline mlx-lm --ctx 2048
-./scripts/run-baselines.sh                     # T0.5: 2K/8K/16K en ambos engines
-python3 tools/bench_table.py                   # regenera docs/bench/baseline.md
-
-# Fixtures de referencia (ADR 0003): FP32 propio + validación contra transformers BF16
-.venv/bin/python tools/make_fixtures.py all    # fixtures/qwen3-4b/ (~10 min en M1 Pro)
-.venv/bin/python tools/make_tokenizer_cases.py # casos borde del tokenizer contra HF tokenizers
-cargo test -p brasa-tokenizer                  # T1.2: template y tokens contra las fixtures
-
-# Formato nativo (ADR 0006)
-.venv/bin/python tools/convert_brasa.py models/qwen3-4b-hf models/qwen3-4b-q4
-cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   # T1.3
-.venv/bin/python tools/make_fixtures.py q4     # fixtures/qwen3-4b-q4/: referencia con pesos decuantizados
-cargo test --release -p brasa-models --test layers -- --ignored --nocapture     # T1.5
 ```
 
 Previstos (todavía no existen):
 
 ```bash
-cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048     # engine propio, fase 1
+cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica de kernels
+cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048
 ```
 
 (Mantener esta sección verdadera: mover cada comando a la lista de arriba cuando exista.)
@@ -112,3 +93,25 @@ Los agentes de código mandan prompts de 15K a 30K tokens. Un perfil de 2K de co
 - Commits pequeños y descriptivos, uno por tarea.
 - No incluir la línea `Claude-Session: ...` en los mensajes de commit. Co-Authored-By puede quedar.
 - No hacer push ni abrir PR sin pedirlo.
+
+
+### Archivo: PLAN.md
+
+# PLAN.md — Brasa
+
+Estado: fases 0 y 1 desglosadas; el resto está a nivel de objetivo. Cada tarea termina con un comando que demuestra el criterio.
+
+## Qué cambia por usar agentes con herramientas
+
+- **Prefix cache y tool calling suben de prioridad:** pasan de la fase 3 a la fase 2, porque sin ellos Codex y Claude Code no son usables.
+- **Contexto:** el perfil de agente apunta a 16K con KV Q8 (en Qwen3-4B, 1,20 GiB de KV; ver tabla); 2K queda solo para tests. A confirmar con mediciones.
+- **Calidad de herramientas:** Qwen3-4B es chico para agentes complejos. Sirve para validar el engine; el valor se mide en latencia, memoria y estabilidad, no en que reemplace a un modelo grande.
+
+## KV cache de Qwen3-4B
+
+Calculado desde el `config.json` real (`Qwen/Qwen3-4B` @ `1cfa9a72`): 36 capas, 8 cabezas KV,
+`head_dim` 128, 32 cabezas de query (GQA 4:1). Por token se guardan K y V:
+2 × 36 × 8 × 128 = 73 728 elementos.
+
+- FP16: 147 456 B/token (144 KiB).
+- Q8 por bloques de 32 con escala FP16 (34 B cada 32 elementos): 78 336

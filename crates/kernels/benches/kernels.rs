@@ -3,7 +3,7 @@
 //! Las cifras son de kernels sin optimizar (fase 1); sirven de línea base para la fase 3.
 
 use brasa_kernels::testutil::{Rng, median};
-use brasa_kernels::{Kernels, QMatrix, RopeTable, WeightType};
+use brasa_kernels::{AttnShape, Kernels, QMatrix, RopeTable, WeightType};
 use brasa_metal::{Arg, Command, Context};
 
 const REPS: usize = 20;
@@ -146,4 +146,39 @@ fn main() {
         (vocab * h) as f64 * 34.0 / 32.0,
         2.0 * (vocab * h) as f64,
     );
+
+    // Atención simple (sin tiling): decode con distintos largos de contexto y un prefill corto.
+    let (hq, hkv) = (32usize, 8usize);
+    for (tokens, pos0) in [(1usize, 2047usize), (1, 8191), (1, 16383), (64, 448)] {
+        let lk = pos0 + tokens;
+        let q = ctx.buffer_from(&rng.vec(tokens * hq * hd, 1.0)).unwrap();
+        let kc = ctx.buffer_from(&rng.vec(lk * hkv * hd, 1.0)).unwrap();
+        let vc = ctx.buffer_from(&rng.vec(lk * hkv * hd, 1.0)).unwrap();
+        let scores = ctx.buffer::<f32>(tokens * hq * lk).unwrap();
+        let o = ctx.buffer::<f32>(tokens * hq * hd).unwrap();
+        let shape = AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim: hd,
+            pos0,
+        };
+        let t = time(&ctx, |c| {
+            k.attention(
+                c,
+                Arg::buf(&q),
+                Arg::buf(&kc),
+                Arg::buf(&vc),
+                &scores,
+                Arg::buf(&o),
+                shape,
+            )
+        });
+        report(
+            &format!("attention T={tokens} ctx={lk}"),
+            t,
+            2.0 * 4.0 * (lk * hkv * hd) as f64,
+            4.0 * (tokens * hq * lk * hd) as f64,
+        );
+    }
 }

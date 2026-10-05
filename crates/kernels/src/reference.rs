@@ -93,3 +93,52 @@ pub fn embed(q: QType, table: &[u8], h: usize, ids: &[u32], out: &mut [f32]) {
         );
     }
 }
+
+/// Atención causal con GQA en f64. `q: [T, hq, dim]`; `k`, `v`: `[pos0 + T, hkv, dim]`.
+/// Devuelve `o: [T, hq, dim]` y `max_j |v[j, kh, d]|` por componente (escala de la tolerancia).
+#[allow(clippy::too_many_arguments)]
+pub fn attention(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    tokens: usize,
+    hq: usize,
+    hkv: usize,
+    dim: usize,
+    pos0: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let group = hq / hkv;
+    let scale = 1.0 / (dim as f64).sqrt();
+    let mut o = vec![0f32; tokens * hq * dim];
+    let mut vmax = vec![0f32; tokens * hq * dim];
+    for t in 0..tokens {
+        let last = pos0 + t;
+        for h in 0..hq {
+            let kh = h / group;
+            let qv = &q[(t * hq + h) * dim..][..dim];
+            let s: Vec<f64> = (0..=last)
+                .map(|j| {
+                    let kv = &k[(j * hkv + kh) * dim..][..dim];
+                    qv.iter()
+                        .zip(kv)
+                        .map(|(a, b)| *a as f64 * *b as f64)
+                        .sum::<f64>()
+                        * scale
+                })
+                .collect();
+            let m = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let z: f64 = s.iter().map(|x| (x - m).exp()).sum();
+            for d in 0..dim {
+                let (mut acc, mut mx) = (0f64, 0f32);
+                for (j, sj) in s.iter().enumerate() {
+                    let vj = v[(j * hkv + kh) * dim + d];
+                    acc += (sj - m).exp() / z * vj as f64;
+                    mx = mx.max(vj.abs());
+                }
+                o[(t * hq + h) * dim + d] = acc as f32;
+                vmax[(t * hq + h) * dim + d] = mx;
+            }
+        }
+    }
+    (o, vmax)
+}

@@ -10,13 +10,25 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/qwen3-4b")
 }
 
+fn fixtures_q4() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/qwen3-4b-q4")
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 #[test]
 fn hashes_y_formas_coinciden_con_el_manifest() {
-    let root = fixtures();
+    check(&fixtures());
+}
+
+#[test]
+fn hashes_y_formas_coinciden_con_el_manifest_q4() {
+    check(&fixtures_q4());
+}
+
+fn check(root: &Path) {
     let manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
             .unwrap();
@@ -45,6 +57,7 @@ fn hashes_y_formas_coinciden_con_el_manifest() {
                     "last_logits" => vec![151_936],
                     "topk_ids" | "topk_logits" => vec![rows, topk],
                     "logsumexp" => vec![rows],
+                    "embed" | "layer_00" | "layer_35" => vec![prompt_tokens, 2560],
                     other => panic!("archivo inesperado: {other}"),
                 };
                 assert_eq!(shape, expected, "{id}/{name}: forma");

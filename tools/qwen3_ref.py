@@ -28,6 +28,21 @@ LAYER_TENSORS = [
 ]
 
 
+class BrasaWeights:
+    """Pesos decuantizados de un `.brasa` (ADR 0006): la referencia ve exactamente lo que ve Brasa."""
+
+    def __init__(self, path: pathlib.Path):
+        import sys
+
+        sys.path.insert(0, str(pathlib.Path(__file__).parent))
+        from brasa_file import BrasaFile
+
+        self.file = BrasaFile(path)
+
+    def get(self, name: str) -> torch.Tensor:
+        return torch.from_numpy(self.file.get_f32(name))
+
+
 class Weights:
     def __init__(self, model_dir: pathlib.Path):
         index = json.loads((model_dir / "model.safetensors.index.json").read_text())
@@ -55,7 +70,8 @@ def rope(x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch.Tensor
 
 
 class Qwen3Ref:
-    def __init__(self, model_dir: str | pathlib.Path):
+    def __init__(self, model_dir: str | pathlib.Path, brasa: str | pathlib.Path | None = None):
+        """`model_dir`: safetensors originales. Con `brasa`, usa los pesos decuantizados de ese archivo."""
         model_dir = pathlib.Path(model_dir)
         self.cfg = json.loads((model_dir / "config.json").read_text())
         c = self.cfg
@@ -66,19 +82,23 @@ class Qwen3Ref:
         self.head_dim = c["head_dim"]
         self.eps = c["rms_norm_eps"]
         self.theta = c["rope_theta"]
-        self.w = Weights(model_dir)
+        self.w = BrasaWeights(pathlib.Path(brasa)) if brasa else Weights(model_dir)
         self.embed = self.w.get("model.embed_tokens.weight")  # [V, H], también lm_head
         self.final_norm = self.w.get("model.norm.weight")
 
     def new_cache(self) -> list:
         return [None] * self.n_layers
 
-    def forward_many(self, seqs: list[torch.Tensor], caches: list[list]) -> list[torch.Tensor]:
+    def forward_many(
+        self, seqs: list[torch.Tensor], caches: list[list], capture: dict | None = None
+    ) -> list[torch.Tensor]:
         """Procesa tokens nuevos de varias secuencias. Devuelve logits FP32 [T_i, V] por secuencia.
 
         caches[i][capa] = (K, V) con K, V: [T_pasado, n_kv, head_dim], K ya rotada.
         """
         xs = [self.embed[s] for s in seqs]
+        if capture is not None:
+            capture["embed"] = [x.clone() for x in xs]
         starts = [0 if c[0] is None else c[0][0].shape[0] for c in caches]
         group = self.n_heads // self.n_kv
         scale = 1.0 / math.sqrt(self.head_dim)
@@ -109,5 +129,7 @@ class Qwen3Ref:
                 gate = torch.nn.functional.silu(h @ w["mlp.gate_proj.weight"].T)
                 x = x + (gate * (h @ w["mlp.up_proj.weight"].T)) @ w["mlp.down_proj.weight"].T
                 xs[i] = x
+            if capture is not None:
+                capture[li] = [x.clone() for x in xs]
             del w
         return [rms_norm(x, self.final_norm, self.eps) @ self.embed.T for x in xs]

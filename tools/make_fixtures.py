@@ -6,7 +6,10 @@ Dos fases en procesos separados (para no tener los dos modelos en memoria a la v
   crosscheck  transformers BF16 (implementación oficial) sobre las mismas secuencias; registra
               en el manifest el error de logits y la coincidencia de top-1 contra la referencia.
 
-Uso: .venv/bin/python tools/make_fixtures.py [all|reference|crosscheck]  (ver ADR 0003)
+  q4          la misma referencia con los pesos decuantizados de models/qwen3-4b-q4/model.brasa
+              (ADR 0006) -> fixtures/qwen3-4b-q4/, más los estados ocultos de algunas capas.
+
+Uso: .venv/bin/python tools/make_fixtures.py [all|reference|crosscheck|q4]  (ver ADR 0003)
 """
 
 import hashlib
@@ -24,6 +27,12 @@ MODEL_DIR = ROOT / "models/qwen3-4b-hf"
 MODEL_COMMIT = "1cfa9a7208912126459214e8b04321603b3df60c"
 OUT = ROOT / "fixtures/qwen3-4b"
 TMP = ROOT / "models/.tmp/ref_logits"
+BRASA = ROOT / "models/qwen3-4b-q4/model.brasa"
+OUT_Q4 = ROOT / "fixtures/qwen3-4b-q4"
+# Estados ocultos que se guardan en las fixtures q4 (criterio de T1.5): entrada a la capa 0 y salida
+# de la primera y la última capa, para prompts cortos.
+CAPTURE_PROMPTS = ["en-plain", "code-rust", "chat-system"]
+CAPTURE_LAYERS = [0, 35]
 GREEDY = 32
 TOPK = 20
 
@@ -51,7 +60,7 @@ def write(path: pathlib.Path, arr: np.ndarray, dtype: str) -> dict:
     return {"file": path.name, "dtype": dtype, "shape": list(arr.shape), "sha256": sha256(path)}
 
 
-def reference() -> None:
+def reference(out: pathlib.Path = OUT, brasa: pathlib.Path | None = None) -> None:
     from transformers import AutoTokenizer
 
     sys.path.insert(0, str(ROOT / "tools"))
@@ -64,9 +73,10 @@ def reference() -> None:
     ids = [tok.encode(t, add_special_tokens=False) for t in texts]
 
     t0 = time.time()
-    model = Qwen3Ref(MODEL_DIR)
+    model = Qwen3Ref(MODEL_DIR, brasa=brasa)
     caches = [model.new_cache() for _ in spec]
-    logits = model.forward_many([torch.tensor(x) for x in ids], caches)
+    capture = {} if brasa else None
+    logits = model.forward_many([torch.tensor(x) for x in ids], caches, capture=capture)
     print(f"prefill de {len(spec)} prompts: {time.time() - t0:.1f} s", flush=True)
     rows = [[l] for l in logits]
     greedy = [[int(l[-1].argmax())] for l in logits]
@@ -77,19 +87,26 @@ def reference() -> None:
             greedy[i].append(int(l[-1].argmax()))
         print(f"greedy paso {step + 1}/{GREEDY - 1}: {time.time() - t0:.1f} s", flush=True)
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     TMP.mkdir(parents=True, exist_ok=True)
     manifest = {
         "model": {"repo": "Qwen/Qwen3-4B", "commit": MODEL_COMMIT},
-        "reference": "tools/qwen3_ref.py, FP32 sobre pesos BF16 (ADR 0003)",
+        "reference": "tools/qwen3_ref.py, FP32 sobre pesos BF16 (ADR 0003)"
+        if brasa is None
+        else "tools/qwen3_ref.py, FP32 sobre los pesos decuantizados de model.brasa (ADR 0006)",
         "torch": torch.__version__,
         "greedy_tokens": GREEDY,
         "topk": TOPK,
         "layout": "little-endian; logits por posición de prompt + greedy[:-1]; la fila j predice el token j+1; greedy genera siempre 32 tokens (no se detiene en EOS)",
         "prompts": [],
     }
-    for p, text, prompt_ids, r, g in zip(spec, texts, ids, rows, greedy):
-        d = OUT / p["id"]
+    if brasa is not None:
+        manifest["weights"] = {
+            "file": "models/qwen3-4b-q4/model.brasa",
+            "data_sha256": model.w.file.meta["data_sha256"],
+        }
+    for i, (p, text, prompt_ids, r, g) in enumerate(zip(spec, texts, ids, rows, greedy)):
+        d = out / p["id"]
         d.mkdir(exist_ok=True)
         (d / "prompt.txt").write_text(text)
         full = torch.cat(r).numpy()  # [P + GREEDY - 1, V]
@@ -105,7 +122,12 @@ def reference() -> None:
             "topk_logits": write(d / "topk_logits.f32", top.values.numpy(), "float32"),
             "logsumexp": write(d / "logsumexp.f32", lse.numpy(), "float32"),
         }
-        full.astype("<f4").tofile(TMP / f"{p['id']}.f32")
+        if capture is not None and p["id"] in CAPTURE_PROMPTS:
+            files["embed"] = write(d / "embed.f32", capture["embed"][i].numpy(), "float32")
+            for li in CAPTURE_LAYERS:
+                files[f"layer_{li:02}"] = write(d / f"layer_{li:02}.f32", capture[li][i].numpy(), "float32")
+        if brasa is None:
+            full.astype("<f4").tofile(TMP / f"{p['id']}.f32")
         manifest["prompts"].append(
             {
                 "id": p["id"],
@@ -116,7 +138,7 @@ def reference() -> None:
             }
         )
         print(f"{p['id']}: {len(prompt_ids)} tokens, greedy: {tok.decode(g)!r}", flush=True)
-    save_manifest(manifest)
+    save_manifest(manifest, out)
 
 
 def crosscheck() -> None:
@@ -153,13 +175,13 @@ def crosscheck() -> None:
         summary["positions"] += len(seq)
         print(f"{p['id']}: {p['crosscheck']}", flush=True)
     manifest["crosscheck"] = summary
-    save_manifest(manifest)
+    save_manifest(manifest, OUT)
 
 
-def save_manifest(manifest: dict) -> None:
+def save_manifest(manifest: dict, out: pathlib.Path) -> None:
     hashes = sorted(f["sha256"] for p in manifest["prompts"] for f in p["files"].values())
     manifest["fixtures_sha256"] = hashlib.sha256("".join(hashes).encode()).hexdigest()
-    (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 
 
 def main() -> None:
@@ -168,6 +190,8 @@ def main() -> None:
         reference()
     elif phase == "crosscheck":
         crosscheck()
+    elif phase == "q4":
+        reference(OUT_Q4, BRASA)
     elif phase == "all":
         for ph in ("reference", "crosscheck"):
             subprocess.run([sys.executable, __file__, ph], check=True)

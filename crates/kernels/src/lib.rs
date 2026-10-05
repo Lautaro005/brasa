@@ -11,6 +11,7 @@
 //! | `rms_norm_f32`, `softmax_f32` | error relativo ≤ 1e-5 |
 //! | `rope_neox_f32` | `|err| ≤ 1e-6 · (|a| + |b|)` del par rotado |
 //! | `gemv/gemm_q4_0/q8_0_f32` | `|err| ≤ 1e-5 · Σ_k |w_k · x_k|` |
+//! | atención (`attention`) | `|err| ≤ 1e-5 · max_j |v_j|` por componente de salida |
 
 use brasa_metal::{Arg, Buffer, Command, Context, MetalError, Pipeline};
 
@@ -25,6 +26,7 @@ pub mod sources {
     pub const ROPE: &str = include_str!("metal/rope.metal");
     pub const EMBED: &str = include_str!("metal/embed.metal");
     pub const MATMUL: &str = include_str!("metal/matmul.metal");
+    pub const ATTENTION: &str = include_str!("metal/attention.metal");
 }
 
 /// Hilos por threadgroup para kernels elemento a elemento.
@@ -63,6 +65,8 @@ pub struct Kernels {
     gemv_q8_0: Pipeline,
     gemm_q4_0: Pipeline,
     gemm_q8_0: Pipeline,
+    attn_scores_f32: Pipeline,
+    attn_pv_f32: Pipeline,
 }
 
 fn groups(n: usize, per: usize) -> usize {
@@ -83,6 +87,8 @@ impl Kernels {
             gemv_q8_0: ctx.pipeline(MATMUL, "gemv_q8_0_f32")?,
             gemm_q4_0: ctx.pipeline(MATMUL, "gemm_q4_0_f32")?,
             gemm_q8_0: ctx.pipeline(MATMUL, "gemm_q8_0_f32")?,
+            attn_scores_f32: ctx.pipeline(ATTENTION, "attn_scores_f32")?,
+            attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
         })
     }
 
@@ -274,6 +280,67 @@ impl Kernels {
             [64, 1, 1],
         );
     }
+
+    /// Atención causal con GQA (simple, sin tiling). `q: [tokens, hq, dim]`; `k`, `v`: caché de
+    /// la capa `[max_pos, hkv, dim]` con las posiciones `0..pos0+tokens` ya escritas; `scores`:
+    /// scratch de al menos `tokens · hq · (pos0 + tokens)` floats; `o: [tokens, hq, dim]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attention<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        q: Arg<'a>,
+        k: Arg<'a>,
+        v: Arg<'a>,
+        scores: &'a Buffer<f32>,
+        o: Arg<'a>,
+        shape: AttnShape,
+    ) {
+        let AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim,
+            pos0,
+        } = shape;
+        assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
+        let lk = pos0 + tokens;
+        assert!(
+            scores.len() >= tokens * hq * lk,
+            "scratch de atención chico"
+        );
+        let scale = 1.0 / (dim as f32).sqrt();
+        // Arreglos fijos: este camino corre en cada paso de decode y no debe asignar.
+        let [a, b, c, d, e] = [hq, hkv, dim, pos0, lk].map(|x| Arg::u32(x as u32));
+        cmd.dispatch(
+            &self.attn_scores_f32,
+            &[q, k, Arg::buf(scores), a, b, c, d, e, Arg::f32(scale)],
+            [lk, hq, tokens],
+            [64, 1, 1],
+        );
+        cmd.dispatch_groups(
+            &self.softmax_f32,
+            &[Arg::buf(scores), Arg::buf(scores), Arg::u32(lk as u32)],
+            [tokens * hq, 1, 1],
+            [ROW_TG, 1, 1],
+        );
+        cmd.dispatch(
+            &self.attn_pv_f32,
+            &[Arg::buf(scores), v, o, a, b, c, d, e],
+            [dim, hq, tokens],
+            [dim.min(128), 1, 1],
+        );
+    }
+}
+
+/// Forma de una llamada de atención.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttnShape {
+    pub tokens: usize,
+    pub hq: usize,
+    pub hkv: usize,
+    pub dim: usize,
+    /// Posición absoluta del primer token de `q`.
+    pub pos0: usize,
 }
 
 /// Tabla cos/sin de RoPE `[max_pos, dim/2]`, calculada en f64 y guardada en f32 (ADR 0004: la
