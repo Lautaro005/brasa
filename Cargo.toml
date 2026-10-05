@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/lautaro005/brasa"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+brasa-core = { path = "crates/core" }
+brasa-metal = { path = "crates/metal" }
+brasa-kernels = { path = "crates/kernels" }
+brasa-quant = { path = "crates/quant" }
+brasa-tokenizer = { path = "crates/tokenizer" }
+brasa-models = { path = "crates/models" }
+brasa-memory = { path = "crates/memory" }
+brasa-tuner = { path = "crates/tuner" }
+brasa-runtime = { path = "crates/runtime" }
+brasa-catalog = { path = "crates/catalog" }
+brasa-bench = { path = "crates/bench" }
+brasa-daemon = { path = "crates/daemon" }
+brasa-cli = { path = "crates/cli" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"

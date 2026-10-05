@@ -1,0 +1,15 @@
+[package]
+name = "brasa-memory"
+description = "Planner de memoria, KV cache y presupuesto por perfil."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+
+[lints]
+workspace = true

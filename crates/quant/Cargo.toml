@@ -1,0 +1,14 @@
+[package]
+name = "brasa-quant"
+description = "Empaquetado Q4/Q8 y formato nativo de pesos."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+
+[lints]
+workspace = true

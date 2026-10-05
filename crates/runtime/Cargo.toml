@@ -1,0 +1,19 @@
+[package]
+name = "brasa-runtime"
+description = "Sesión de inferencia: prefill, decode, sampling y prefix cache."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+brasa-models.workspace = true
+brasa-memory.workspace = true
+brasa-tuner.workspace = true
+brasa-tokenizer.workspace = true
+
+[lints]
+workspace = true

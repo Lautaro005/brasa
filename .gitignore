@@ -1,0 +1,6 @@
+/target
+/.venv
+/models
+*.safetensors
+*.gguf
+.DS_Store

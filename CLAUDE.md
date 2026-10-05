@@ -47,14 +47,22 @@ Las dependencias solo apuntan hacia abajo: `cli` y `daemon` dependen de `runtime
 
 ## Comandos
 
+Disponibles hoy:
+
 ```bash
+./scripts/ci.sh                                # fmt --check + clippy -D warnings + test (CI local)
 cargo build --release
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+Previstos (todavía no existen):
+
+```bash
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica de kernels
 cargo run -p brasa-cli -- doctor               # chip, RAM, macOS, Metal
 cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048
-cargo clippy --workspace -- -D warnings
-cargo fmt --check
 ```
 
 (Ajustar esta sección apenas existan los comandos reales; mantenerla verdadera.)
