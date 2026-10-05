@@ -24,8 +24,9 @@ pub async fn status(State(s): State<Shared>) -> Response {
             "family": model.family,
             "source_repo": model.source_repo,
             "source_commit": model.source_commit,
-            // sha256 agregado de los pesos (ADR 0006, `data_sha256` del `.brasa`).
-            "weights_sha256": model.weights_sha256,
+            // sha256 agregado **declarado** en el encabezado (ADR 0006, `data_sha256` del
+            // `.brasa`); `brasa models verify` lo recalcula contra los datos.
+            "weights_sha256_declarado": model.weights_sha256_declarado,
             "weights_bytes": model.weights_bytes,
         },
         "context": {"ctx": model.ctx, "kv": model.kv, "chunk": model.chunk},

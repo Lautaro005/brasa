@@ -11,14 +11,10 @@ Arguments:
 
 Options:
       --source-repo <SOURCE_REPO>
-          Repo de origen (va al encabezado del `.brasa`)
-          
-          [default: Qwen/Qwen3-4B]
+          Repo de origen (por defecto, el del manifiesto del modelo)
 
       --source-commit <SOURCE_COMMIT>
-          Revisión de origen (va al encabezado del `.brasa`)
-          
-          [default: 1cfa9a7208912126459214e8b04321603b3df60c]
+          Revisión de origen (por defecto, la del manifiesto del modelo)
 
       --json
           Salida en JSON

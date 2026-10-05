@@ -87,7 +87,14 @@ fn dechunk(mut raw: &[u8]) -> Result<String, String> {
         if size == 0 {
             break;
         }
+        // La respuesta puede venir truncada: no se puede indexar sin verificar los límites.
+        if raw.len() < size + 2 {
+            return Err("chunk truncado".into());
+        }
         out.extend_from_slice(&raw[..size]);
+        if &raw[size..size + 2] != b"\r\n" {
+            return Err("chunk sin CRLF".into());
+        }
         raw = &raw[size + 2..];
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
@@ -112,5 +119,15 @@ mod tests {
     #[test]
     fn rechaza_sin_cuerpo() {
         assert!(parse(b"HTTP/1.1 200 OK\r\n").is_err());
+    }
+
+    #[test]
+    fn rechaza_chunk_truncado() {
+        // Declara 5 bytes pero el cuerpo trae 3: no puede entrar en pánico.
+        let r = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabc";
+        assert!(parse(r).is_err());
+        // Tamaño de chunk con relleno que no entra.
+        let r = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffff\r\nab";
+        assert!(parse(r).is_err());
     }
 }

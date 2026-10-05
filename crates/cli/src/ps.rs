@@ -8,10 +8,12 @@ use crate::http;
 
 #[derive(Debug, Args)]
 pub struct PsArgs {
-    #[arg(long, default_value = "127.0.0.1")]
-    host: String,
-    #[arg(long, default_value_t = 8080)]
-    port: u16,
+    /// Host del `serve` (por defecto el del archivo de configuración o 127.0.0.1).
+    #[arg(long)]
+    host: Option<String>,
+    /// Puerto del `serve` (por defecto el del archivo de configuración o 8080).
+    #[arg(long)]
+    port: Option<u16>,
     /// Imprime las respuestas crudas en JSON.
     #[arg(long)]
     json: bool,
@@ -60,8 +62,15 @@ fn duration(secs: f64) -> String {
 }
 
 pub fn run(a: PsArgs) -> Result<(), String> {
-    let status = http::get_json(&a.host, a.port, "/api/status")?;
-    let metrics = http::get_json(&a.host, a.port, "/api/metrics")?;
+    let cfg = crate::config::Config::load()?;
+    let host = crate::config::pick(
+        a.host,
+        cfg.host.clone(),
+        crate::config::DEFAULT_HOST.to_string(),
+    );
+    let port = crate::config::pick(a.port, cfg.port, crate::config::DEFAULT_PORT);
+    let status = http::get_json(&host.value, port.value, "/api/status")?;
+    let metrics = http::get_json(&host.value, port.value, "/api/metrics")?;
     if a.json {
         let both = serde_json::json!({"status": status, "metrics": metrics});
         println!(
@@ -88,10 +97,10 @@ fn print_status(s: &Value) {
         str_at(s, &["model", "family"])
     );
     println!("ruta        {}", str_at(s, &["model", "path"]));
-    let sha = str_at(s, &["model", "weights_sha256"]);
+    let sha = str_at(s, &["model", "weights_sha256_declarado"]);
     let sha = if sha.len() > 16 { &sha[..16] } else { sha };
     println!(
-        "pesos       sha256 {sha}…  {}",
+        "pesos       sha256 declarado {sha}…  {}",
         gib(u64_at(s, &["model", "weights_bytes"]))
     );
     println!(

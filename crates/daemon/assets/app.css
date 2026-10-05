@@ -79,6 +79,7 @@ main { padding: 16px; max-width: 1280px; margin: 0 auto; }
 .msg.error { align-self: stretch; color: var(--bad); border: 1px solid var(--bad); }
 .msg details.think { margin-bottom: 6px; color: var(--muted); font-size: .92em; }
 .msg details.think summary { cursor: pointer; }
+.msg-note { margin-top: 6px; color: var(--muted); font-size: .9em; font-style: italic; }
 .composer { display: flex; flex-direction: column; gap: 8px; }
 .composer textarea {
   width: 100%;

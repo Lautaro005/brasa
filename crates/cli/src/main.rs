@@ -118,7 +118,12 @@ fn main() {
             }
         }
         Command::Completions(args) => completions::run(args),
-        Command::Connect(args) => connect::run(args),
+        Command::Connect(args) => {
+            if let Err(e) = connect::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::BenchOnce(args) => {
             if let Err(e) = bench_once::run(args) {
                 eprintln!("error: {e}");

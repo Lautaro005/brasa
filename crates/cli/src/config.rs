@@ -11,16 +11,30 @@ use serde::Deserialize;
 pub const DEFAULT_MODEL: &str = "qwen3-4b-q4";
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8080;
-pub const DEFAULT_CTX: usize = 16384;
+/// Contexto por defecto de `serve` (agentes con prompts largos).
+pub const DEFAULT_SERVE_CTX: usize = 16384;
+/// Contexto por defecto de `run` (chat interactivo).
+pub const DEFAULT_RUN_CTX: usize = 4096;
 pub const DEFAULT_KV: &str = "f16";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub model: Option<String>,
     pub host: Option<String>,
     pub port: Option<u16>,
-    pub ctx: Option<usize>,
     pub kv: Option<String>,
+    #[serde(default)]
+    pub run: Section,
+    #[serde(default)]
+    pub serve: Section,
+}
+
+/// Sección por subcomando (`[run]`, `[serve]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Section {
+    pub ctx: Option<usize>,
 }
 
 /// De dónde salió un valor efectivo.
@@ -67,6 +81,16 @@ pub fn pick<T>(flag: Option<T>, file: Option<T>, default: T) -> Value<T> {
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
+/// Contexto efectivo de `serve`: flag > `[serve] ctx` > defecto.
+pub fn serve_ctx(flag: Option<usize>, cfg: &Config) -> Value<usize> {
+    pick(flag, cfg.serve.ctx, DEFAULT_SERVE_CTX)
+}
+
+/// Contexto efectivo de `run`: flag > `[run] ctx` > defecto.
+pub fn run_ctx(flag: Option<usize>, cfg: &Config) -> Value<usize> {
+    pick(flag, cfg.run.ctx, DEFAULT_RUN_CTX)
 }
 
 impl Config {
@@ -128,10 +152,12 @@ fn show(json: bool) -> Result<(), String> {
     let model = v(None, cfg.model.clone(), DEFAULT_MODEL);
     let host = v(None, cfg.host.clone(), DEFAULT_HOST);
     let port = pick(None, cfg.port, DEFAULT_PORT);
-    let ctx = pick(None, cfg.ctx, DEFAULT_CTX);
+    let ctx_run = run_ctx(None, &cfg);
+    let ctx_serve = serve_ctx(None, &cfg);
     let kv = v(None, cfg.kv.clone(), DEFAULT_KV);
     if json {
         let item = |value: String, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
+        let n = |value: usize, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -140,7 +166,8 @@ fn show(json: bool) -> Result<(), String> {
                 "model": item(model.0, model.1),
                 "host": item(host.0, host.1),
                 "port": serde_json::json!({"value": port.value, "source": port.source.as_str()}),
-                "ctx": serde_json::json!({"value": ctx.value, "source": ctx.source.as_str()}),
+                "run": {"ctx": n(ctx_run.value, ctx_run.source)},
+                "serve": {"ctx": n(ctx_serve.value, ctx_serve.source)},
                 "kv": item(kv.0, kv.1),
             }))
             .unwrap()
@@ -154,7 +181,16 @@ fn show(json: bool) -> Result<(), String> {
         println!("model     {:>10}   ({})", model.0, model.1.as_str());
         println!("host      {:>10}   ({})", host.0, host.1.as_str());
         println!("port      {:>10}   ({})", port.value, port.source.as_str());
-        println!("ctx       {:>10}   ({})", ctx.value, ctx.source.as_str());
+        println!(
+            "run ctx   {:>10}   ({})",
+            ctx_run.value,
+            ctx_run.source.as_str()
+        );
+        println!(
+            "serve ctx {:>10}   ({})",
+            ctx_serve.value,
+            ctx_serve.source.as_str()
+        );
         println!("kv        {:>10}   ({})", kv.0, kv.1.as_str());
     }
     Ok(())
@@ -184,16 +220,66 @@ mod tests {
         let p = dir.join("config.toml");
         std::fs::write(
             &p,
-            "port = 9999\nctx = 2048\nkv = \"q8_0\"\nmodel = \"otro\"\n",
+            "port = 9999\nkv = \"q8_0\"\nmodel = \"otro\"\n[run]\nctx = 2048\n[serve]\nctx = 8192\n",
         )
         .unwrap();
         let c = Config::load_from(&p).unwrap();
         assert_eq!(c.port, Some(9999));
-        assert_eq!(c.ctx, Some(2048));
+        assert_eq!(c.run.ctx, Some(2048));
+        assert_eq!(c.serve.ctx, Some(8192));
         assert_eq!(c.kv.as_deref(), Some("q8_0"));
         assert_eq!(c.model.as_deref(), Some("otro"));
         let missing = Config::load_from(&dir.join("nope.toml")).unwrap();
         assert_eq!(missing, Config::default());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn un_campo_desconocido_falla_con_mensaje() {
+        let dir = std::env::temp_dir().join(format!("brasa-config-unknown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.toml");
+        // `contx` es un error de tipeo de `ctx`: tiene que fallar, no ignorarse.
+        std::fs::write(&p, "[serve]\ncontx = 8192\n").unwrap();
+        let e = Config::load_from(&p).unwrap_err();
+        assert!(e.contains("contx"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn serve_y_run_usan_la_precedencia() {
+        let dir =
+            std::env::temp_dir().join(format!("brasa-config-precedencia-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.toml");
+        std::fs::write(&p, "[run]\nctx = 2048\n[serve]\nctx = 8192\n").unwrap();
+        let cfg = Config::load_from(&p).unwrap();
+        // Sin archivo, cada subcomando tiene su propio defecto real.
+        let vacio = Config::default();
+        assert_eq!(
+            (run_ctx(None, &vacio).value, run_ctx(None, &vacio).source),
+            (DEFAULT_RUN_CTX, Source::Default)
+        );
+        assert_eq!(
+            (
+                serve_ctx(None, &vacio).value,
+                serve_ctx(None, &vacio).source
+            ),
+            (DEFAULT_SERVE_CTX, Source::Default)
+        );
+        assert_ne!(DEFAULT_RUN_CTX, DEFAULT_SERVE_CTX);
+        // El archivo manda sobre el defecto, y el flag sobre el archivo.
+        assert_eq!(
+            (run_ctx(None, &cfg).value, run_ctx(None, &cfg).source),
+            (2048, Source::File)
+        );
+        assert_eq!(
+            (
+                serve_ctx(Some(4096), &cfg).value,
+                serve_ctx(Some(4096), &cfg).source
+            ),
+            (4096, Source::Flag)
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

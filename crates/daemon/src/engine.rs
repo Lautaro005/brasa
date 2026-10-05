@@ -26,8 +26,9 @@ pub struct Job {
 #[derive(Debug, Clone, Serialize)]
 pub struct LoadedModel {
     pub path: String,
-    /// sha256 agregado de los pesos, del encabezado del `.brasa` (ADR 0006, `data_sha256`).
-    pub weights_sha256: String,
+    /// sha256 agregado **declarado** en el encabezado del `.brasa` (ADR 0006, `data_sha256`); lo
+    /// recalcula `brasa models verify`. El daemon no lo verifica al cargar.
+    pub weights_sha256_declarado: String,
     /// Cifra que verifica `brasa models verify`.
     pub weights_bytes: u64,
     pub family: String,
@@ -100,7 +101,7 @@ impl Engine {
                 let file = BrasaFile::open(&model_dir.join("model.brasa"));
                 let loaded = LoadedModel {
                     path: model_dir.display().to_string(),
-                    weights_sha256: file
+                    weights_sha256_declarado: file
                         .as_ref()
                         .map(|f| f.data_sha256().to_string())
                         .unwrap_or_default(),
@@ -122,6 +123,8 @@ impl Engine {
                     chunk: limits.max_tokens,
                     plan,
                 };
+                // El encabezado ya se leyó: no hace falta retener el mmap de los pesos.
+                drop(file);
                 let _ = ready_tx.send(Ok(loaded));
                 let debug = std::env::var_os("BRASA_DEBUG").is_some();
                 for job in rx {

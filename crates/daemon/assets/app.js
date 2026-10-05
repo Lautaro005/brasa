@@ -35,7 +35,10 @@ try { messages = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]'); } catch (_)
 let controller = null;
 let streaming = false;
 
-function saveChat() { localStorage.setItem(CHAT_KEY, JSON.stringify(messages)); }
+function saveChat() {
+  // localStorage puede no estar disponible (modo privado, cuota): no romper la UI.
+  try { localStorage.setItem(CHAT_KEY, JSON.stringify(messages)); } catch (_) { /* ignorar */ }
+}
 
 function renderThink(text) {
   const d = el('details', 'think');
@@ -52,6 +55,9 @@ function renderChat() {
     const div = el('div', 'msg ' + m.role);
     if (m.reasoning) div.appendChild(renderThink(m.reasoning));
     div.appendChild(document.createTextNode(m.content || ''));
+    if (m.error) div.appendChild(el('div', 'msg-note', 'Error: ' + m.error));
+    // El corte por cancelación se muestra aparte y no se reenvía al modelo.
+    if (m.cancelled) div.appendChild(el('div', 'msg-note', '[cancelado]'));
     box.appendChild(div);
   }
   box.scrollTop = box.scrollHeight;
@@ -73,6 +79,11 @@ function params() {
 function handleDelta(chunk, acc) {
   let data;
   try { data = JSON.parse(chunk); } catch (_) { return false; }
+  // Error a mitad del stream: el daemon manda `{"error": {...}}`.
+  if (data.error) {
+    acc.error = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error));
+    return true;
+  }
   const choice = data.choices && data.choices[0];
   if (!choice) return false;
   const d = choice.delta || {};
@@ -126,10 +137,12 @@ async function send() {
           if (handleDelta(payload, acc)) renderChat();
         }
       }
+      if (acc.error) throw new Error(acc.error);
     }
   } catch (e) {
     if (e.name === 'AbortError') {
-      acc.content += '\n[cancelado]';
+      // No se guarda dentro del contenido: se muestra aparte y no se reenvía al modelo.
+      acc.cancelled = true;
     } else {
       messages.push({ role: 'error', content: 'Error: ' + e.message });
     }
@@ -199,7 +212,7 @@ async function refreshEstado() {
       ['uptime', Math.round(st.uptime_s) + ' s'],
       ['modelo', st.model.id],
       ['contexto', st.context.ctx + ' (' + st.context.kv + ')'],
-      ['pesos sha256', String(st.model.weights_sha256).slice(0, 16) + '…'],
+      ['pesos sha256', String(st.model.weights_sha256_declarado).slice(0, 16) + '…'],
       ['huella', gib(st.process.footprint)],
     ]);
     kvList($('#sys-list'), [
@@ -257,7 +270,7 @@ async function loadBench() {
     for (const r of data.reports) {
       const tr = document.createElement('tr');
       const cells = [
-        r.engine, r.label || 'default', r.model, String(r.ctx),
+        r.engine == null ? '—' : r.engine, r.label || 'default', r.model == null ? '—' : r.model, String(r.ctx == null ? '—' : r.ctx),
         num(r.ttft_ms, 0), num(r.prefill_tok_s), num(r.decode_tok_s),
         r.peak_footprint_bytes == null ? '—' : (r.peak_footprint_bytes / 1073741824).toFixed(2),
         r.valid ? 'sí' : 'no',
@@ -269,13 +282,14 @@ async function loadBench() {
       if (!r.valid && Array.isArray(r.invalid_reasons) && r.invalid_reasons.length) tr.title = r.invalid_reasons.join('; ');
       tbody.appendChild(tr);
     }
+    const etiqueta = (r) => String(r.engine || r.file || '?').slice(0, 7) + '@' + (r.ctx == null ? '?' : r.ctx);
     const rows = data.reports.map((r) => ({
-      label: r.engine.slice(0, 7) + '@' + r.ctx,
+      label: etiqueta(r),
       value: r.decode_tok_s || 0,
       valid: r.valid,
     }));
     const ttft = data.reports.map((r) => ({
-      label: r.engine.slice(0, 7) + '@' + r.ctx,
+      label: etiqueta(r),
       value: r.ttft_ms || 0,
       valid: r.valid,
     }));

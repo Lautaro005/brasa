@@ -6,9 +6,7 @@ use brasa_daemon::ServeConfig;
 use brasa_runtime::{KvType, Limits};
 use clap::Args;
 
-use crate::config::{
-    self, Config, DEFAULT_CTX, DEFAULT_HOST, DEFAULT_KV, DEFAULT_MODEL, DEFAULT_PORT,
-};
+use crate::config::{self, Config, DEFAULT_HOST, DEFAULT_KV, DEFAULT_MODEL, DEFAULT_PORT};
 use crate::run::resolve_model;
 
 #[derive(Debug, Args)]
@@ -38,7 +36,7 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
     let model = config::pick(a.model, cfg.model.clone(), DEFAULT_MODEL.to_string());
     let host = config::pick(a.host, cfg.host.clone(), DEFAULT_HOST.to_string());
     let port = config::pick(a.port, cfg.port, DEFAULT_PORT);
-    let ctx = config::pick(a.ctx, cfg.ctx, DEFAULT_CTX);
+    let ctx = config::serve_ctx(a.ctx, &cfg);
     let cfg_kv = cfg
         .kv
         .as_deref()

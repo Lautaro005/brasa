@@ -66,11 +66,16 @@ pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
     if p.join("model.brasa").exists() {
         return Ok(p);
     }
+    // La carpeta de safetensors de Hugging Face sale del manifiesto si existe.
+    let hf = brasa_catalog::manifest::Manifest::find(name)
+        .map_or_else(|_| format!("{name}-hf"), |m| m.hf_dir);
     Err(format!(
         "no se encontró el modelo {name:?} (buscado en {} y como ruta).\n\
          Sugerencia: corré `brasa models` para ver los locales, o `brasa pull {name}` y \
-         `brasa convert models/{name}-hf models/{name}` para bajarlo y convertirlo.",
-        p.display()
+         `brasa convert {} {}` para bajarlo y convertirlo.",
+        p.display(),
+        base.join(&hf).display(),
+        base.join(name).display()
     ))
 }
 
@@ -110,7 +115,7 @@ pub fn run(args: RunArgs) -> Result<(), String> {
         cfg.model.clone(),
         crate::config::DEFAULT_MODEL.to_string(),
     );
-    let ctx = crate::config::pick(args.ctx, cfg.ctx, 4096);
+    let ctx = crate::config::run_ctx(args.ctx, &cfg);
     let cfg_kv = cfg.kv.as_deref().map(crate::parse_kv).transpose()?;
     let kv = crate::config::pick(
         args.kv,
