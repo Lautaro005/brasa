@@ -79,3 +79,47 @@ pub fn max_rel(got: &[f32], expected: &[f32], floor: f32) -> f32 {
         .map(|(g, r)| (g - r).abs() / r.abs().max(floor))
         .fold(0.0, f32::max)
 }
+
+/// K y V de una caché de prueba en el tipo `kv`, y sus valores tal como los ve la GPU (en f16,
+/// redondeados), para pasarle a la referencia CPU.
+#[derive(Debug)]
+pub struct KvPair {
+    f32s: Option<(brasa_metal::Buffer<f32>, brasa_metal::Buffer<f32>)>,
+    f16s: Option<(brasa_metal::Buffer<u16>, brasa_metal::Buffer<u16>)>,
+    pub k: Vec<f32>,
+    pub v: Vec<f32>,
+}
+
+impl KvPair {
+    pub fn new(ctx: &brasa_metal::Context, kv: crate::KvType, k: Vec<f32>, v: Vec<f32>) -> Self {
+        use brasa_quant::{f16_to_f32, f32_to_f16};
+        match kv {
+            crate::KvType::F32 => Self {
+                f32s: Some((ctx.buffer_from(&k).unwrap(), ctx.buffer_from(&v).unwrap())),
+                f16s: None,
+                k,
+                v,
+            },
+            crate::KvType::F16 => {
+                let h = |x: &[f32]| x.iter().map(|&f| f32_to_f16(f)).collect::<Vec<u16>>();
+                let (kh, vh) = (h(&k), h(&v));
+                let back = |x: &[u16]| x.iter().map(|&b| f16_to_f32(b)).collect::<Vec<f32>>();
+                Self {
+                    k: back(&kh),
+                    v: back(&vh),
+                    f16s: Some((ctx.buffer_from(&kh).unwrap(), ctx.buffer_from(&vh).unwrap())),
+                    f32s: None,
+                }
+            }
+        }
+    }
+
+    pub fn args(&self) -> (brasa_metal::Arg<'_>, brasa_metal::Arg<'_>) {
+        use brasa_metal::Arg;
+        match (&self.f32s, &self.f16s) {
+            (Some((k, v)), _) => (Arg::buf(k), Arg::buf(v)),
+            (_, Some((k, v))) => (Arg::buf(k), Arg::buf(v)),
+            _ => unreachable!(),
+        }
+    }
+}

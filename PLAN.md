@@ -98,6 +98,26 @@ microbenchmark, y el test de punta a punta de T1.6 debe seguir pasando.
 GEMV de decode y GEMM de prefill especializados, atención tiled estilo FlashAttention, fusión validada, KV Q8, prefill por chunks.
 Aceptación: igualar o superar los baselines de T0.5 en cada contexto, sin salir de tolerancia de calidad.
 
+Desglose (aprobado el 2026-10-05). Punto de partida medido en M1 Pro con `cargo bench -p brasa-kernels`:
+GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 16K 1,65 ms/capa
+(81 GB/s). Prioridad de uso: Claude Code (Codex queda para después).
+
+- **T3.1 KV cache f16** (ADR 0009). `KvType` en `Limits`, `store_kv` y variantes f16 de las tres
+  atenciones. Aceptación: T1.6 pasa con KV f32 (sin cambios) y con KV f16 contra
+  `fixtures/qwen3-4b-q4-kvf16` (teacher forcing exacto; logits ≤ 1e-3, ver ADR 0009); coincidencia de top-1 contra la referencia sin
+  redondear ≥ 98 %; atención de decode con KV f16 a 16K ≤ 0,9 ms; el planner coincide con lo reservado.
+- **T3.2 Atención de prefill.** FlashAttention que comparte K/V entre las cabezas de un grupo GQA y
+  lee la caché f16. Aceptación: equivalencia contra la referencia CPU, `flash_attention` T=512 a 16K
+  ≥ 3× la variante actual, T1.6 sigue pasando.
+- **T3.3 GEMM de prefill.** Aceptación: ≥ 3,5 TFLOPS en las tres formas de Qwen3-4B con T=512 y
+  T1.6 sigue pasando.
+- **T3.4 KV Q8** (perfil de agente 16K). Aceptación: fixtures `kvq8`, T1.6 con su referencia,
+  pérdida de top-1 medida y documentada, KV de 16K ≤ 1,25 GiB.
+- **T3.5 Decode.** Fusiones y GEMV según perfil (`profile_decode`). Aceptación: decode a 2K ≥ 50,8 tok/s
+  (llama.cpp).
+- **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
+  Claude Code repetida y tabla en docs/bench/baseline.md.
+
 ## Fase 4 — Autotuning y memoria
 
 Autotuner con fingerprint, base de tuning, perfiles 8 y 16 GB, Model Manager por API (`load`, `idle`, `pause`, `resume`, `stop`).

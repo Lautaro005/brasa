@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use brasa_metal::Context;
-use brasa_models::qwen3::{Limits, Qwen3};
+use brasa_models::qwen3::{KvType, Limits, Qwen3};
 
 struct Counting;
 
@@ -53,6 +53,7 @@ fn decode_sin_asignaciones() {
         ctx: 512,
         max_tokens: 64,
         max_logit_rows: 1,
+        kv: KvType::F16,
     };
     let mut model =
         Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();

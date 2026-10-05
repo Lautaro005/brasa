@@ -4,18 +4,21 @@
 //!   h = RMSNorm(x); q, k, v = W·h (k y v se escriben directo en la caché de la capa)
 //!   q, k = RMSNorm por cabeza (QK-norm); q, k = RoPE; o = atención(q, K, V)
 //!   x += Wo·o; h = RMSNorm(x); x += Wdown·(silu(Wgate·h) · Wup·h)
-//! Activaciones y KV en f32 (fase 1). Todos los buffers se asignan en `Qwen3::load`; el forward
-//! solo encola dispatches.
+//! Activaciones en f32; KV cache en f32 o f16 (`Limits.kv`, ADR 0009): K y V se calculan en un
+//! scratch f32 (QK-norm y RoPE incluidos) y `store_kv` las escribe en la caché. Todos los buffers
+//! se asignan en `Qwen3::load`; el forward solo encola dispatches.
 
 use std::path::Path;
 
 use brasa_kernels::{
-    AttnShape, DECODE_GQA_MIN_KEYS, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType,
+    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_lanes_supports,
     decode_partials_len,
 };
 use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
 use brasa_quant::{BrasaFile, QType};
+
+pub use brasa_kernels::KvType;
 
 use crate::{Error, Result};
 
@@ -91,13 +94,13 @@ pub fn model_shape(path: &Path) -> Result<(ModelShape, Config)> {
 }
 
 impl Limits {
-    /// Forma de sesión para el planner (KV f32 en la fase 1).
+    /// Forma de sesión para el planner.
     pub fn session_shape(&self) -> SessionShape {
         SessionShape {
             ctx: self.ctx,
             max_tokens: self.max_tokens,
             max_logit_rows: self.max_logit_rows,
-            kv_elem_bytes: 4,
+            kv_block_bytes: self.kv.block_bytes(),
         }
     }
 }
@@ -154,6 +157,8 @@ pub struct Limits {
     pub max_tokens: usize,
     /// Filas de logits que se pueden pedir en un forward (1 para generar; más para teacher forcing).
     pub max_logit_rows: usize,
+    /// Tipo de la KV cache (ADR 0009).
+    pub kv: KvType,
 }
 
 /// Buffers de trabajo, preasignados.
@@ -162,6 +167,9 @@ struct Workspace {
     x: Buffer<f32>,
     h: Buffer<f32>,
     q: Buffer<f32>,
+    /// K y V de los tokens nuevos antes de escribirse en la caché.
+    k_new: Buffer<f32>,
+    v_new: Buffer<f32>,
     attn: Buffer<f32>,
     gate: Buffer<f32>,
     up: Buffer<f32>,
@@ -172,11 +180,46 @@ struct Workspace {
     logits: Buffer<f32>,
 }
 
-/// KV cache f32: `[layers, ctx, kv_heads, head_dim]` para K y para V.
+/// KV cache `[layers, ctx, kv_heads, head_dim]` para K y para V, en el tipo de `Limits.kv`
+/// (f16 se guarda como bits en `u16`).
 #[derive(Debug)]
-struct KvCache {
-    k: Buffer<f32>,
-    v: Buffer<f32>,
+enum KvCache {
+    F32 { k: Buffer<f32>, v: Buffer<f32> },
+    F16 { k: Buffer<u16>, v: Buffer<u16> },
+}
+
+impl KvCache {
+    fn new(ctx: &Context, kv: KvType, len: usize) -> Result<Self> {
+        Ok(match kv {
+            KvType::F32 => KvCache::F32 {
+                k: ctx.buffer(len)?,
+                v: ctx.buffer(len)?,
+            },
+            KvType::F16 => KvCache::F16 {
+                k: ctx.buffer(len)?,
+                v: ctx.buffer(len)?,
+            },
+        })
+    }
+
+    /// K y V a partir del elemento `off`.
+    fn args(&self, off: usize) -> (Arg<'_>, Arg<'_>) {
+        match self {
+            KvCache::F32 { k, v } => (Arg::buf_at(k, off), Arg::buf_at(v, off)),
+            KvCache::F16 { k, v } => (Arg::buf_at(k, off), Arg::buf_at(v, off)),
+        }
+    }
+
+    fn bytes(&self) -> u64 {
+        match self {
+            KvCache::F32 { k, v } => {
+                buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
+            }
+            KvCache::F16 { k, v } => {
+                buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
+            }
+        }
+    }
 }
 
 /// Modelo cargado en GPU con su KV cache y workspace.
@@ -283,6 +326,8 @@ impl Qwen3 {
             x: ctx.buffer(t * h)?,
             h: ctx.buffer(t * h)?,
             q: ctx.buffer(t * qd)?,
+            k_new: ctx.buffer(t * kvd)?,
+            v_new: ctx.buffer(t * kvd)?,
             attn: ctx.buffer(t * qd)?,
             gate: ctx.buffer(t * ffn)?,
             up: ctx.buffer(t * ffn)?,
@@ -293,10 +338,7 @@ impl Qwen3 {
         };
         Ok(Self {
             kernels: Kernels::new(ctx)?,
-            kv: KvCache {
-                k: ctx.buffer(kv_len)?,
-                v: ctx.buffer(kv_len)?,
-            },
+            kv: KvCache::new(ctx, limits.kv, kv_len)?,
             cfg,
             limits,
             embed,
@@ -325,6 +367,8 @@ impl Qwen3 {
         let workspace = b(&w.x)
             + b(&w.h)
             + b(&w.q)
+            + b(&w.k_new)
+            + b(&w.v_new)
             + b(&w.attn)
             + b(&w.gate)
             + b(&w.up)
@@ -336,7 +380,7 @@ impl Qwen3 {
             + b(&self.rope.sin);
         Allocated {
             weights,
-            kv: b(&self.kv.k) + b(&self.kv.v),
+            kv: self.kv.bytes(),
             workspace,
         }
     }
@@ -377,20 +421,8 @@ impl Qwen3 {
             c.eps,
         );
         self.matmul(cmd, &l.wq, Arg::buf(&ws.h), Arg::buf(&ws.q), tokens);
-        self.matmul(
-            cmd,
-            &l.wk,
-            Arg::buf(&ws.h),
-            Arg::buf_at(&self.kv.k, kv_off),
-            tokens,
-        );
-        self.matmul(
-            cmd,
-            &l.wv,
-            Arg::buf(&ws.h),
-            Arg::buf_at(&self.kv.v, kv_off),
-            tokens,
-        );
+        self.matmul(cmd, &l.wk, Arg::buf(&ws.h), Arg::buf(&ws.k_new), tokens);
+        self.matmul(cmd, &l.wv, Arg::buf(&ws.h), Arg::buf(&ws.v_new), tokens);
         // QK-norm: RMSNorm por cabeza, en el lugar.
         k.rms_norm(
             cmd,
@@ -403,9 +435,9 @@ impl Qwen3 {
         );
         k.rms_norm(
             cmd,
-            Arg::buf_at(&self.kv.k, kv_off),
+            Arg::buf(&ws.k_new),
             Arg::buf(&l.k_norm),
-            Arg::buf_at(&self.kv.k, kv_off),
+            Arg::buf(&ws.k_new),
             tokens * c.kv_heads,
             c.head_dim,
             c.eps,
@@ -421,26 +453,29 @@ impl Qwen3 {
         );
         k.rope_neox(
             cmd,
-            Arg::buf_at(&self.kv.k, kv_off),
+            Arg::buf(&ws.k_new),
             &self.rope,
             tokens,
             c.kv_heads,
             c.head_dim,
             pos0,
         );
+        // K y V de los tokens nuevos a la caché, en su tipo.
+        let kvt = self.limits.kv;
+        let (k_dst, v_dst) = self.kv.args(kv_off);
+        k.store_kv(cmd, kvt, Arg::buf(&ws.k_new), k_dst, tokens * kvd);
+        k.store_kv(cmd, kvt, Arg::buf(&ws.v_new), v_dst, tokens * kvd);
         let shape = AttnShape {
             tokens,
             hq: c.heads,
             hkv: c.kv_heads,
             dim: c.head_dim,
             pos0,
+            kv: kvt,
         };
-        let (kc, vc) = (
-            Arg::buf_at(&self.kv.k, layer_off),
-            Arg::buf_at(&self.kv.v, layer_off),
-        );
-        if tokens == 1 && pos0 + 1 >= DECODE_GQA_MIN_KEYS {
-            k.decode_attention_gqa(
+        let (kc, vc) = self.kv.args(layer_off);
+        if tokens == 1 && decode_lanes_supports(c.heads, c.kv_heads) {
+            k.decode_attention_lanes(
                 cmd,
                 Arg::buf(&ws.q),
                 kc,
@@ -568,5 +603,16 @@ impl Qwen3 {
         let timing = cmd.commit_and_wait()?;
         logits.copy_from_slice(&self.ws.logits.as_slice()[..logit_rows * vocab]);
         Ok(timing)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `brasa-memory` no depende de `brasa-kernels` y copia sus constantes: tienen que coincidir.
+    #[test]
+    fn constantes_del_planner_iguales_a_las_de_los_kernels() {
+        use brasa_memory::planner;
+        assert_eq!(planner::DECODE_CHUNK, brasa_kernels::DECODE_CHUNK);
+        assert_eq!(planner::KV_ALIGN, brasa_kernels::KV_ALIGN);
     }
 }

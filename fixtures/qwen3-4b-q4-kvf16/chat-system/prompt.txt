@@ -1,0 +1,5 @@
+<|im_start|>system
+Sos un asistente conciso. Respondé en español.<|im_end|>
+<|im_start|>user
+¿Qué es una caché de KV en un transformer?<|im_end|>
+<|im_start|>assistant

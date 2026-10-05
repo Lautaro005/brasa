@@ -1,0 +1,7 @@
+<|im_start|>user
+What is 17 * 23?<|im_end|>
+<|im_start|>assistant
+391<|im_end|>
+<|im_start|>user
+And divided by 17?<|im_end|>
+<|im_start|>assistant

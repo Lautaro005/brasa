@@ -20,6 +20,8 @@ pub struct Brasa {
     pub quant: String,
     /// Tokens por bloque de prefill.
     pub chunk: usize,
+    /// Tipo de KV cache (`f32` o `f16`).
+    pub kv: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,7 +52,7 @@ impl Engine for Brasa {
             self.chunk.to_string(),
             "greedy".into(),
             "stop-bloqueado".into(),
-            "kv-f32".into(),
+            format!("kv-{}", self.kv),
         ]
     }
 
@@ -75,6 +77,8 @@ impl Engine for Brasa {
             job.ctx.to_string(),
             "--chunk".into(),
             self.chunk.to_string(),
+            "--kv".into(),
+            self.kv.clone(),
         ];
         let out = run_timed(&self.bin.display().to_string(), &args)?;
         let line = out

@@ -13,7 +13,7 @@ pub const PROCESS_OVERHEAD: u64 = 256 * MIB;
 /// Alineación de la capacidad de la KV cache por capa (`brasa_kernels::KV_ALIGN`).
 pub const KV_ALIGN: usize = 32;
 /// Claves por tramo de la atención de decode (`brasa_kernels::DECODE_CHUNK`).
-pub const DECODE_CHUNK: usize = 256;
+pub const DECODE_CHUNK: usize = 128;
 /// Granularidad del contexto elegido automáticamente.
 pub const CTX_STEP: usize = 256;
 
@@ -38,8 +38,8 @@ pub struct SessionShape {
     /// Tokens por bloque de prefill.
     pub max_tokens: usize,
     pub max_logit_rows: usize,
-    /// Bytes por elemento de la KV cache (4 = f32 en la fase 1).
-    pub kv_elem_bytes: usize,
+    /// Bytes de la KV cache por bloque de 32 elementos: 128 en f32, 64 en f16, 34 en Q8 (ADR 0009).
+    pub kv_block_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -62,6 +62,7 @@ pub fn workspace_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
     let (t, h, qd) = (s.max_tokens, m.hidden, m.heads * m.head_dim);
     3 * f(t * h) // x, h, norm_out
         + 2 * f(t * qd) // q, attn
+        + 2 * f(t * m.kv_heads * m.head_dim) // k_new, v_new
         + 2 * f(t * m.ffn) // gate, up
         + f(t) // ids
         + f(m.heads * s.ctx.div_ceil(DECODE_CHUNK) * (m.head_dim + 2)) // parciales de decode
@@ -71,7 +72,8 @@ pub fn workspace_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
 
 pub fn kv_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
     let cap = s.ctx.next_multiple_of(KV_ALIGN);
-    2 * buffer_bytes((m.layers * cap * m.kv_heads * m.head_dim * s.kv_elem_bytes) as u64)
+    let elems = m.layers * cap * m.kv_heads * m.head_dim;
+    2 * buffer_bytes((elems.div_ceil(32) * s.kv_block_bytes) as u64)
 }
 
 pub fn plan(m: &ModelShape, s: &SessionShape) -> MemoryPlan {
@@ -247,7 +249,7 @@ mod tests {
             ctx,
             max_tokens: 128,
             max_logit_rows: 1,
-            kv_elem_bytes: 4,
+            kv_block_bytes: 128,
         }
     }
 

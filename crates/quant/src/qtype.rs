@@ -44,6 +44,35 @@ pub fn f16_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
+/// f32 a f16 (bits) con redondeo al par más cercano, como la conversión de Metal y `torch.half`.
+/// Desborde a ±inf; NaN se mantiene NaN.
+pub fn f32_to_f16(f: f32) -> u16 {
+    let x = f.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let a = x & 0x7fff_ffff;
+    if a >= 0x7f80_0000 {
+        let nan = if a > 0x7f80_0000 { 0x200 } else { 0 };
+        return sign | 0x7c00 | nan;
+    }
+    if a >= 0x4780_0000 {
+        return sign | 0x7c00; // ≥ 65536: siempre inf
+    }
+    let (h, rem, half) = if a >= 0x3880_0000 {
+        // Normal en f16 (≥ 2^-14). Un acarreo de la mantisa sube el exponente (o llega a inf).
+        let h = (((a >> 23) - 112) << 10) | ((a & 0x7f_ffff) >> 13);
+        (h, a & 0x1fff, 0x1000)
+    } else if a < 0x3300_0000 {
+        return sign; // < 2^-25: redondea a cero
+    } else {
+        // Subnormal en f16: valor / 2^-24 = mantisa · 2^(exp - 126).
+        let shift = 126 - (a >> 23);
+        let mant = (a & 0x7f_ffff) | 0x80_0000;
+        (mant >> shift, mant & ((1 << shift) - 1), 1 << (shift - 1))
+    };
+    let up = rem > half || (rem == half && h & 1 == 1);
+    sign | (h + up as u32) as u16
+}
+
 /// Decuantiza `data` (tipo `q`) a f32. `out.len()` es la cantidad de elementos.
 pub fn dequantize(q: QType, data: &[u8], out: &mut [f32]) {
     assert_eq!(
@@ -95,6 +124,33 @@ mod tests {
             let f = f16_to_f32(h);
             assert!(f.is_finite() && f >= 0.0);
         }
+    }
+
+    #[test]
+    fn f32_a_f16_redondea_al_par() {
+        // Ida y vuelta exacta para todo f16 no NaN.
+        for h in 0..=u16::MAX {
+            let f = f16_to_f32(h);
+            if !f.is_nan() {
+                assert_eq!(f32_to_f16(f), h, "{h:#06x}");
+            }
+        }
+        // Puntos medios entre f16 consecutivos (exactos en f32): van al par; apenas por encima o
+        // por debajo, al más cercano.
+        for h in 0..0x7bffu16 {
+            let (a, b) = (f16_to_f32(h), f16_to_f32(h + 1));
+            let mid = (a + b) / 2.0;
+            let even = if h % 2 == 0 { h } else { h + 1 };
+            assert_eq!(f32_to_f16(mid), even, "medio de {h:#06x}");
+            assert_eq!(f32_to_f16(f32::from_bits(mid.to_bits() + 1)), h + 1);
+            assert_eq!(f32_to_f16(f32::from_bits(mid.to_bits() - 1)), h);
+            assert_eq!(f32_to_f16(-mid), even | 0x8000);
+        }
+        assert_eq!(f32_to_f16(65520.0), 0x7c00); // medio entre 65504 e inf -> inf
+        assert_eq!(f32_to_f16(1e10), 0x7c00);
+        assert_eq!(f32_to_f16(2f32.powi(-25)), 0); // medio entre 0 y el subnormal mínimo
+        assert_eq!(f32_to_f16(2f32.powi(-25) * 1.0001), 1);
+        assert!(f16_to_f32(f32_to_f16(f32::NAN)).is_nan());
     }
 
     #[test]

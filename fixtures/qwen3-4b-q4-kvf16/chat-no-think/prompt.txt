@@ -1,0 +1,7 @@
+<|im_start|>user
+Write a haiku about Apple Silicon.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

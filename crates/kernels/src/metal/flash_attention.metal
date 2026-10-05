@@ -9,13 +9,36 @@
 #include <metal_simdgroup_matrix>
 using namespace metal;
 
+// Tipo de la KV cache: el host antepone `#define KV_F16 1` para la variante f16 (ADR 0009).
+#ifdef KV_F16
+typedef half  KV_T;
+typedef half4 KV_T4;
+#else
+typedef float  KV_T;
+typedef float4 KV_T4;
+#endif
+
+// Carga un bloque 8×8 de la caché como matriz f32 (en f16 se carga como half y se convierte).
+inline simdgroup_float8x8 load_kv(device const KV_T* p, ulong stride, bool transpose) {
+    simdgroup_float8x8 f;
+#ifdef KV_F16
+    simdgroup_half8x8 h;
+    simdgroup_load(h, p, stride, ulong2(0, 0), transpose);
+    f.thread_elements()[0] = float(h.thread_elements()[0]);
+    f.thread_elements()[1] = float(h.thread_elements()[1]);
+#else
+    simdgroup_load(f, p, stride, ulong2(0, 0), transpose);
+#endif
+    return f;
+}
+
 constant uint D = 128;
 constant uint BQ = 32;
 constant uint BKEYS = 32;
 
 kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, D]
-                           device const float* k    [[buffer(1)]],   // [cap, hkv, D]
-                           device const float* v    [[buffer(2)]],   // [cap, hkv, D]
+                           device const KV_T*  k    [[buffer(1)]],   // [cap, hkv, D]
+                           device const KV_T*  v    [[buffer(2)]],   // [cap, hkv, D]
                            device float*       o    [[buffer(3)]],   // [T, hq, D]
                            constant uint& tokens [[buffer(4)]],
                            constant uint& hq     [[buffer(5)]],
@@ -57,8 +80,8 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
 
     uint last_t = min(t0 + BQ, tokens) - 1;
     uint kend = pos0 + last_t + 1;                 // claves visibles para el bloque: [0, kend)
-    device const float* kbase = k + kh * D;
-    device const float* vbase = v + kh * D;
+    device const KV_T* kbase = k + kh * D;
+    device const KV_T* vbase = v + kh * D;
 
     for (uint j0 = 0; j0 < kend; j0 += BKEYS) {
         // S = Q · Kᵀ (8 × 32)
@@ -66,8 +89,7 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
         for (uint n = 0; n < BKEYS / 8; ++n) sf[n] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
         for (uint d8 = 0; d8 < D / 8; ++d8) {
             for (uint n = 0; n < BKEYS / 8; ++n) {
-                simdgroup_float8x8 kf;
-                simdgroup_load(kf, kbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride, ulong2(0, 0), true);
+                simdgroup_float8x8 kf = load_kv(kbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride, true);
                 simdgroup_multiply_accumulate(sf[n], qf[d8], kf, sf[n]);
             }
         }
@@ -109,8 +131,7 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
             simdgroup_float8x8 acc;
             simdgroup_multiply(acc, dg, of[d8]);
             for (uint n = 0; n < BKEYS / 8; ++n) {
-                simdgroup_float8x8 vf;
-                simdgroup_load(vf, vbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride);
+                simdgroup_float8x8 vf = load_kv(vbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride, false);
                 simdgroup_multiply_accumulate(acc, pf[n], vf, acc);
             }
             of[d8] = acc;

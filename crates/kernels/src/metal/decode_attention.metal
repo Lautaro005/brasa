@@ -6,13 +6,22 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Tipo de la KV cache: el host antepone `#define KV_F16 1` para la variante f16 (ADR 0009).
+#ifdef KV_F16
+typedef half  KV_T;
+typedef half4 KV_T4;
+#else
+typedef float  KV_T;
+typedef float4 KV_T4;
+#endif
+
 constant uint D = 128;
-constant uint CHUNK = 256;
+constant uint CHUNK = 128;
 constant uint PSTRIDE = D + 2;  // m, l, acc[D]
 
 kernel void attn_decode_partial(device const float* q      [[buffer(0)]],  // [hq, D]
-                                device const float* k      [[buffer(1)]],  // [cap, hkv, D]
-                                device const float* v      [[buffer(2)]],
+                                device const KV_T*  k      [[buffer(1)]],  // [cap, hkv, D]
+                                device const KV_T*  v      [[buffer(2)]],
                                 device float*       part   [[buffer(3)]],  // [hq, tramos, D+2]
                                 constant uint& hq     [[buffer(4)]],
                                 constant uint& hkv    [[buffer(5)]],
@@ -32,12 +41,12 @@ kernel void attn_decode_partial(device const float* q      [[buffer(0)]],  // [h
     float4 acc = 0.0f;
     uint j1 = min(lk, (split + 1) * CHUNK);
     for (uint j = split * CHUNK + sg; j < j1; j += 4) {
-        float4 kv = ((device const float4*)(k + j * kvstride + kh * D))[lane];
+        float4 kv = float4(((device const KV_T4*)(k + j * kvstride + kh * D))[lane]);
         float s = simd_sum(dot(qv, kv));
         float m_new = max(m, s);
         float alpha = precise::exp(m - m_new);
         float p = precise::exp(s - m_new);
-        float4 vv = ((device const float4*)(v + j * kvstride + kh * D))[lane];
+        float4 vv = float4(((device const KV_T4*)(v + j * kvstride + kh * D))[lane]);
         acc = acc * alpha + p * vv;
         l = l * alpha + p;
         m = m_new;
@@ -82,58 +91,82 @@ kernel void attn_decode_reduce(device const float* part [[buffer(0)]],
     o[h * D + d] = A / L;
 }
 
-// Variante GQA: threadgroup = (tramo, cabeza KV) con un simdgroup por cabeza de query del grupo
-// (group = hq / hkv ≤ 8). K y V del tramo se copian a memoria threadgroup de a STAGE claves y los
-// simdgroups del grupo las leen de ahí: la KV cache se lee una vez por grupo y no una por cabeza.
-// Mismo formato de parciales que attn_decode_partial (se reduce con attn_decode_reduce).
-constant uint STAGE = 16;
+// Variante "una lane por clave" (la de la ruta caliente): threadgroup = (SG_PER_TG tramos,
+// cabeza KV), un simdgroup por tramo. Cada simdgroup atiende a las GQA_G cabezas de query del
+// grupo GQA:
+//   1. cada lane toma una clave del bloque de 32 y calcula su producto con las GQA_G queries
+//      (Q en memoria threadgroup);
+//   2. softmax online por bloque: un simd_max y un simd_sum por cabeza cada 32 claves;
+//   3. P·V: cada lane es dueño de 4 dimensiones; V se lee coalescido y p se reparte con
+//      simd_shuffle.
+// K y V se leen una sola vez por grupo, sin staging ni barreras dentro del bucle. El tamaño del
+// grupo es constante de compilación (el host antepone `#define GQA_G n`): con un valor en
+// tiempo de ejecución los arreglos por cabeza no quedan en registros y el kernel es ~1,5× más
+// lento (medido en M1 Pro). Escribe el mismo formato de parciales que attn_decode_partial.
+#ifndef GQA_G
+#define GQA_G 4
+#endif
+constant uint SG_PER_TG = 4;
 
-kernel void attn_decode_gqa_partial(device const float* q      [[buffer(0)]],  // [hq, D]
-                                    device const float* k      [[buffer(1)]],  // [cap, hkv, D]
-                                    device const float* v      [[buffer(2)]],
-                                    device float*       part   [[buffer(3)]],  // [hq, tramos, D+2]
-                                    constant uint& hq     [[buffer(4)]],
-                                    constant uint& hkv    [[buffer(5)]],
-                                    constant uint& lk     [[buffer(6)]],
-                                    constant float& scale [[buffer(7)]],
-                                    uint2 tg   [[threadgroup_position_in_grid]],
-                                    uint  tid  [[thread_index_in_threadgroup]],
-                                    uint  sg   [[simdgroup_index_in_threadgroup]],
-                                    uint  lane [[thread_index_in_simdgroup]],
-                                    uint2 ntg  [[threads_per_threadgroup]]) {
-    threadgroup float4 Ks[STAGE * D / 4];
-    threadgroup float4 Vs[STAGE * D / 4];
-    uint split = tg.x, kh = tg.y;
-    uint group = hq / hkv;
-    uint h = kh * group + sg;          // cabeza de query de este simdgroup
+kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq, D]
+                              device const KV_T*  k      [[buffer(1)]],  // [cap, hkv, D]
+                              device const KV_T*  v      [[buffer(2)]],
+                              device float*       part   [[buffer(3)]],  // [hq, tramos, D+2]
+                              constant uint& hkv    [[buffer(4)]],
+                              constant uint& lk     [[buffer(5)]],
+                              constant float& scale [[buffer(6)]],
+                              uint2 tg   [[threadgroup_position_in_grid]],
+                              uint  tid  [[thread_index_in_threadgroup]],
+                              uint  sg   [[simdgroup_index_in_threadgroup]],
+                              uint  lane [[thread_index_in_simdgroup]]) {
+    constexpr uint G = GQA_G;
+    threadgroup float4 Qs[G * D / 4];
+    uint kh = tg.y;
     uint splits = (lk + CHUNK - 1) / CHUNK;
-    uint kvstride = hkv * D;
-    float4 qv = ((device const float4*)(q + h * D))[lane] * scale;
+    for (uint e = tid; e < G * D / 4; e += SG_PER_TG * 32) {
+        Qs[e] = ((device const float4*)(q + kh * G * D))[e] * scale;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint split = tg.x * SG_PER_TG + sg;
+    if (split >= splits) return;
 
-    float m = -INFINITY, l = 0.0f;
-    float4 acc = 0.0f;
-    uint j0 = split * CHUNK;
-    uint j1 = min(lk, j0 + CHUNK);
-    for (uint s0 = j0; s0 < j1; s0 += STAGE) {
-        uint n = min(STAGE, j1 - s0);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint e = tid; e < n * D / 4; e += ntg.x) {
-            uint key = e / (D / 4), c = e % (D / 4);
-            Ks[e] = ((device const float4*)(k + (s0 + key) * kvstride + kh * D))[c];
-            Vs[e] = ((device const float4*)(v + (s0 + key) * kvstride + kh * D))[c];
+    uint kvstride = hkv * D;
+    float m[G], l[G];
+    float4 acc[G];
+    for (uint h = 0; h < G; ++h) { m[h] = -INFINITY; l[h] = 0.0f; acc[h] = 0.0f; }
+
+    uint j1 = min(lk, (split + 1) * CHUNK);
+    for (uint j0 = split * CHUNK; j0 < j1; j0 += 32) {
+        uint j = j0 + lane;
+        bool ok = j < j1;
+        float s[G];
+        for (uint h = 0; h < G; ++h) s[h] = 0.0f;
+        if (ok) {
+            device const KV_T4* kr = (device const KV_T4*)(k + j * kvstride + kh * D);
+            for (uint d4 = 0; d4 < D / 4; ++d4) {
+                float4 kv = float4(kr[d4]);
+                for (uint h = 0; h < G; ++h) s[h] += dot(Qs[h * (D / 4) + d4], kv);
+            }
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint i = 0; i < n; ++i) {
-            float s = simd_sum(dot(qv, Ks[i * (D / 4) + lane]));
-            float m_new = max(m, s);
-            float alpha = precise::exp(m - m_new);
-            float p = precise::exp(s - m_new);
-            acc = acc * alpha + p * Vs[i * (D / 4) + lane];
-            l = l * alpha + p;
-            m = m_new;
+        float p[G];
+        for (uint h = 0; h < G; ++h) {
+            float sh = ok ? s[h] : -INFINITY;
+            float mn = max(m[h], simd_max(sh));  // finito: la lane 0 siempre tiene clave
+            float alpha = precise::exp(m[h] - mn);
+            p[h] = ok ? precise::exp(sh - mn) : 0.0f;
+            l[h] = l[h] * alpha + simd_sum(p[h]);
+            acc[h] *= alpha;
+            m[h] = mn;
+        }
+        uint n = min(32u, j1 - j0);
+        for (uint jj = 0; jj < n; ++jj) {
+            float4 vv = float4(((device const KV_T4*)(v + (j0 + jj) * kvstride + kh * D))[lane]);
+            for (uint h = 0; h < G; ++h) acc[h] += simd_shuffle(p[h], ushort(jj)) * vv;
         }
     }
-    device float* out = part + (h * splits + split) * PSTRIDE;
-    if (lane == 0) { out[0] = m; out[1] = l; }
-    ((device float4*)(out + 2))[lane] = acc;
+    for (uint h = 0; h < G; ++h) {
+        device float* out = part + ((kh * G + h) * splits + split) * PSTRIDE;
+        if (lane == 0) { out[0] = m[h]; out[1] = l[h]; }
+        ((device float4*)(out + 2))[lane] = acc[h];
+    }
 }

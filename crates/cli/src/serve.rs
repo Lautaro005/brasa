@@ -22,6 +22,9 @@ pub struct ServeArgs {
     /// Tokens por bloque de prefill.
     #[arg(long, default_value_t = 512)]
     chunk: usize,
+    /// Tipo de la KV cache: f16 (por defecto) o f32 (ADR 0009).
+    #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
+    kv: brasa_runtime::KvType,
 }
 
 pub fn run(a: ServeArgs) -> Result<(), String> {
@@ -40,6 +43,7 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
             ctx: a.ctx,
             max_tokens: a.chunk,
             max_logit_rows: 1,
+            kv: a.kv,
         },
         addr,
     })

@@ -40,5 +40,6 @@ tal; se reemplaza por el valor real cuando `brasa doctor` corra en esa Mac.
 
 - El contexto que se informe por API (`/v1/models`, fase 2) sale de este planner, no del máximo
   nominal del modelo.
-- Con KV f32 (fase 1) el contexto que entra es la mitad que con KV f16; la fase 3 (KV Q8) lo
-  amplía sin cambiar el planner, solo `bytes_por_elemento`.
+- Con KV f32 (fase 1) el contexto que entra es la mitad que con KV f16. Desde T3.1 (ADR 0009) el
+  tipo de KV es parte de la sesión y el planner lo cuenta en bytes por bloque de 32 elementos
+  (`kv_block_bytes`: 128 en f32, 64 en f16, 34 en Q8).

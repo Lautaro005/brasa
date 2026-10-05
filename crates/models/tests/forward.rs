@@ -12,18 +12,28 @@
 //! 2. Calidad de la cuantización, contra la referencia FP32 sin cuantizar (fixtures/qwen3-4b):
 //!    coincidencia de top-1 en teacher forcing (informativo; mínimo `MIN_Q4_AGREE`).
 //!
+//! Se corre con cada tipo de KV cache (ADR 0009): f32 contra fixtures/qwen3-4b-q4 y f16 contra
+//! fixtures/qwen3-4b-q4-kvf16 (referencia con K y V redondeados a f16). El teacher forcing se exige
+//! igual en los dos. La tolerancia de logits con KV f16 es `LOGIT_TOL_KV16`: al redondear, una
+//! diferencia ínfima con la referencia cambia algunos elementos en un ULP de f16, y la propia
+//! referencia perturbada en 1e-7 ya se mueve hasta 7e-4 (tools/kv_rounding_sensitivity.py).
+//! Para f16 se mide además la pérdida por redondear la KV: coincidencia de top-1 contra la
+//! referencia con KV sin redondear (mínimo `MIN_KV_AGREE`).
+//!
 //! Necesita models/qwen3-4b-q4/model.brasa:
 //!   cargo test --release -p brasa-models --test forward -- --ignored --nocapture
 
 use std::path::{Path, PathBuf};
 
 use brasa_metal::Context;
-use brasa_models::qwen3::{Limits, Qwen3};
+use brasa_models::qwen3::{KvType, Limits, Qwen3};
 use serde_json::Value;
 
 const LOGIT_TOL: f32 = 1e-4;
+const LOGIT_TOL_KV16: f32 = 1e-3;
 const TIE: f32 = 1e-3;
 const MIN_Q4_AGREE: f64 = 0.80;
+const MIN_KV_AGREE: f64 = 0.98;
 const CHUNK: usize = 64;
 
 fn root() -> PathBuf {
@@ -100,11 +110,47 @@ impl TopK {
     }
 }
 
+/// Coincidencia de top-1 del engine sobre las secuencias de las fixtures en `dir`, para `id`.
+fn top1_agree(
+    model: &mut Qwen3,
+    ctx: &Context,
+    dir: &Path,
+    greedy: usize,
+    k: usize,
+) -> (usize, usize) {
+    let vocab = model.cfg.vocab;
+    let prompt = read_u32(&dir.join("tokens.i32"));
+    let g = read_u32(&dir.join("greedy.i32"));
+    let seq: Vec<u32> = prompt.iter().chain(&g[..greedy - 1]).copied().collect();
+    let logits = logits_prefill(model, ctx, &seq);
+    let refk = TopK::load(dir, k);
+    let agree = (0..seq.len())
+        .filter(|&j| argmax(&logits[j * vocab..(j + 1) * vocab]) == refk.top1(j))
+        .count();
+    (agree, seq.len())
+}
+
 #[test]
 #[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
-fn forward_completo_igual_a_la_referencia() {
-    let fx_q4 = root().join("fixtures/qwen3-4b-q4");
+fn forward_kv_f32_igual_a_la_referencia() {
+    forward_igual_a_la_referencia(KvType::F32, "fixtures/qwen3-4b-q4");
+}
+
+#[test]
+#[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
+fn forward_kv_f16_igual_a_la_referencia() {
+    forward_igual_a_la_referencia(KvType::F16, "fixtures/qwen3-4b-q4-kvf16");
+}
+
+fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
+    let fx_q4 = root().join(fixtures);
     let fx_fp = root().join("fixtures/qwen3-4b");
+    let fx_kv32 = root().join("fixtures/qwen3-4b-q4");
+    let logit_tol = if kv == KvType::F32 {
+        LOGIT_TOL
+    } else {
+        LOGIT_TOL_KV16
+    };
     let m_q4 = manifest(&fx_q4);
     let (greedy, k) = (
         m_q4["greedy_tokens"].as_u64().unwrap() as usize,
@@ -115,6 +161,7 @@ fn forward_completo_igual_a_la_referencia() {
         ctx: 2048,
         max_tokens: CHUNK,
         max_logit_rows: CHUNK,
+        kv,
     };
     let mut model =
         Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();
@@ -124,6 +171,7 @@ fn forward_completo_igual_a_la_referencia() {
     let (mut tf_pos, mut tf_bad, mut tf_ties) = (0usize, 0usize, 0usize);
     let (mut dec_pos, mut dec_bad) = (0usize, 0usize);
     let (mut q_pos, mut q_agree) = (0usize, 0usize);
+    let (mut kv_pos, mut kv_agree) = (0usize, 0usize);
 
     for p in m_q4["prompts"].as_array().unwrap() {
         let id = p["id"].as_str().unwrap();
@@ -183,35 +231,41 @@ fn forward_completo_igual_a_la_referencia() {
         }
 
         // 2. Calidad: misma comparación de top-1 sobre la secuencia de la referencia FP32.
-        let fdir = fx_fp.join(id);
-        let fprompt = read_u32(&fdir.join("tokens.i32"));
-        let fg = read_u32(&fdir.join("greedy.i32"));
-        let fseq: Vec<u32> = fprompt.iter().chain(&fg[..greedy - 1]).copied().collect();
-        let flog = logits_prefill(&mut model, &ctx, &fseq);
-        let fk = TopK::load(&fdir, k);
-        let agree = (0..fseq.len())
-            .filter(|&j| argmax(&flog[j * vocab..(j + 1) * vocab]) == fk.top1(j))
-            .count();
+        let (agree, flen) = top1_agree(&mut model, &ctx, &fx_fp.join(id), greedy, k);
+        // 3. Pérdida por redondear la KV: contra la referencia con KV sin redondear.
+        if kv != KvType::F32 {
+            let (a, n) = top1_agree(&mut model, &ctx, &fx_kv32.join(id), greedy, k);
+            kv_agree += a;
+            kv_pos += n;
+        }
 
         println!(
             "{id:22} logits {rel:.1e} | TF prefill {bad} distintos, {ties} empates de {} | TF decode {dbad} distintos de {} | Q4 vs FP32 top-1 {agree}/{}",
             seq.len(),
             greedy - 1,
-            fseq.len()
+            flen
         );
         tf_pos += seq.len();
         tf_bad += bad;
         tf_ties += ties;
         dec_pos += greedy - 1;
         dec_bad += dbad;
-        q_pos += fseq.len();
+        q_pos += flen;
         q_agree += agree;
     }
+    println!("KV {}", kv.name());
+    if kv_pos > 0 {
+        println!(
+            "KV {} vs KV sin redondear: top-1 {kv_agree}/{kv_pos} ({:.2} %)",
+            kv.name(),
+            100.0 * kv_agree as f64 / kv_pos as f64
+        );
+    }
     println!(
-        "TOTAL: logits peor {worst_logit:.2e} (tol {LOGIT_TOL:.0e}); TF prefill {tf_bad} distintos + {tf_ties} empates / {tf_pos}; TF decode {dec_bad} / {dec_pos}; Q4 vs FP32 top-1 {:.1} %",
+        "TOTAL: logits peor {worst_logit:.2e} (tol {logit_tol:.0e}); TF prefill {tf_bad} distintos + {tf_ties} empates / {tf_pos}; TF decode {dec_bad} / {dec_pos}; Q4 vs FP32 top-1 {:.1} %",
         100.0 * q_agree as f64 / q_pos as f64
     );
-    assert!(worst_logit <= LOGIT_TOL, "logits: {worst_logit}");
+    assert!(worst_logit <= logit_tol, "logits: {worst_logit}");
     assert_eq!(
         tf_bad, 0,
         "teacher forcing (prefill) distinto de la referencia"
@@ -221,4 +275,11 @@ fn forward_completo_igual_a_la_referencia() {
         "teacher forcing (decode) distinto de la referencia"
     );
     assert!(q_agree as f64 / q_pos as f64 >= MIN_Q4_AGREE, "calidad Q4");
+    if kv_pos > 0 {
+        assert!(
+            kv_agree as f64 / kv_pos as f64 >= MIN_KV_AGREE,
+            "pérdida por KV {}",
+            kv.name()
+        );
+    }
 }

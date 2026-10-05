@@ -11,7 +11,11 @@
 //! | `rms_norm_f32`, `softmax_f32` | error relativo ≤ 1e-5 |
 //! | `rope_neox_f32` | `|err| ≤ 1e-6 · (|a| + |b|)` del par rotado |
 //! | `gemv/gemm_q4_0/q8_0_f32` | `|err| ≤ 1e-5 · Σ_k |w_k · x_k|` |
-//! | atención (`attention`) | `|err| ≤ 1e-5 · max_j |v_j|` por componente de salida |
+//! | atención (`attention`, `flash_attention`, `decode_attention*`) | `|err| ≤ 1e-5 · max_j |v_j|` por componente de salida |
+//! | `store_kv` | f32 exacto; f16 igual a `f32_to_f16` (redondeo al par) |
+//!
+//! La KV cache puede ser f32 o f16 ([`KvType`], ADR 0009). En f16 la referencia CPU recibe K y V
+//! ya redondeados a f16, así que la tolerancia de la atención no cambia.
 
 use brasa_metal::{Arg, Buffer, Command, Context, MetalError, Pipeline};
 
@@ -30,6 +34,7 @@ pub mod sources {
     pub const MATMUL_TILED: &str = include_str!("metal/matmul_tiled.metal");
     pub const FLASH_ATTENTION: &str = include_str!("metal/flash_attention.metal");
     pub const DECODE_ATTENTION: &str = include_str!("metal/decode_attention.metal");
+    pub const KV: &str = include_str!("metal/kv.metal");
 }
 
 /// Hilos por threadgroup para kernels elemento a elemento.
@@ -44,6 +49,43 @@ const GEMV_ROWS_PER_TG: usize = 4;
 pub enum WeightType {
     Q4_0,
     Q8_0,
+}
+
+/// Tipo de elemento de la KV cache (ADR 0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KvType {
+    F32,
+    #[default]
+    F16,
+}
+
+impl KvType {
+    /// Bytes por bloque de 32 elementos (unidad del planner; Q8 usará 34).
+    pub fn block_bytes(self) -> usize {
+        match self {
+            KvType::F32 => 128,
+            KvType::F16 => 64,
+        }
+    }
+
+    fn idx(self) -> usize {
+        self as usize
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            KvType::F32 => "f32",
+            KvType::F16 => "f16",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "f32" => Some(KvType::F32),
+            "f16" => Some(KvType::F16),
+            _ => None,
+        }
+    }
 }
 
 /// Matriz de pesos cuantizada `[rows, cols]` en un buffer de bytes (layout de ADR 0006).
@@ -74,10 +116,21 @@ pub struct Kernels {
     gemv_fast_q8_0: Pipeline,
     gemm_tiled_q4_0: Pipeline,
     gemm_tiled_q8_0: Pipeline,
-    flash_attn_f32: Pipeline,
-    attn_decode_partial: Pipeline,
+    /// Variantes por [`KvType`] (índice `KvType as usize`).
+    flash_attn: [Pipeline; 2],
+    attn_decode_partial: [Pipeline; 2],
+    /// `attn_decode_lanes` por tamaño de grupo GQA ([`DECODE_LANES_GROUPS`]) y tipo de KV.
+    attn_decode_lanes: [[Pipeline; 2]; 4],
+    store_kv: [Pipeline; 2],
     attn_decode_reduce: Pipeline,
-    attn_decode_gqa_partial: Pipeline,
+}
+
+/// Compila `function` de `source` para cada tipo de KV (f16 con `#define KV_F16 1`).
+fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline; 2], MetalError> {
+    Ok([
+        ctx.pipeline(source, function)?,
+        ctx.pipeline(&format!("#define KV_F16 1\n{source}"), function)?,
+    ])
 }
 
 fn groups(n: usize, per: usize) -> usize {
@@ -104,10 +157,35 @@ impl Kernels {
             gemv_fast_q8_0: ctx.pipeline(MATMUL, "gemv_fast_q8_0_f32")?,
             gemm_tiled_q4_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
             gemm_tiled_q8_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
-            flash_attn_f32: ctx.pipeline(FLASH_ATTENTION, "flash_attn_f32")?,
-            attn_decode_partial: ctx.pipeline(DECODE_ATTENTION, "attn_decode_partial")?,
+            flash_attn: kv_variants(ctx, FLASH_ATTENTION, "flash_attn_f32")?,
+            attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
+            attn_decode_lanes: [
+                kv_variants(
+                    ctx,
+                    &format!("#define GQA_G 1\n{DECODE_ATTENTION}"),
+                    "attn_decode_lanes",
+                )?,
+                kv_variants(
+                    ctx,
+                    &format!("#define GQA_G 2\n{DECODE_ATTENTION}"),
+                    "attn_decode_lanes",
+                )?,
+                kv_variants(
+                    ctx,
+                    &format!("#define GQA_G 4\n{DECODE_ATTENTION}"),
+                    "attn_decode_lanes",
+                )?,
+                kv_variants(
+                    ctx,
+                    &format!("#define GQA_G 8\n{DECODE_ATTENTION}"),
+                    "attn_decode_lanes",
+                )?,
+            ],
+            store_kv: [
+                ctx.pipeline(KV, "store_kv_f32")?,
+                ctx.pipeline(KV, "store_kv_f16")?,
+            ],
             attn_decode_reduce: ctx.pipeline(DECODE_ATTENTION, "attn_decode_reduce")?,
-            attn_decode_gqa_partial: ctx.pipeline(DECODE_ATTENTION, "attn_decode_gqa_partial")?,
         })
     }
 
@@ -363,6 +441,23 @@ impl Kernels {
         );
     }
 
+    /// Copia `n` floats de `src` a la KV cache `dst` (de tipo `kv`), convirtiendo si hace falta.
+    pub fn store_kv<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        kv: KvType,
+        src: Arg<'a>,
+        dst: Arg<'a>,
+        n: usize,
+    ) {
+        cmd.dispatch(
+            &self.store_kv[kv.idx()],
+            &[src, dst, Arg::u32(n as u32)],
+            [n, 1, 1],
+            [ELEMENTWISE_TG, 1, 1],
+        );
+    }
+
     /// Atención de decode (un token en la posición `pos0`) con las claves repartidas en tramos
     /// de `DECODE_CHUNK`. `partials` debe tener al menos `decode_partials_len(hq, pos0 + 1)`
     /// floats. `head_dim` debe ser 128.
@@ -383,6 +478,7 @@ impl Kernels {
             hkv,
             dim,
             pos0,
+            kv,
         } = shape;
         assert_eq!(tokens, 1, "decode_attention es para un token");
         assert_eq!(dim, 128, "decode_attention requiere head_dim 128");
@@ -393,7 +489,7 @@ impl Kernels {
         );
         let scale = 1.0 / (dim as f32).sqrt();
         cmd.dispatch_groups(
-            &self.attn_decode_partial,
+            &self.attn_decode_partial[kv.idx()],
             &[
                 q,
                 k,
@@ -415,10 +511,12 @@ impl Kernels {
         );
     }
 
-    /// Atención de decode compartiendo K/V entre las cabezas de query de cada grupo GQA (una
-    /// lectura de la caché por grupo). Mismo scratch y misma reducción que `decode_attention`.
+    /// Atención de decode "una lane por clave": cada simdgroup atiende un tramo de claves para
+    /// todas las cabezas de query de un grupo GQA, leyendo K y V una vez por grupo. El grupo
+    /// (`hq / hkv`) tiene que estar en [`DECODE_LANES_GROUPS`] (ver [`decode_lanes_supports`]).
+    /// Mismo scratch y reducción que `decode_attention`.
     #[allow(clippy::too_many_arguments)]
-    pub fn decode_attention_gqa<'a>(
+    pub fn decode_attention_lanes<'a>(
         &self,
         cmd: &mut Command<'a>,
         q: Arg<'a>,
@@ -434,6 +532,7 @@ impl Kernels {
             hkv,
             dim,
             pos0,
+            kv,
         } = shape;
         assert_eq!(tokens, 1, "decode_attention es para un token");
         assert_eq!(dim, 128, "decode_attention requiere head_dim 128");
@@ -442,26 +541,24 @@ impl Kernels {
             partials.len() >= decode_partials_len(hq, lk),
             "scratch de decode chico"
         );
+        let gi = DECODE_LANES_GROUPS
+            .iter()
+            .position(|&g| hq % hkv == 0 && g == hq / hkv)
+            .expect("decode_attention_lanes: grupo GQA no compilado");
         let scale = 1.0 / (dim as f32).sqrt();
-        let group = hq / hkv;
-        assert!(
-            hq % hkv == 0 && group <= 8,
-            "decode_attention_gqa: grupo de 1 a 8 cabezas"
-        );
         cmd.dispatch_groups(
-            &self.attn_decode_gqa_partial,
+            &self.attn_decode_lanes[gi][kv.idx()],
             &[
                 q,
                 k,
                 v,
                 Arg::buf(partials),
-                Arg::u32(hq as u32),
                 Arg::u32(hkv as u32),
                 Arg::u32(lk as u32),
                 Arg::f32(scale),
             ],
-            [groups(lk, DECODE_CHUNK), hkv, 1],
-            [32 * group, 1, 1],
+            [groups(groups(lk, DECODE_CHUNK), DECODE_LANES_SG), hkv, 1],
+            [32 * DECODE_LANES_SG, 1, 1],
         );
         cmd.dispatch_groups(
             &self.attn_decode_reduce,
@@ -489,12 +586,13 @@ impl Kernels {
             hkv,
             dim,
             pos0,
+            kv,
         } = shape;
         assert_eq!(dim, 128, "flash_attention requiere head_dim 128");
         assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
         let scale = 1.0 / (dim as f32).sqrt();
         cmd.dispatch_groups(
-            &self.flash_attn_f32,
+            &self.flash_attn[kv.idx()],
             &[
                 q,
                 k,
@@ -531,8 +629,10 @@ impl Kernels {
             hkv,
             dim,
             pos0,
+            kv,
         } = shape;
         assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
+        assert_eq!(kv, KvType::F32, "attention (simple) solo con KV f32");
         let lk = pos0 + tokens;
         assert!(
             scores.len() >= tokens * hq * lk,
@@ -562,12 +662,19 @@ impl Kernels {
     }
 }
 
-/// Desde cuántas claves conviene `decode_attention_gqa` sobre `decode_attention` (medido en
-/// M1 Pro: 1,8× a 16K, similar a 8K, 15 % más lenta a 2K).
-pub const DECODE_GQA_MIN_KEYS: usize = 4096;
+/// Tamaños de grupo GQA (`hq / hkv`) para los que se compila `decode_attention_lanes`.
+pub const DECODE_LANES_GROUPS: [usize; 4] = [1, 2, 4, 8];
+
+/// Si `decode_attention_lanes` sirve para `hq` cabezas de query y `hkv` de KV.
+pub fn decode_lanes_supports(hq: usize, hkv: usize) -> bool {
+    hq % hkv == 0 && DECODE_LANES_GROUPS.contains(&(hq / hkv))
+}
+
+/// Simdgroups (tramos) por threadgroup de `decode_attention_lanes` (`SG_PER_TG` en MSL).
+const DECODE_LANES_SG: usize = 4;
 
 /// Claves por tramo de `decode_attention` (`CHUNK` en MSL).
-pub const DECODE_CHUNK: usize = 256;
+pub const DECODE_CHUNK: usize = 128;
 
 /// Floats del scratch de parciales de `decode_attention` para `hq` cabezas y `lk` claves.
 pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
@@ -586,6 +693,8 @@ pub struct AttnShape {
     pub dim: usize,
     /// Posición absoluta del primer token de `q`.
     pub pos0: usize,
+    /// Tipo de la KV cache que leen `k` y `v`.
+    pub kv: KvType,
 }
 
 /// Tabla cos/sin de RoPE `[max_pos, dim/2]`, calculada en f64 y guardada en f32 (ADR 0004: la

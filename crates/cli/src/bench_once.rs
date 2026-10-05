@@ -19,6 +19,9 @@ pub struct BenchOnceArgs {
     ctx: usize,
     #[arg(long, default_value_t = 128)]
     chunk: usize,
+    /// Tipo de la KV cache: f16 (por defecto) o f32 (ADR 0009).
+    #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
+    kv: brasa_runtime::KvType,
 }
 
 pub fn run(a: BenchOnceArgs) -> Result<(), String> {
@@ -26,6 +29,7 @@ pub fn run(a: BenchOnceArgs) -> Result<(), String> {
         ctx: a.ctx,
         max_tokens: a.chunk,
         max_logit_rows: 1,
+        kv: a.kv,
     };
     let mut s = Session::load(&a.model, limits).map_err(|e| e.to_string())?;
     s.ignore_stop = true;
