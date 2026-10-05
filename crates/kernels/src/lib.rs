@@ -36,6 +36,7 @@ pub mod sources {
     pub const FLASH_ATTENTION: &str = include_str!("metal/flash_attention.metal");
     pub const DECODE_ATTENTION: &str = include_str!("metal/decode_attention.metal");
     pub const KV: &str = include_str!("metal/kv.metal");
+    pub const QKV: &str = include_str!("metal/qkv.metal");
     /// Acceso a la KV cache por tipo; [`super::kv_source`] lo antepone a los kernels de atención.
     pub const KV_ACCESS: &str = include_str!("metal/kv_access.metal");
 }
@@ -63,6 +64,8 @@ const GEMV_ROWS_PER_TG: usize = 4;
 pub enum WeightType {
     Q4_0,
     Q8_0,
+    /// Tabla de embeddings atada (ADR 0012): embedding, GEMV y GEMM simple (sin tiled).
+    Q6_0,
 }
 
 /// Tipo de elemento de la KV cache (ADR 0009).
@@ -136,6 +139,15 @@ pub struct Kernels {
     softmax_f32: Pipeline,
     rope_neox_f32: Pipeline,
     embed_q8_0: Pipeline,
+    embed_q6_0: Pipeline,
+    gemv_q6_0: Pipeline,
+    gemm_q6_0: Pipeline,
+    gemv_fast_q6_0: Pipeline,
+    gemv_scaled_q4_0: Pipeline,
+    gemv_scaled_q6_0: Pipeline,
+    add_norm_prep: Pipeline,
+    gemv_scaled3_q4_0: Pipeline,
+    gemv_scaled_swiglu_q4_0: Pipeline,
     gemv_q4_0: Pipeline,
     gemv_q8_0: Pipeline,
     gemm_q4_0: Pipeline,
@@ -154,6 +166,8 @@ pub struct Kernels {
     /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
     attn_decode_lanes: [[Pipeline; 3]; 4],
     store_kv: [Pipeline; 3],
+    /// `qk_norm_rope_store` por tipo de KV (T3.5).
+    qk_norm_rope_store: [Pipeline; 3],
     attn_decode_reduce: Pipeline,
 }
 
@@ -187,6 +201,15 @@ impl Kernels {
             softmax_f32: ctx.pipeline(SOFTMAX, "softmax_f32")?,
             rope_neox_f32: ctx.pipeline(ROPE, "rope_neox_f32")?,
             embed_q8_0: ctx.pipeline(EMBED, "embed_q8_0")?,
+            embed_q6_0: ctx.pipeline(EMBED, "embed_q6_0")?,
+            gemv_q6_0: ctx.pipeline(MATMUL, "gemv_q6_0_f32")?,
+            gemm_q6_0: ctx.pipeline(MATMUL, "gemm_q6_0_f32")?,
+            gemv_fast_q6_0: ctx.pipeline(MATMUL, "gemv_fast_q6_0_f32")?,
+            gemv_scaled_q4_0: ctx.pipeline(MATMUL, "gemv_scaled_q4_0_f32")?,
+            gemv_scaled_q6_0: ctx.pipeline(MATMUL, "gemv_scaled_q6_0_f32")?,
+            add_norm_prep: ctx.pipeline(NORM, "add_norm_prep")?,
+            gemv_scaled3_q4_0: ctx.pipeline(MATMUL, "gemv_scaled3_q4_0_f32")?,
+            gemv_scaled_swiglu_q4_0: ctx.pipeline(MATMUL, "gemv_scaled_swiglu_q4_0_f32")?,
             gemv_q4_0: ctx.pipeline(MATMUL, "gemv_q4_0_f32")?,
             gemv_q8_0: ctx.pipeline(MATMUL, "gemv_q8_0_f32")?,
             gemm_q4_0: ctx.pipeline(MATMUL, "gemm_q4_0_f32")?,
@@ -201,6 +224,7 @@ impl Kernels {
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
             flash_attn_gqa: gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
+            qk_norm_rope_store: kv_variants(ctx, QKV, "qk_norm_rope_store")?,
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
                 ctx.pipeline(KV, "store_kv_f16")?,
@@ -324,7 +348,7 @@ impl Kernels {
         );
     }
 
-    /// Embedding desde una tabla q8_0 `[vocab, h]`: `out[t, :] = tabla[ids[t], :]`.
+    /// Embedding desde una tabla q8_0 o q6_0 `[vocab, h]`: `out[t, :] = tabla[ids[t], :]`.
     pub fn embed<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -333,10 +357,14 @@ impl Kernels {
         out: Arg<'a>,
         tokens: usize,
     ) {
-        assert_eq!(table.qtype, WeightType::Q8_0, "embedding solo en q8_0");
+        let p = match table.qtype {
+            WeightType::Q8_0 => &self.embed_q8_0,
+            WeightType::Q6_0 => &self.embed_q6_0,
+            WeightType::Q4_0 => panic!("embedding en q8_0 o q6_0"),
+        };
         assert!(ids.len() >= tokens);
         cmd.dispatch(
-            &self.embed_q8_0,
+            p,
             &[
                 Arg::buf(table.data),
                 Arg::buf(ids),
@@ -350,6 +378,145 @@ impl Kernels {
 
     /// GEMV para decode: `y[t, :] = W · x[t, :]` para `t < tokens` (T chico). Usa la versión de
     /// 4 filas por simdgroup si `rows % 8 == 0`; si no, la simple.
+    /// Preparación de RMSNorm para decode (T3.5): `x += h` (si hay `h`), `xw = x · w` y sumas
+    /// parciales de `x²` en `ss` (una por cada 256 elementos; ver [`norm_partials`]). Lo consume
+    /// [`Kernels::gemv_scaled`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_norm_prep<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        x: Arg<'a>,
+        h: Option<Arg<'a>>,
+        w: Arg<'a>,
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        n: usize,
+    ) {
+        let add = h.is_some();
+        cmd.dispatch_groups(
+            &self.add_norm_prep,
+            &[
+                x,
+                h.unwrap_or(x),
+                w,
+                xw,
+                ss,
+                Arg::u32(n as u32),
+                Arg::u32(add as u32),
+            ],
+            [norm_partials(n), 1, 1],
+            [NORM_PREP_TG, 1, 1],
+        );
+    }
+
+    /// `y = W · RMSNorm(x)` para un token a partir de [`Kernels::add_norm_prep`]: `xw = x · w` y
+    /// las sumas parciales `ss` de `x²`. Requiere `rows % 8 == 0`; q4_0 o q6_0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemv_scaled<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: QMatrix<'a>,
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        eps: f32,
+        y: Arg<'a>,
+    ) {
+        assert_eq!(w.rows % 8, 0, "gemv_scaled: filas % 8");
+        let p = match w.qtype {
+            WeightType::Q4_0 => &self.gemv_scaled_q4_0,
+            WeightType::Q6_0 => &self.gemv_scaled_q6_0,
+            WeightType::Q8_0 => panic!("gemv_scaled: q4_0 o q6_0"),
+        };
+        cmd.dispatch_groups(
+            p,
+            &[
+                Arg::buf(w.data),
+                xw,
+                y,
+                Arg::u32(w.rows as u32),
+                Arg::u32(w.cols as u32),
+                ss,
+                Arg::u32(norm_partials(w.cols) as u32),
+                Arg::f32(eps),
+            ],
+            [w.rows / 8, 1, 1],
+            [64, 1, 1],
+        );
+    }
+
+    /// Tres [`Kernels::gemv_scaled`] con la misma entrada en un dispatch (q, k y v de una capa).
+    /// q4_0, filas de cada matriz múltiplo de 8. Mismos bits que las tres llamadas separadas.
+    pub fn gemv_scaled3<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: [QMatrix<'a>; 3],
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        eps: f32,
+        y: [Arg<'a>; 3],
+    ) {
+        let cols = w[0].cols;
+        for m in &w {
+            assert_eq!(m.qtype, WeightType::Q4_0, "gemv_scaled3: q4_0");
+            assert_eq!(m.cols, cols, "gemv_scaled3: misma entrada");
+            assert_eq!(m.rows % 8, 0, "gemv_scaled3: filas % 8");
+        }
+        let total = w[0].rows + w[1].rows + w[2].rows;
+        let [y0, y1, y2] = y;
+        cmd.dispatch_groups(
+            &self.gemv_scaled3_q4_0,
+            &[
+                Arg::buf(w[0].data),
+                Arg::buf(w[1].data),
+                Arg::buf(w[2].data),
+                xw,
+                y0,
+                y1,
+                y2,
+                Arg::u32(w[0].rows as u32),
+                Arg::u32(w[1].rows as u32),
+                Arg::u32(cols as u32),
+                ss,
+                Arg::u32(norm_partials(cols) as u32),
+                Arg::f32(eps),
+            ],
+            [total / 8, 1, 1],
+            [64, 1, 1],
+        );
+    }
+
+    /// `y = silu(Wg · n) · (Wu · n)` con `n = RMSNorm(x)` desde [`Kernels::add_norm_prep`], en un
+    /// dispatch. q4_0, filas múltiplo de 8. Mismos bits que dos `gemv_scaled` más `swiglu`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemv_scaled_swiglu<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        gate: QMatrix<'a>,
+        up: QMatrix<'a>,
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        eps: f32,
+        y: Arg<'a>,
+    ) {
+        assert!(gate.qtype == WeightType::Q4_0 && up.qtype == WeightType::Q4_0);
+        assert!(gate.rows == up.rows && gate.cols == up.cols && gate.rows % 8 == 0);
+        cmd.dispatch_groups(
+            &self.gemv_scaled_swiglu_q4_0,
+            &[
+                Arg::buf(gate.data),
+                Arg::buf(up.data),
+                xw,
+                y,
+                Arg::u32(gate.cols as u32),
+                ss,
+                Arg::u32(norm_partials(gate.cols) as u32),
+                Arg::f32(eps),
+            ],
+            [gate.rows / 8, 1, 1],
+            [64, 1, 1],
+        );
+    }
+
     pub fn gemv<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -364,6 +531,7 @@ impl Kernels {
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemv_fast_q4_0,
             WeightType::Q8_0 => &self.gemv_fast_q8_0,
+            WeightType::Q6_0 => &self.gemv_fast_q6_0,
         };
         cmd.dispatch_groups(
             p,
@@ -391,6 +559,7 @@ impl Kernels {
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemv_q4_0,
             WeightType::Q8_0 => &self.gemv_q8_0,
+            WeightType::Q6_0 => &self.gemv_q6_0,
         };
         cmd.dispatch_groups(
             p,
@@ -416,12 +585,13 @@ impl Kernels {
         y: Arg<'a>,
         tokens: usize,
     ) {
-        if w.rows % 64 != 0 || w.cols % 32 != 0 {
+        if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
             return self.gemm_naive(cmd, w, x, y, tokens);
         }
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemm_tiled_q4_0,
             WeightType::Q8_0 => &self.gemm_tiled_q8_0,
+            WeightType::Q6_0 => unreachable!(),
         };
         cmd.dispatch_groups(
             p,
@@ -450,6 +620,7 @@ impl Kernels {
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemm_q4_0,
             WeightType::Q8_0 => &self.gemm_q8_0,
+            WeightType::Q6_0 => &self.gemm_q6_0,
         };
         cmd.dispatch(
             p,
@@ -462,6 +633,60 @@ impl Kernels {
             ],
             [w.rows, tokens, 1],
             [64, 1, 1],
+        );
+    }
+
+    /// QK-norm, RoPE y escritura de K y V en la caché en un solo dispatch (T3.5). Mismos bits
+    /// que `rms_norm` de q y k, `rope_neox` de q y k y `store_kv` de k y v. `q` y `k` se
+    /// actualizan en el lugar; `k_dst`/`v_dst` apuntan a la caché desde `pos0`. head_dim 128.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qk_norm_rope_store<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        kv: KvType,
+        qkv: [Arg<'a>; 3],
+        norms: [Arg<'a>; 2],
+        eps: f32,
+        table: &'a RopeTable,
+        dst: [Arg<'a>; 2],
+        shape: AttnShape,
+    ) {
+        let AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim,
+            pos0,
+            ..
+        } = shape;
+        assert_eq!(dim, 128, "qk_norm_rope_store requiere head_dim 128");
+        assert_eq!(dim, table.dim, "dimensión de la tabla RoPE");
+        assert!(
+            pos0 + tokens <= table.max_pos,
+            "posición fuera de la tabla RoPE"
+        );
+        let [q, k, v] = qkv;
+        let [qn, kn] = norms;
+        let [kd, vd] = dst;
+        cmd.dispatch_groups(
+            &self.qk_norm_rope_store[kv.idx()],
+            &[
+                q,
+                k,
+                v,
+                qn,
+                kn,
+                Arg::buf(&table.cos),
+                Arg::buf(&table.sin),
+                kd,
+                vd,
+                Arg::u32(hq as u32),
+                Arg::u32(hkv as u32),
+                Arg::u32(pos0 as u32),
+                Arg::f32(eps),
+            ],
+            [tokens * (hq + 2 * hkv), 1, 1],
+            [dim, 1, 1],
         );
     }
 
@@ -742,6 +967,14 @@ pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
 /// Filas (queries × cabezas del grupo) por threadgroup de la variante GQA de `flash_attention`
 /// (`FA_ROWS` en MSL).
 const FA_ROWS: usize = 16;
+
+/// Hilos por threadgroup de `add_norm_prep` (cada uno escribe una suma parcial).
+const NORM_PREP_TG: usize = 256;
+
+/// Sumas parciales de `x²` que escribe `add_norm_prep` para un vector de `n` elementos.
+pub fn norm_partials(n: usize) -> usize {
+    n.div_ceil(NORM_PREP_TG)
+}
 
 /// Alineación (en posiciones) que necesita la KV cache para `flash_attention`.
 pub const KV_ALIGN: usize = 64;

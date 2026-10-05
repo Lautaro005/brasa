@@ -14,6 +14,8 @@ pub const PROCESS_OVERHEAD: u64 = 256 * MIB;
 pub const KV_ALIGN: usize = 64;
 /// Claves por tramo de la atención de decode (`brasa_kernels::DECODE_CHUNK`).
 pub const DECODE_CHUNK: usize = 128;
+/// Elementos por suma parcial de `add_norm_prep` (`brasa_kernels::norm_partials`).
+pub const NORM_PREP_TG: usize = 256;
 /// Granularidad del contexto elegido automáticamente.
 pub const CTX_STEP: usize = 256;
 
@@ -65,6 +67,7 @@ pub fn workspace_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
         + 2 * f(t * m.kv_heads * m.head_dim) // k_new, v_new
         + 2 * f(t * m.ffn) // gate, up
         + f(t) // ids
+        + f(h.div_ceil(NORM_PREP_TG)) // sumas parciales de RMSNorm en decode
         + f(m.heads * s.ctx.div_ceil(DECODE_CHUNK) * (m.head_dim + 2)) // parciales de decode
         + f(s.max_logit_rows * m.vocab) // logits
         + 2 * f(s.ctx * m.head_dim / 2) // tabla RoPE cos y sin

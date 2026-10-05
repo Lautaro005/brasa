@@ -1,4 +1,4 @@
-"""Lector de `.brasa` en numpy (ADR 0006): decuantiza q4_0/q8_0 a f32. Solo para tools/."""
+"""Lector de `.brasa` en numpy (ADR 0006): decuantiza q4_0/q6_0/q8_0 a f32. Solo para tools/."""
 
 import json
 import pathlib
@@ -25,6 +25,15 @@ def dequantize(dtype: str, data: np.ndarray, shape: list[int]) -> np.ndarray:
         hi = (qs >> 4).astype(np.int32) - 8
         q = np.concatenate([lo, hi], axis=1).astype(np.float32)
         return (d * q).reshape(shape)
+    if dtype == "q6_0":
+        # ADR 0012: d f16, ql[16], qh[8]; w = d · (q − 32).
+        b = data.reshape(-1, 26)
+        d = _f16_scales(b)
+        ql, qh = b[:, 2:18].astype(np.int32), b[:, 18:26].astype(np.int32)
+        lo = np.concatenate([ql & 0x0F, ql >> 4], axis=1)  # [nb, 32]
+        hi = np.concatenate([(qh >> s) & 3 for s in (0, 2, 4, 6)], axis=1)
+        q = (lo | (hi << 4)) - 32
+        return (d * q.astype(np.float32)).reshape(shape)
     if dtype == "q8_0":
         b = data.reshape(-1, 34)
         d = _f16_scales(b)

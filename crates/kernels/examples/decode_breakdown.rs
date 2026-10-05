@@ -203,10 +203,71 @@ fn main() {
             k.gemv(c, md, Arg::buf(&gate), Arg::buf(&hb), 1);
         }),
     );
+    let qk_fused = rep!(c => {
+        k.qk_norm_rope_store(
+            c,
+            KvType::F16,
+            [Arg::buf(&q), Arg::buf(&kn), Arg::buf(&vn)],
+            [Arg::buf(&hw), Arg::buf(&hw)],
+            1e-6,
+            &rope,
+            [Arg::buf(&kvst), Arg::buf(&kvst)],
+            shape,
+        );
+    });
+    let ssb = ctx.buffer::<f32>(brasa_kernels::norm_partials(h)).unwrap();
+    let prep2 = rep!(c => {
+        k.add_norm_prep(c, Arg::buf(&x), Some(Arg::buf(&hb)), Arg::buf(&nw), Arg::buf(&attn), Arg::buf(&ssb), h);
+        k.add_norm_prep(c, Arg::buf(&x), Some(Arg::buf(&hb)), Arg::buf(&nw), Arg::buf(&attn), Arg::buf(&ssb), h);
+    });
+    let scaled_qkv = rep!(c => {
+        k.gemv_scaled(c, mq, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&q));
+        k.gemv_scaled(c, mk, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&kn));
+        k.gemv_scaled(c, mv, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&vn));
+    });
+    let scaled_gu = rep!(c => {
+        k.gemv_scaled(c, mg, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&gate));
+        k.gemv_scaled(c, mu, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&up));
+    });
+    let merged_qkv = rep!(c => {
+        k.gemv_scaled3(
+            c,
+            [mq, mk, mv],
+            Arg::buf(&attn),
+            Arg::buf(&ssb),
+            1e-6,
+            [Arg::buf(&q), Arg::buf(&kn), Arg::buf(&vn)],
+        );
+    });
+    let merged_gu = rep!(c => {
+        k.gemv_scaled_swiglu(c, mg, mu, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&gate));
+    });
     let t = time(&ctx, |c| {
         k.gemv(c, head, Arg::buf(&hb), Arg::buf(&logits), 1)
     });
     total += t;
     println!("{:<34} {:>9.3}", "lm_head (q8_0, una vez)", t * 1e3);
     println!("{:<34} {:>9.3}", "suma", total * 1e3);
+    println!(
+        "{:<34} {:>9.3}   (reemplaza rms_norm q/k + rope + store_kv)",
+        "qk_norm_rope_store (fusionado)",
+        qk_fused * 1e3
+    );
+    println!(
+        "{:<34} {:>9.3}   (reemplaza rms_norm H ×2 + add ×2)",
+        "add_norm_prep (×2)",
+        prep2 * 1e3
+    );
+    println!("{:<34} {:>9.3}", "gemv_scaled q, k, v", scaled_qkv * 1e3);
+    println!("{:<34} {:>9.3}", "gemv_scaled gate, up", scaled_gu * 1e3);
+    println!(
+        "{:<34} {:>9.3}",
+        "gemv_scaled3 q, k, v (1 dispatch)",
+        merged_qkv * 1e3
+    );
+    println!(
+        "{:<34} {:>9.3}   (reemplaza gate + up + swiglu)",
+        "gemv_scaled_swiglu",
+        merged_gu * 1e3
+    );
 }

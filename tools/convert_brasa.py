@@ -1,6 +1,6 @@
 """Convierte un modelo Qwen3 (safetensors BF16 de Hugging Face) al formato nativo `.brasa`.
 
-Esquemas y layout: ADR 0006. Proyecciones lineales en q4_0, embeddings (= lm_head) en q8_0,
+Esquemas y layout: ADR 0006. Proyecciones lineales en q4_0, embeddings (= lm_head) en q6_0 (ADR 0012),
 normas en f32. Genera una carpeta con model.brasa, tokenizer.json y tokenizer_config.json.
 
 Uso: .venv/bin/python tools/convert_brasa.py models/qwen3-4b-hf models/qwen3-4b-q4
@@ -23,7 +23,7 @@ PAGE = 16384
 BLOCK = 32
 MAGIC = b"BRSA"
 VERSION = 1
-BYTES_PER_BLOCK = {"q4_0": 18, "q8_0": 34}
+BYTES_PER_BLOCK = {"q4_0": 18, "q6_0": 26, "q8_0": 34}
 
 
 def align(n: int) -> int:
@@ -34,7 +34,7 @@ def dtype_for(name: str, ndim: int) -> str:
     if ndim == 1:
         return "f32"
     if name == "model.embed_tokens.weight":
-        return "q8_0"
+        return "q6_0"
     return "q4_0"
 
 
@@ -57,6 +57,24 @@ def quant_q4_0(w: np.ndarray) -> bytes:
     q[d == 0] = 8
     packed = q[:, :16] | (q[:, 16:] << 4)
     out = np.concatenate([d16.view(np.uint8).reshape(-1, 2), packed], axis=1)
+    return out.tobytes()
+
+
+def quant_q6_0(w: np.ndarray) -> bytes:
+    """q6_0 (ADR 0012): d = m / -32 con m el valor de mayor módulo, q = rint(x / d) + 32 en [0, 63].
+    Bloque de 26 bytes: d f16, ql[16] (bits 0-3 de j y j+16), qh[8] (bits 4-5 de j, j+8, j+16, j+24)."""
+    blocks = w.reshape(-1, BLOCK).astype(np.float32)
+    idx = np.abs(blocks).argmax(axis=1)
+    m = blocks[np.arange(len(blocks)), idx]
+    d16 = (m / -32.0).astype(np.float16)
+    d = d16.astype(np.float32)
+    safe = np.where(d == 0, 1.0, d)
+    q = np.clip(np.rint(blocks / safe[:, None]) + 32, 0, 63).astype(np.uint8)
+    q[d == 0] = 32
+    ql = (q[:, :16] & 0x0F) | ((q[:, 16:] & 0x0F) << 4)
+    h = q >> 4  # [nb, 32], valores 0..3
+    qh = h[:, 0:8] | (h[:, 8:16] << 2) | (h[:, 16:24] << 4) | (h[:, 24:32] << 6)
+    out = np.concatenate([d16.view(np.uint8).reshape(-1, 2), ql, qh], axis=1)
     return out.tobytes()
 
 
@@ -101,7 +119,7 @@ def main() -> None:
         "version": VERSION,
         "converter": CONVERTER,
         "model": {"family": "qwen3", "source_repo": args.source_repo, "source_commit": args.source_commit, "config": config},
-        "quant": {"block": BLOCK, "scheme": "q4_0 lineales, q8_0 embeddings/lm_head, f32 normas (ADR 0006)"},
+        "quant": {"block": BLOCK, "scheme": "q4_0 lineales, q6_0 embeddings/lm_head, f32 normas (ADR 0006, 0012)"},
         "page": PAGE,
         "tensors": tensors,
         "data_sha256": "0" * 64,
@@ -135,6 +153,8 @@ def main() -> None:
                 data = w.astype("<f4").tobytes()
             elif t["dtype"] == "q4_0":
                 data = quant_q4_0(w)
+            elif t["dtype"] == "q6_0":
+                data = quant_q6_0(w)
             else:
                 data = quant_q8_0(w)
             assert len(data) == t["nbytes"], t["name"]

@@ -35,3 +35,40 @@ kernel void rms_norm_f32(device const float* x   [[buffer(0)]],
         orow[i] = xr[i] * scale * w[i];
     }
 }
+
+// Preparación de RMSNorm para decode (T3.5), con la suma residual incluida. Un hilo por elemento,
+// threadgroups de 256:
+//   x += h (si add != 0);  xw = x · w;  ss[tg] = Σ x² del tramo de 256 elementos del threadgroup.
+// El GEMV siguiente (gemv_scaled_*) lee xw, suma los ss en orden fijo y multiplica cada salida por
+// 1 / sqrt(Σ ss / n + eps). Así no hace falta el dispatch de RMSNorm, que para una sola fila corre
+// en un único threadgroup y está limitado por latencia.
+kernel void add_norm_prep(device float*       x   [[buffer(0)]],
+                          device const float* h   [[buffer(1)]],
+                          device const float* w   [[buffer(2)]],
+                          device float*       xw  [[buffer(3)]],
+                          device float*       ss  [[buffer(4)]],
+                          constant uint&      n   [[buffer(5)]],
+                          constant uint&      add [[buffer(6)]],
+                          uint i    [[thread_position_in_grid]],
+                          uint tg   [[threadgroup_position_in_grid]],
+                          uint lane [[thread_index_in_simdgroup]],
+                          uint sg   [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float part[8];
+    float v = 0.0f;
+    if (i < n) {
+        v = x[i];
+        if (add != 0) {
+            v += h[i];
+            x[i] = v;
+        }
+        xw[i] = v * w[i];
+    }
+    float s = simd_sum(v * v);
+    if (lane == 0) part[sg] = s;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        s = lane < 8 ? part[lane] : 0.0f;
+        s = simd_sum(s);
+        if (lane == 0) ss[tg] = s;
+    }
+}

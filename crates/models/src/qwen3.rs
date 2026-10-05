@@ -4,15 +4,15 @@
 //!   h = RMSNorm(x); q, k, v = W·h (k y v se escriben directo en la caché de la capa)
 //!   q, k = RMSNorm por cabeza (QK-norm); q, k = RoPE; o = atención(q, K, V)
 //!   x += Wo·o; h = RMSNorm(x); x += Wdown·(silu(Wgate·h) · Wup·h)
-//! Activaciones en f32; KV cache en f32 o f16 (`Limits.kv`, ADR 0009): K y V se calculan en un
-//! scratch f32 (QK-norm y RoPE incluidos) y `store_kv` las escribe en la caché. Todos los buffers
-//! se asignan en `Qwen3::load`; el forward solo encola dispatches.
+//! Activaciones en f32; KV cache en f32, f16 o Q8 (`Limits.kv`, ADR 0009): K y V se calculan en un
+//! scratch f32 y `qk_norm_rope_store` aplica QK-norm y RoPE y las escribe en la caché, en un solo
+//! dispatch. Todos los buffers se asignan en `Qwen3::load`; el forward solo encola dispatches.
 
 use std::path::Path;
 
 use brasa_kernels::{
     AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_partials_len,
-    gqa_supported,
+    gqa_supported, norm_partials,
 };
 use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
@@ -175,6 +175,8 @@ struct Workspace {
     up: Buffer<f32>,
     ids: Buffer<u32>,
     norm_out: Buffer<f32>,
+    /// Sumas parciales de x² para RMSNorm en decode (`add_norm_prep`).
+    ss: Buffer<f32>,
     /// Parciales de la atención de decode (un token).
     partials: Buffer<f32>,
     logits: Buffer<f32>,
@@ -244,6 +246,9 @@ impl KvCache {
     }
 }
 
+/// Capas que van en el primer command buffer de cada forward (ver `Qwen3::forward`).
+const FIRST_COMMAND_LAYERS: usize = 2;
+
 /// Modelo cargado en GPU con su KV cache y workspace.
 #[derive(Debug)]
 pub struct Qwen3 {
@@ -286,6 +291,7 @@ fn load_matrix(
     let qtype = match t.dtype {
         QType::Q4_0 => WeightType::Q4_0,
         QType::Q8_0 => WeightType::Q8_0,
+        QType::Q6_0 => WeightType::Q6_0,
         QType::F32 => return Err(Error(format!("{name}: se esperaba un tensor cuantizado"))),
     };
     if t.shape != [rows, cols] {
@@ -335,8 +341,10 @@ impl Qwen3 {
             });
         }
         let embed = load_matrix(ctx, &f, "model.embed_tokens.weight", cfg.vocab, h)?;
-        if embed.qtype != WeightType::Q8_0 {
-            return Err(Error("la tabla de embeddings debe ser q8_0".into()));
+        if !matches!(embed.qtype, WeightType::Q8_0 | WeightType::Q6_0) {
+            return Err(Error(
+                "la tabla de embeddings debe ser q8_0 o q6_0 (ADR 0012)".into(),
+            ));
         }
         let final_norm = load_f32(ctx, &f, "model.norm.weight")?;
         let rope = RopeTable::new(ctx, cfg.rope_theta, cfg.head_dim, limits.ctx)?;
@@ -355,6 +363,7 @@ impl Qwen3 {
             up: ctx.buffer(t * ffn)?,
             ids: ctx.buffer(t)?,
             norm_out: ctx.buffer(t * h)?,
+            ss: ctx.buffer(norm_partials(h))?,
             partials: ctx.buffer(decode_partials_len(cfg.heads, limits.ctx))?,
             logits: ctx.buffer(limits.max_logit_rows * cfg.vocab)?,
         };
@@ -396,6 +405,7 @@ impl Qwen3 {
             + b(&w.up)
             + b(&w.ids)
             + b(&w.norm_out)
+            + b(&w.ss)
             + b(&w.partials)
             + b(&w.logits)
             + b(&self.rope.cos)
@@ -433,60 +443,36 @@ impl Qwen3 {
         let kv_off = (li * cap + pos0) * kvd;
         let layer_off = li * cap * kvd;
 
-        k.rms_norm(
-            cmd,
-            Arg::buf(&ws.x),
-            Arg::buf(&l.attn_norm),
-            Arg::buf(&ws.h),
-            tokens,
-            c.hidden,
-            c.eps,
-        );
-        self.matmul(cmd, &l.wq, Arg::buf(&ws.h), Arg::buf(&ws.q), tokens);
-        self.matmul(cmd, &l.wk, Arg::buf(&ws.h), Arg::buf(&ws.k_new), tokens);
-        self.matmul(cmd, &l.wv, Arg::buf(&ws.h), Arg::buf(&ws.v_new), tokens);
-        // QK-norm: RMSNorm por cabeza, en el lugar.
-        k.rms_norm(
-            cmd,
-            Arg::buf(&ws.q),
-            Arg::buf(&l.q_norm),
-            Arg::buf(&ws.q),
-            tokens * c.heads,
-            c.head_dim,
-            c.eps,
-        );
-        k.rms_norm(
-            cmd,
-            Arg::buf(&ws.k_new),
-            Arg::buf(&l.k_norm),
-            Arg::buf(&ws.k_new),
-            tokens * c.kv_heads,
-            c.head_dim,
-            c.eps,
-        );
-        k.rope_neox(
-            cmd,
-            Arg::buf(&ws.q),
-            &self.rope,
-            tokens,
-            c.heads,
-            c.head_dim,
-            pos0,
-        );
-        k.rope_neox(
-            cmd,
-            Arg::buf(&ws.k_new),
-            &self.rope,
-            tokens,
-            c.kv_heads,
-            c.head_dim,
-            pos0,
-        );
-        // K y V de los tokens nuevos a la caché, en su tipo.
+        // Decode (T3.5): la suma residual pendiente de la capa anterior (salida de down en ws.h)
+        // y la preparación de RMSNorm van en un dispatch; los GEMV aplican la escala.
+        let decode = tokens == 1;
+        if decode {
+            let h = (li > 0).then(|| Arg::buf(&ws.h));
+            self.norm_prep(cmd, h, &l.attn_norm);
+            k.gemv_scaled3(
+                cmd,
+                [l.wq.q(), l.wk.q(), l.wv.q()],
+                Arg::buf(&ws.norm_out),
+                Arg::buf(&ws.ss),
+                c.eps,
+                [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
+            );
+        } else {
+            k.rms_norm(
+                cmd,
+                Arg::buf(&ws.x),
+                Arg::buf(&l.attn_norm),
+                Arg::buf(&ws.h),
+                tokens,
+                c.hidden,
+                c.eps,
+            );
+            self.matmul(cmd, &l.wq, Arg::buf(&ws.h), Arg::buf(&ws.q), tokens);
+            self.matmul(cmd, &l.wk, Arg::buf(&ws.h), Arg::buf(&ws.k_new), tokens);
+            self.matmul(cmd, &l.wv, Arg::buf(&ws.h), Arg::buf(&ws.v_new), tokens);
+        }
+        // QK-norm, RoPE y K/V a la caché (en su tipo), en un dispatch (T3.5).
         let kvt = self.limits.kv;
-        let (k_dst, v_dst) = self.kv.args(kv_off);
-        k.store_kv(cmd, kvt, Arg::buf(&ws.k_new), k_dst, tokens * kvd);
-        k.store_kv(cmd, kvt, Arg::buf(&ws.v_new), v_dst, tokens * kvd);
         let shape = AttnShape {
             tokens,
             hq: c.heads,
@@ -495,6 +481,17 @@ impl Qwen3 {
             pos0,
             kv: kvt,
         };
+        let (k_dst, v_dst) = self.kv.args(kv_off);
+        k.qk_norm_rope_store(
+            cmd,
+            kvt,
+            [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
+            [Arg::buf(&l.q_norm), Arg::buf(&l.k_norm)],
+            c.eps,
+            &self.rope,
+            [k_dst, v_dst],
+            shape,
+        );
         let (kc, vc) = self.kv.args(layer_off);
         if tokens == 1 && gqa_supported(c.heads, c.kv_heads) {
             k.decode_attention_lanes(
@@ -520,22 +517,66 @@ impl Qwen3 {
             k.flash_attention(cmd, Arg::buf(&ws.q), kc, vc, Arg::buf(&ws.attn), shape);
         }
         self.matmul(cmd, &l.wo, Arg::buf(&ws.attn), Arg::buf(&ws.h), tokens);
-        k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
+        if decode {
+            self.norm_prep(cmd, Some(Arg::buf(&ws.h)), &l.ffn_norm);
+            // gate, up y SwiGLU en un dispatch; el resultado queda en ws.gate.
+            k.gemv_scaled_swiglu(
+                cmd,
+                l.gate.q(),
+                l.up.q(),
+                Arg::buf(&ws.norm_out),
+                Arg::buf(&ws.ss),
+                c.eps,
+                Arg::buf(&ws.gate),
+            );
+        } else {
+            k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
+            k.rms_norm(
+                cmd,
+                Arg::buf(&ws.x),
+                Arg::buf(&l.ffn_norm),
+                Arg::buf(&ws.h),
+                tokens,
+                c.hidden,
+                c.eps,
+            );
+            self.matmul(cmd, &l.gate, Arg::buf(&ws.h), Arg::buf(&ws.gate), tokens);
+            self.matmul(cmd, &l.up, Arg::buf(&ws.h), Arg::buf(&ws.up), tokens);
+            k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);
+        }
+        self.matmul(cmd, &l.down, Arg::buf(&ws.gate), Arg::buf(&ws.h), tokens);
+        // En decode, la suma residual de down queda pendiente: la hace el norm_prep siguiente
+        // (de la próxima capa o el final, antes del lm_head).
+        if !decode {
+            k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
+        }
+    }
 
-        k.rms_norm(
+    /// Decode: `x += h` (si hay) y preparación de RMSNorm con `w` en `ws.norm_out` y `ws.ss`.
+    fn norm_prep<'a>(&'a self, cmd: &mut Command<'a>, h: Option<Arg<'a>>, w: &'a Buffer<f32>) {
+        let ws = &self.ws;
+        self.kernels.add_norm_prep(
             cmd,
             Arg::buf(&ws.x),
-            Arg::buf(&l.ffn_norm),
-            Arg::buf(&ws.h),
-            tokens,
-            c.hidden,
-            c.eps,
+            h,
+            Arg::buf(w),
+            Arg::buf(&ws.norm_out),
+            Arg::buf(&ws.ss),
+            self.cfg.hidden,
         );
-        self.matmul(cmd, &l.gate, Arg::buf(&ws.h), Arg::buf(&ws.gate), tokens);
-        self.matmul(cmd, &l.up, Arg::buf(&ws.h), Arg::buf(&ws.up), tokens);
-        k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);
-        self.matmul(cmd, &l.down, Arg::buf(&ws.gate), Arg::buf(&ws.h), tokens);
-        k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
+    }
+
+    /// Decode: `y = W · RMSNorm(x)` a partir de [`Qwen3::norm_prep`].
+    fn gemv_normed<'a>(&'a self, cmd: &mut Command<'a>, w: &'a Matrix, y: Arg<'a>) {
+        let ws = &self.ws;
+        self.kernels.gemv_scaled(
+            cmd,
+            w.q(),
+            Arg::buf(&ws.norm_out),
+            Arg::buf(&ws.ss),
+            self.cfg.eps,
+            y,
+        );
     }
 
     fn check_tokens(&self, tokens: usize, pos0: usize) -> Result<()> {
@@ -593,38 +634,58 @@ impl Qwen3 {
         let (c, vocab) = (&self.cfg, self.cfg.vocab);
         assert_eq!(logits.len(), logit_rows * vocab, "buffer de logits");
         self.ws.ids.as_mut_slice()[..tokens].copy_from_slice(ids);
-        let mut cmd = ctx.command()?;
+        // Las primeras capas van en un comando aparte que se envía enseguida: la GPU arranca
+        // mientras la CPU codifica el resto (T3.5; en decode, codificar todo tomaba ~0,5 ms).
+        let mut head = ctx.command()?;
         self.kernels.embed(
-            &mut cmd,
+            &mut head,
             self.embed.q(),
             &self.ws.ids,
             Arg::buf(&self.ws.x),
             tokens,
         );
-        for li in 0..c.layers {
+        let split = FIRST_COMMAND_LAYERS.min(c.layers);
+        for li in 0..split {
+            self.encode_layer(&mut head, li, tokens, pos0);
+        }
+        let head = head.commit();
+        let mut cmd = ctx.command()?;
+        for li in split..c.layers {
             self.encode_layer(&mut cmd, li, tokens, pos0);
         }
         let first = tokens - logit_rows;
-        self.kernels.rms_norm(
-            &mut cmd,
-            Arg::buf_at(&self.ws.x, first * c.hidden),
-            Arg::buf(&self.final_norm),
-            Arg::buf(&self.ws.norm_out),
-            logit_rows,
-            c.hidden,
-            c.eps,
-        );
-        // lm_head atado a la tabla de embeddings (q8_0).
-        self.kernels.gemv(
-            &mut cmd,
-            self.embed.q(),
-            Arg::buf(&self.ws.norm_out),
-            Arg::buf(&self.ws.logits),
-            logit_rows,
-        );
-        let timing = cmd.commit_and_wait()?;
+        // lm_head atado a la tabla de embeddings (q6_0, ADR 0012; q8_0 en archivos viejos).
+        // En decode, el norm_prep final hace también la suma residual pendiente de la última capa.
+        let decode = tokens == 1;
+        if decode {
+            self.norm_prep(&mut cmd, Some(Arg::buf(&self.ws.h)), &self.final_norm);
+        }
+        if decode && self.embed.qtype != WeightType::Q8_0 {
+            self.gemv_normed(&mut cmd, &self.embed, Arg::buf(&self.ws.logits));
+        } else {
+            self.kernels.rms_norm(
+                &mut cmd,
+                Arg::buf_at(&self.ws.x, first * c.hidden),
+                Arg::buf(&self.final_norm),
+                Arg::buf(&self.ws.norm_out),
+                logit_rows,
+                c.hidden,
+                c.eps,
+            );
+            self.kernels.gemv(
+                &mut cmd,
+                self.embed.q(),
+                Arg::buf(&self.ws.norm_out),
+                Arg::buf(&self.ws.logits),
+                logit_rows,
+            );
+        }
+        let tail = cmd.commit_and_wait()?;
+        let first_part = head.wait()?;
         logits.copy_from_slice(&self.ws.logits.as_slice()[..logit_rows * vocab]);
-        Ok(timing)
+        Ok(brasa_metal::GpuTiming {
+            gpu_seconds: first_part.gpu_seconds + tail.gpu_seconds,
+        })
     }
 }
 
@@ -636,5 +697,11 @@ mod tests {
         use brasa_memory::planner;
         assert_eq!(planner::DECODE_CHUNK, brasa_kernels::DECODE_CHUNK);
         assert_eq!(planner::KV_ALIGN, brasa_kernels::KV_ALIGN);
+        for h in [2560usize, 4096, 100] {
+            assert_eq!(
+                h.div_ceil(planner::NORM_PREP_TG),
+                brasa_kernels::norm_partials(h)
+            );
+        }
     }
 }

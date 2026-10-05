@@ -88,6 +88,7 @@ cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   
 .venv/bin/python tools/make_fixtures.py q4-kvf16  # fixtures/qwen3-4b-q4-kvf16/: idem con K/V redondeados a f16 (ADR 0009)
 .venv/bin/python tools/make_fixtures.py q4-kvq8   # fixtures/qwen3-4b-q4-kvq8/: idem con K/V en Q8
 .venv/bin/python tools/kv_rounding_sensitivity.py --kv q8_0 --eps 1e-7   # piso de error de logits al redondear la KV
+.venv/bin/python tools/eval_embed_quant.py [--act f16] [--wts f16]  # calidad vs FP32 según la cuantización de la tabla y entradas f16 (ADR 0011, 0012)
 cargo test --release -p brasa-models --test layers -- --ignored --nocapture     # T1.5
 cargo test --release -p brasa-models --test forward -- --ignored --nocapture --test-threads 1  # T1.6 con KV f32, f16 y q8_0
 cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4

@@ -177,6 +177,20 @@ fn main() {
         (vocab * h) as f64 * 34.0 / 32.0,
         2.0 * (vocab * h) as f64,
     );
+    let emb6 = ctx.buffer_from(&rng.q6_0(vocab, h)).unwrap();
+    let head6 = QMatrix {
+        data: &emb6,
+        qtype: WeightType::Q6_0,
+        rows: vocab,
+        cols: h,
+    };
+    let t = time(&ctx, |c| k.gemv(c, head6, Arg::buf(&x), Arg::buf(&out), 1));
+    report(
+        "gemv_q6_0 lm_head 151936×2560 T=1",
+        t,
+        (vocab * h) as f64 * 26.0 / 32.0,
+        2.0 * (vocab * h) as f64,
+    );
 
     // Atención: la simple (sin tiling, solo KV f32) y las de la ruta caliente con KV f32 y f16.
     // FLOPs de la parte causal exacta: cada query i ve pos0 + i + 1 claves.

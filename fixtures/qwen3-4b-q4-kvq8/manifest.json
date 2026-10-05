@@ -41,7 +41,7 @@
           "shape": [
             151936
           ],
-          "sha256": "4498180167bfc292ea3a58945add68678d7bbd02725f984132b11794046ffc6b"
+          "sha256": "47b12adc03bb46f81ac16ddc95e439be46f9683f14f3715bd8e042762e364f91"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -50,7 +50,7 @@
             36,
             20
           ],
-          "sha256": "ce3cf2e8a7ab20f34621313de077aa59e932f58a7381e417166834f4b071faa1"
+          "sha256": "3cb96de95f1df347b9558a9c8324a76170d44d2afe40208b141e7d825dccfcf7"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -59,7 +59,7 @@
             36,
             20
           ],
-          "sha256": "8e405872157d69013cc18df4a6bb37c9cd371532de70aa057e7231d2ac52b5d0"
+          "sha256": "4ef87dda4b0d7c606de143c8260ca4ad6814b4bbbf597e5cfa16ce96c021e8ae"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -67,7 +67,7 @@
           "shape": [
             36
           ],
-          "sha256": "967ed78bef323f4fe718f7f3d6cb8bad9dbe83ea9f44d5538717b4630b6816f4"
+          "sha256": "308af7c8630de9832934e43bfef0cb513791e275de9142b157f37ad1ca840454"
         }
       }
     },
@@ -103,7 +103,7 @@
           "shape": [
             151936
           ],
-          "sha256": "d98533a0ece991ffe43bba15e3f9c12dea58bb7aaa1b01834d1d021278d30159"
+          "sha256": "adf45573cc1996e124641e74e48e240ceeb5a078635451d8ba0b70af68cf6fda"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -112,7 +112,7 @@
             50,
             20
           ],
-          "sha256": "dbc6457631fe67238d1a2154fc186e77f6527d33e6845f5b5dda9f7300a2f730"
+          "sha256": "7a7cd7e05b7ae6220f58e4c683a71829c22e046d66c2258dcc6aa7d21fdbbf7d"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -121,7 +121,7 @@
             50,
             20
           ],
-          "sha256": "b6c5eeffa2fc585ed1b5202d6b6c70017ecc1b5790cdd1076b748333b8324eda"
+          "sha256": "efb754a7975dceef5a8e963872ec7919cb2d9ffd3b1ac3bedd23dd8e1908420e"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -129,7 +129,7 @@
           "shape": [
             50
           ],
-          "sha256": "7785b8964e60b5df4c41c8cc5d20dd7c2e7b2b6bd9d9400031eb288a94de1217"
+          "sha256": "ca4c0a351a09e50780a532a13d191903aa2f81257fe4fc5fc04f083d95e6b3db"
         }
       }
     },
@@ -165,7 +165,7 @@
           "shape": [
             151936
           ],
-          "sha256": "c181be942035feb757c8dfdc5eb3645ba9c7603d8753676dba460e7c18cad3cf"
+          "sha256": "13b960e91546a36b755ff3442206d49fc9a2859135a638fddb2d14e7f8b443da"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -174,7 +174,7 @@
             62,
             20
           ],
-          "sha256": "e7f847d2ba2d53f2900a366af3f5d8abe4db68906aa4fc8c642b64083c9dde20"
+          "sha256": "c359b835fe393f748c13d7df24b3c9532057016968df08d46e7f107ccecdbf0a"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -183,7 +183,7 @@
             62,
             20
           ],
-          "sha256": "19e66553b4a4bf75149127485d1f12c6f9f3b5f60565bbdf4c09b0b1d56634a2"
+          "sha256": "da25277840e2b36646376c97a29f12bac308a52c97c2547f09edd03e73d1d3d2"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -191,7 +191,7 @@
           "shape": [
             62
           ],
-          "sha256": "fda8383b9b66336d204234f852bbf9e803c989e19639ea7e972c9110e73e2e6d"
+          "sha256": "b4e70249b7cbf30279e511c6779ab552b426f2b6d1da00dc06ac8fb2367c1fd1"
         }
       }
     },
@@ -227,7 +227,7 @@
           "shape": [
             151936
           ],
-          "sha256": "627460781a33d443f89063958c46fe09239235d69aa170c1bc881f061173e349"
+          "sha256": "6d8e90d597944ed0c6053ecea437a0af0b23fbb347156cf98472b74cb6ae4728"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -236,7 +236,7 @@
             66,
             20
           ],
-          "sha256": "825f74e57e3942794c9f27d7f0d599536cbb0f9c9364d4906ec91a4f23c3f739"
+          "sha256": "2787168542a4911b055e559d6a7f63fb1bc88ae3d5529c0fd5ab09b1213eb6a5"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -245,7 +245,7 @@
             66,
             20
           ],
-          "sha256": "3c5fef8f8865be0fcad4c077242d200d03b8589b724d152e4ce010de847f7f06"
+          "sha256": "187623be592a216b8575ec6bf90b1528db9c82f2e09790dd100d4222d6a073bd"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -253,7 +253,7 @@
           "shape": [
             66
           ],
-          "sha256": "1efc41a0db8072855fba527e7dd95247cba95cc8b321418045fc74894ac7eb60"
+          "sha256": "39fe53358cdcac929d522ebe68cb0b49ecfeb9bdd3b47c01b7f80e5ec503c949"
         }
       }
     },
@@ -289,7 +289,7 @@
           "shape": [
             151936
           ],
-          "sha256": "f05964f2bd7ec9fb86620114a1bfaf32d28dc59ae8715b69c3d927a63c5caea2"
+          "sha256": "b619799e3d5c55198ed5c0128ced229b051d831684ddd66af2dfe5e664ea0462"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -298,7 +298,7 @@
             70,
             20
           ],
-          "sha256": "5e76b363a9a9f7b06308162ed97c46ef3eb4f8ba7c1726784ded5f7afba9ba71"
+          "sha256": "5f461e107a8b70976aec9683b309132b87d609206574ff4d54ace1b30f8a6ebf"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -307,7 +307,7 @@
             70,
             20
           ],
-          "sha256": "9e24386dedb61f4ac2636795da57d095b9ad5ce88f176bf28a65a2396b650a0b"
+          "sha256": "1367b52b939bfd2a819665f16f7b5505f0e375945db3ad1f9eeaa193d7266dbd"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -315,7 +315,7 @@
           "shape": [
             70
           ],
-          "sha256": "3aeaf988b00b2520430f5ca10cafe15e7139236441708e111458c1815a699dd2"
+          "sha256": "b1f8c8e52b0fb66465cf5e04d04fdbf792fcbc07880634da9ee4953aa3d60f20"
         }
       }
     },
@@ -351,7 +351,7 @@
           "shape": [
             151936
           ],
-          "sha256": "332b8918596aaae69444580d7a6b468c214e85404ccf7e33b9427a9ade5809f4"
+          "sha256": "e29e5fbed6faa77f68121608777b1c3f90633b65984f0082885f7fda214c42cb"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -360,7 +360,7 @@
             51,
             20
           ],
-          "sha256": "86b094d48fe897fcc70255a17405311211e1c1e562c9110ad9fbe76e0020a7ac"
+          "sha256": "0589f907097a6fb07354f61c77f354a6a28ab5d1d27f777fbcc260644b1e9924"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -369,7 +369,7 @@
             51,
             20
           ],
-          "sha256": "5e4cb493b213e5bef45b54b50d1462fb115231bae673c21c753bd7cf7a44767d"
+          "sha256": "c529381513fe3f1dd1e4045dd5b96b99e12854bf69b80e2196f4e232c5b6a00f"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -377,7 +377,7 @@
           "shape": [
             51
           ],
-          "sha256": "e3933adb12d1145bbeb2c978f941658629042ce8b29eafbc589e9e50faf6fd3d"
+          "sha256": "74d4aaa5b4e0d3286256a841960abd033eb0615bb7b19258166ce66c0b12df01"
         }
       }
     },
@@ -413,7 +413,7 @@
           "shape": [
             151936
           ],
-          "sha256": "5e2fbad1cda68f0463daaa3c4ed178c9c2784be4a13aa87ca15c494009bec7c5"
+          "sha256": "b1d4ab5e369c1290580f288b30c1ba931ae08918ec8a2c0d0fa58a2f492651a2"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -422,7 +422,7 @@
             69,
             20
           ],
-          "sha256": "d01c2c6dfb22f0f984392e4f8b68ea7f71b209cdc8811158ba146526e1ac9c14"
+          "sha256": "a3001a90c40f778b37b9f0315dacbbf211074673e871318d815b452dbe466ed5"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -431,7 +431,7 @@
             69,
             20
           ],
-          "sha256": "fae90537854e524f568f9aacf99764fefe6015177d7d91f4815c1604be4f212a"
+          "sha256": "a95a6cb3003f50f1697f4ad3724839b51b002db8aa3a9a76efa98b2aded85ec0"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -439,7 +439,7 @@
           "shape": [
             69
           ],
-          "sha256": "605e7095b94b740b208716b42e2f16d2ef1c69c3304699d18885528bd18a9a51"
+          "sha256": "6ca2a354db86088c9ab4a566c7a87efb7024e8e88fb3b2c032678568afa44fde"
         }
       }
     },
@@ -475,7 +475,7 @@
           "shape": [
             151936
           ],
-          "sha256": "f2e71066892f29463d3c3bdcf18df76c1bb57952c488adb7de513cd5e2d6591a"
+          "sha256": "1b8f0c6410b97357450051edc3252456a4b9f54c7823e49744082c67f102733b"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -484,7 +484,7 @@
             270,
             20
           ],
-          "sha256": "3a9a60917c26e9c6f48743ad7089d1186a2fcb03f033598601761295b63d16bf"
+          "sha256": "b46c18c765ab808409196ba6e13e1979d16c40f4aea70b087cffd5d5e53b5074"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -493,7 +493,7 @@
             270,
             20
           ],
-          "sha256": "4e0bbfdd59b3f4a3f826540f53a252176f1485f234aa650fe860a816db6571b8"
+          "sha256": "52367e57a106925704af95342911ef32f5d644acc7091ab06dbb301a2f0102d6"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -501,7 +501,7 @@
           "shape": [
             270
           ],
-          "sha256": "4796aaab19f31b6a25e2f6c3ad50bfe68f1470fa9f3a852010b1c8ea553fc4fb"
+          "sha256": "d0b5683e68b9dd1ea8e251d5fcc021d847a31050aaec386319ac2a43c71b5680"
         }
       }
     },
@@ -509,7 +509,7 @@
       "id": "tools-roundtrip",
       "kind": "chat",
       "prompt_tokens": 242,
-      "greedy_text": "<think>\nOkay, the user asked, \"What crates are in the workspace?\" I need to figure out how to answer that.\n\nFirst, I tried using the",
+      "greedy_text": "<think>\nOkay, the user asked, \"What crates are in the workspace?\" I need to figure out how to answer that based on the tools provided.\n\nFirst",
       "files": {
         "prompt": {
           "file": "prompt.txt",
@@ -529,7 +529,7 @@
           "shape": [
             32
           ],
-          "sha256": "39b2f43426cd075ca69d5e27c227852b1619afa4a1db8944e2ea433faef387d9"
+          "sha256": "8eb5def1aecd2d0e5b275627d24686755cc10599b7d9fa2c51f4be49fd027bb2"
         },
         "last_logits": {
           "file": "last_logits.f32",
@@ -537,7 +537,7 @@
           "shape": [
             151936
           ],
-          "sha256": "23a73511c688a3560f64604447e0ef32850233b91dff16417e0176a8d24cbade"
+          "sha256": "2971adf572adec4897f49c467d902af874b6022c609c13ee398530e4da8155a3"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -546,7 +546,7 @@
             273,
             20
           ],
-          "sha256": "641ce1b800bb9f9e50828bc03f468c839eedc05ab7f9b6cc13b3f2186ed5774f"
+          "sha256": "398d8554d0b13cd248a3f482b3c1f29044d640d2f9c9592f8e264ca59a73df64"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -555,7 +555,7 @@
             273,
             20
           ],
-          "sha256": "170f3e0d4b6dd9c57d98c49a4f622419b6d7d47baa4a590d824d06d1bc5ac52c"
+          "sha256": "53844b80b8799ae6c3a07e093de093c6f67c149eae9ec7f47e3f51d271429bc0"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -563,7 +563,7 @@
           "shape": [
             273
           ],
-          "sha256": "0a3fa2dc2baad45b410dc1a395eea1d0919952a78e0418125314e3643afaa02a"
+          "sha256": "a67f2c32463aaab70ed9cfedd430cff62d48791689dd5cb5013f8f89a7291447"
         }
       }
     },
@@ -599,7 +599,7 @@
           "shape": [
             151936
           ],
-          "sha256": "f64c7349624257f78222b67f838ef46b26baed2caf4ceee712423773c998d927"
+          "sha256": "b0b9a888afd89886df3abaaa80e462e39dadb3da50089291b1aa774c96669694"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -608,7 +608,7 @@
             1951,
             20
           ],
-          "sha256": "d1e53b48c89f13b946d93d5e305ef7ec8cf31668239d90abd3f4682832c397f0"
+          "sha256": "a4edd0bd2ea01744f448ee498545841b9b840752264548305a473de310cbc332"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -617,7 +617,7 @@
             1951,
             20
           ],
-          "sha256": "5220aed431cf5c8f86ed0055ed6f9ffa0aa909ad3ff38ba47bf61759ca61b511"
+          "sha256": "558bae3e074fc408117e9a2fcd63fcffa76df661ce41c344d9d432884f3a08eb"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -625,7 +625,7 @@
           "shape": [
             1951
           ],
-          "sha256": "6885ad33ee3de572543c7e9cc6d448dee5927c69bc8ec5cd6376bc8c989170e7"
+          "sha256": "5fa8c7d386269d0e6368a4ed473187b8202e17f359abd7bd4b6585253d78b586"
         }
       }
     }
@@ -633,7 +633,7 @@
   "kv": "q8_0",
   "weights": {
     "file": "models/qwen3-4b-q4/model.brasa",
-    "data_sha256": "a0750ba715bcd6839c5a6a5386c0539c50d7808fb5a60afa2b03f4caa7c6c89c"
+    "data_sha256": "7cc8685971149e7672a773a9c5c4d3c7df5b6cd94095e9e8371ec0a308f7b8dc"
   },
-  "fixtures_sha256": "3b1e620c4a65b0e5975f57aa4c75da30f44f0f4e7f194c2b2574a5a9f072649b"
+  "fixtures_sha256": "808c86b318401546c7a835e80aaf4f209263260897ac9f1d95d337dec642b548"
 }

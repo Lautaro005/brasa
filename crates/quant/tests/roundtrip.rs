@@ -52,17 +52,22 @@ fn decuantizado_dentro_de_tolerancia() {
 
         match t.dtype {
             QType::F32 => assert_eq!(orig, deq, "{}: f32 debe ser exacto", t.name),
-            QType::Q4_0 | QType::Q8_0 => {
-                let bb = if t.dtype == QType::Q4_0 { 18 } else { 34 };
+            QType::Q4_0 | QType::Q6_0 | QType::Q8_0 => {
+                let bb = t.dtype.nbytes(32);
                 for (bi, (o, d)) in orig.chunks(32).zip(deq.chunks(32)).enumerate() {
                     let b = &data[bi * bb..];
                     let scale = f16_to_f32(u16::from_le_bytes([b[0], b[1]]));
                     for (w, wq) in o.iter().zip(d) {
                         let err = (w - wq).abs();
-                        // q4_0: el extremo opuesto puede saturar en q = 15 (ŵ = 7·d).
-                        let saturated = t.dtype == QType::Q4_0
-                            && scale != 0.0
-                            && (wq / scale - 7.0).abs() < 1e-3;
+                        // q4_0 y q6_0: el extremo opuesto puede saturar en el q máximo
+                        // (ŵ = 7·d o 31·d).
+                        let top = match t.dtype {
+                            QType::Q4_0 => Some(7.0),
+                            QType::Q6_0 => Some(31.0),
+                            _ => None,
+                        };
+                        let saturated =
+                            top.is_some_and(|top| scale != 0.0 && (wq / scale - top).abs() < 1e-3);
                         let bound = if saturated {
                             scale.abs()
                         } else {
@@ -81,10 +86,10 @@ fn decuantizado_dentro_de_tolerancia() {
                     ss += (*w as f64).powi(2);
                 }
                 let rel = (se / ss).sqrt() as f32;
-                let key = if t.dtype == QType::Q4_0 {
-                    "q4_0"
-                } else {
-                    "q8_0"
+                let key = match t.dtype {
+                    QType::Q4_0 => "q4_0",
+                    QType::Q6_0 => "q6_0",
+                    _ => "q8_0",
                 };
                 let w = worst_rel.entry(key).or_insert((0.0, String::new()));
                 if rel > w.0 {
