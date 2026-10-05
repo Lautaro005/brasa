@@ -1,6 +1,6 @@
 //! Conversión nativa de un modelo Qwen3 en safetensors (BF16/F16 de Hugging Face) al formato
 //! `.brasa` (U4, ADR 0006), sin Python. Replica el layout y la cuantización de
-//! `tools/convert_brasa.py`: proyecciones en q4_0, embeddings (= lm_head) en q8_0, normas en f32.
+//! `tools/convert_brasa.py`: proyecciones en q4_0, embeddings (= lm_head) en q6_0, normas en f32.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -18,8 +18,9 @@ const PAGE: u64 = 16384;
 const CONVERTER: &str = "brasa-convert v1";
 const MAGIC: &[u8; 4] = b"BRSA";
 const VERSION: u32 = 1;
-/// Esquema de cuantización de cada tensor del formato (ADR 0006).
+/// Esquema de cuantización de cada tensor del formato (ADR 0006, 0012).
 const Q4_BYTES: usize = 18;
+const Q6_BYTES: usize = 26;
 const Q8_BYTES: usize = 34;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +38,7 @@ fn dtype_for(name: &str, ndim: usize) -> &'static str {
     if ndim == 1 {
         "f32"
     } else if name == "model.embed_tokens.weight" {
-        "q8_0"
+        "q6_0"
     } else {
         "q4_0"
     }
@@ -47,14 +48,19 @@ fn nbytes(dtype: &str, shape: &[usize]) -> Result<usize> {
     let n: usize = shape.iter().product();
     Ok(match dtype {
         "f32" => 4 * n,
-        "q4_0" | "q8_0" => {
+        "q4_0" | "q6_0" | "q8_0" => {
             let last = shape.last().copied().unwrap_or(0);
             if last % BLOCK != 0 {
                 return Err(Error(format!(
                     "la última dimensión {last} no es múltiplo de {BLOCK}"
                 )));
             }
-            n / BLOCK * if dtype == "q4_0" { Q4_BYTES } else { Q8_BYTES }
+            let per_block = match dtype {
+                "q4_0" => Q4_BYTES,
+                "q6_0" => Q6_BYTES,
+                _ => Q8_BYTES,
+            };
+            n / BLOCK * per_block
         }
         other => return Err(Error(format!("dtype {other} no soportado"))),
     })
@@ -84,6 +90,43 @@ fn quant_q4_0(w: &[f32], out: &mut Vec<u8>) {
         out.extend_from_slice(&d16.to_le_bytes());
         for j in 0..16 {
             out.push(q[j] | (q[j + 16] << 4));
+        }
+    }
+}
+
+/// q6_0 (ADR 0012, como `quant_q6_0` del conversor Python): bloque de 26 bytes con `d` f16,
+/// `ql[16]` (4 bits bajos de j y j+16) y `qh[8]` (2 bits altos de j, j+8, j+16 y j+24).
+fn quant_q6_0(w: &[f32], out: &mut Vec<u8>) {
+    out.clear();
+    for block in w.chunks_exact(BLOCK) {
+        let mut idx = 0;
+        let mut best = block[0].abs();
+        for (i, v) in block.iter().enumerate() {
+            let a = v.abs();
+            if a > best {
+                best = a;
+                idx = i;
+            }
+        }
+        let d16 = f32_to_f16(block[idx] / -32.0);
+        let d = f16_to_f32(d16);
+        let mut q = [32u8; BLOCK];
+        if d != 0.0 {
+            for (j, &v) in block.iter().enumerate() {
+                q[j] = ((v / d).round_ties_even() + 32.0).clamp(0.0, 63.0) as u8;
+            }
+        }
+        out.extend_from_slice(&d16.to_le_bytes());
+        for j in 0..16 {
+            out.push((q[j] & 0x0f) | ((q[j + 16] & 0x0f) << 4));
+        }
+        for j in 0..8 {
+            out.push(
+                (q[j] >> 4)
+                    | ((q[j + 8] >> 4) << 2)
+                    | ((q[j + 16] >> 4) << 4)
+                    | ((q[j + 24] >> 4) << 6),
+            );
         }
     }
 }
@@ -151,7 +194,7 @@ fn meta_json(plans: &[Plan], config: &Value, repo: &str, commit: &str, data_sha2
             "source_commit": commit,
             "config": config,
         },
-        "quant": {"block": BLOCK, "scheme": "q4_0 lineales, q8_0 embeddings/lm_head, f32 normas (ADR 0006)"},
+        "quant": {"block": BLOCK, "scheme": "q4_0 lineales, q6_0 embeddings/lm_head, f32 normas (ADR 0006, 0012)"},
         "page": PAGE,
         "tensors": tensors,
         "data_sha256": data_sha256,
@@ -249,6 +292,7 @@ pub fn convert(hf_dir: &Path, out_dir: &Path, repo: &str, commit: &str) -> Resul
         match p.dtype {
             "f32" => f32_bytes(&w, &mut buf),
             "q4_0" => quant_q4_0(&w, &mut buf),
+            "q6_0" => quant_q6_0(&w, &mut buf),
             _ => quant_q8_0(&w, &mut buf),
         }
         if buf.len() != p.nbytes {
@@ -296,4 +340,52 @@ pub fn convert(hf_dir: &Path, out_dir: &Path, repo: &str, commit: &str) -> Resul
         bytes: plans.iter().map(|p| p.nbytes as u64).sum(),
         data_sha256,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::qtype::{QType, dequantize};
+
+    /// Los bloques a mano eligen `d = 1` y valores enteros, así que la vuelta es exacta: si el
+    /// empaquetado del conversor no coincidiera con [`dequantize`], la comparación falla.
+    fn ida_y_vuelta(q: QType, v: &[f32], quant: fn(&[f32], &mut Vec<u8>)) {
+        let mut bytes = Vec::new();
+        quant(v, &mut bytes);
+        assert_eq!(bytes.len(), q.nbytes(v.len()), "tamaño del bloque");
+        let mut out = vec![0f32; v.len()];
+        dequantize(q, &bytes, &mut out);
+        assert_eq!(out, v);
+    }
+
+    #[test]
+    fn q4_0_coincide_con_la_referencia() {
+        // q[j] = j % 16 → v de −8 a 7 con m = −8, d = f16(−8 / −8) = 1.
+        let v: Vec<f32> = (0..32).map(|j| (j % 16) as f32 - 8.0).collect();
+        ida_y_vuelta(QType::Q4_0, &v, quant_q4_0);
+    }
+
+    #[test]
+    fn q6_0_coincide_con_la_referencia() {
+        // q[j] = 2j → v de −32 a 30 con m = −32, d = f16(−32 / −32) = 1 (bloque nulo incluido).
+        let v: Vec<f32> = (0..32).map(|j| 2.0 * j as f32 - 32.0).collect();
+        ida_y_vuelta(QType::Q6_0, &v, quant_q6_0);
+        let cero = [0f32; 32];
+        ida_y_vuelta(QType::Q6_0, &cero, quant_q6_0);
+    }
+
+    #[test]
+    fn q8_0_coincide_con_la_referencia() {
+        // v[0] = 127 fuerza d = f16(127 / 127) = 1; el resto queda entero en [−16, 15].
+        let mut v: Vec<f32> = (0..32).map(|j| j as f32 - 16.0).collect();
+        v[0] = 127.0;
+        ida_y_vuelta(QType::Q8_0, &v, quant_q8_0);
+    }
+
+    #[test]
+    fn dtype_de_los_embeddings_es_q6_0() {
+        assert_eq!(dtype_for("model.embed_tokens.weight", 2), "q6_0");
+        assert_eq!(dtype_for("model.layers.0.mlp.gate_proj.weight", 2), "q4_0");
+        assert_eq!(dtype_for("model.norm.weight", 1), "f32");
+    }
 }
