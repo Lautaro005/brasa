@@ -16,18 +16,29 @@ autocompletado para los shells.
 model = "qwen3-4b-q4"
 host  = "127.0.0.1"
 port  = 8080
-ctx   = 16384
 kv    = "f16"
+
+[run]
+ctx = 4096
+
+[serve]
+ctx = 16384
 ```
 
 Todos los campos son opcionales: un archivo ausente no es error y deja los valores por defecto.
-Variables: modelo `qwen3-4b-q4`, host `127.0.0.1`, puerto `8080`, ctx `16384`, kv `f16` (con
-`brasa run`, el ctx por defecto es 4096).
+`run` y `serve` tienen contextos por defecto distintos (4096 y 16384), así que van en secciones
+propias: `[run] ctx` y `[serve] ctx`. El resto de los valores es común. Se usa
+`#[serde(deny_unknown_fields)]`, así que un error de tipeo (`contx`) falla con un mensaje que
+nombra el campo en vez de ignorarse. `brasa config show` muestra el defecto real de cada
+subcomando.
 
-**Precedencia.** `flag > archivo > defecto`, resuelta por `config::pick`. Para que un flag ausente
-no pise el archivo, los argumentos afectados (`[modelo]`, `--host`, `--port`, `--ctx`, `--kv`) son
-`Option`; si ninguno aporta, se usa el defecto. `brasa config show [--json]` imprime la
-configuración efectiva y, por cada valor, de dónde sale (`flag`, `archivo` o `defecto`).
+**Precedencia.** `flag > archivo > defecto`, resuelta por `config::pick` (y por `run_ctx`/
+`serve_ctx`, que envuelven la sección correspondiente). Para que un flag ausente no pise el
+archivo, los argumentos afectados (`[modelo]`, `--host`, `--port`, `--ctx`, `--kv`) son `Option`;
+si ninguno aporta, se usa el defecto. `brasa ps` y `brasa connect` también leen `host` y `port`
+del archivo (antes fijaban 8080), y `connect` toma el modelo y el `[serve] ctx`.
+`brasa config show [--json]` imprime la configuración efectiva y, por cada valor, de dónde sale
+(`flag`, `archivo` o `defecto`).
 
 **Completions.** `brasa completions zsh|bash|fish` con `clap_complete` (dependencia nueva). El
 script se genera del mismo `Command` de clap, así que no puede desincronizarse.

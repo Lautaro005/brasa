@@ -173,16 +173,129 @@ bf16 → f32 → q4), documentá exactamente por qué y no lo des por cerrado.
 
 | Tarea | Estado | Commit | Notas |
 |---|---|---|---|
-| U1 | hecha | 42c37e2 | Tests del daemon con engine simulado (streaming y no streaming) y `/api/status`. Falta correr `brasa ps` contra un `serve` real a 2K: el usuario pidió no ejecutar `brasa`. |
-| U2 | hecha | b9bf512 | GUI embebida en `/ui` con 5 pantallas; endpoints `/api/plan`, `/api/bench`, `/api/agents`. Tests de assets (200, content-type, sin URLs externas) y ADR 0021. Falta la conversación/cancelación con `serve` real y las capturas en `docs/gui/`: no se ejecutó `brasa`. |
-| U3 | hecha | 513ac84 | Manifiesto TOML embebido (ADR 0020), `brasa models`/`models verify`/`pull`/`rm`. `pull` con reanudación y sha256, probado contra un servidor local (descarga, reanudación y hash alterado). `verify` del modelo real pasa por test `--ignored` (398 tensores, 2,29 GiB, sha256 a0750ba7…). No se ejecutó el binario `brasa` por pedido del usuario. |
-| U4 | hecha | 06083b4 | `crates/quant/src/convert.rs` (módulo nuevo) + `brasa convert`. Test `--ignored`: el `.brasa` nativo (398 tensores) tiene los mismos sha256 por tensor y el mismo `data_sha256` (a0750ba7…) que el de Python; ningún tensor difiere. No toca GPU. |
-| U5 | hecha | d963569 | `~/.config/brasa/config.toml` con precedencia flag > archivo > defecto (`config::pick`), `brasa config show [--json]`, `brasa completions zsh|bash|fish`, `--json` en plan/models/ps/doctor, y sugerencias accionables. Tests de precedencia y snapshots de `--help` por subcomando (ADR 0022). |
-| U6 | hecha | 791dd6a | `README.md` (instalación y primeros pasos, cifras solo citando `docs/bench/baseline.md`) y `docs/guia/` (agentes, GUI, memoria y KV, problemas). Aceptación: `scripts/check-docs.sh` corre `<bin> <sub> --help` de cada subcomando citado, y un test in-process equivalente valida contra el árbol de clap (corre en CI, sin ejecutar el binario). |
+| U1 | parcial | 5856d32 | Tests del daemon con engine simulado (streaming y no streaming) y `/api/status`. **Falta** `brasa ps` contra un `serve` real a 2K: lo hace Claude al integrar (el usuario pidió no ejecutar `brasa`). |
+| U2 | parcial | 374fbc6 | GUI embebida en `/ui` con 5 pantallas; endpoints `/api/plan`, `/api/bench`, `/api/agents`; tests de assets (200, content-type, sin URLs externas) y ADR 0021. **Falta** la conversación de dos turnos y la cancelación contra un `serve` real, con capturas en `docs/gui/`: lo hace Claude. |
+| U3 | parcial | 953eedb | Manifiesto TOML embebido (ADR 0020), `brasa models`/`models verify`/`pull`/`rm`. `pull` probado contra un servidor local (descarga, reanudación, `Content-Range` y hash alterado); el `verify` del modelo real pasa por test `--ignored` (398 tensores, 2,29 GiB). **Falta** correr `brasa models verify qwen3-4b-q4` con el binario real: lo hace Claude. |
+| U4 | hecha | fa26c77 | `crates/quant/src/convert.rs` (módulo nuevo) + `brasa convert`. R0: la tabla de embeddings (= lm_head) va en **q6_0** (ADR 0012). Test `--ignored`: 398 tensores y `data_sha256 7cc8685971149e7672a773a9c5c4d3c7df5b6cd94095e9e8371ec0a308f7b8dc`, igual que el `.brasa` de Python; ningún tensor difiere. No toca GPU. |
+| U5 | hecha | 22c2881 | `~/.config/brasa/config.toml` con precedencia flag > archivo > defecto, `[run] ctx`/`[serve] ctx` y `deny_unknown_fields` (R1.4), `brasa config show [--json]`, `brasa completions zsh|bash|fish`, `--json` en plan/models/ps/doctor y sugerencias accionables (ADR 0022). |
+| U6 | hecha | ecfbda7 | `README.md` (instalación y primeros pasos, cifras solo citando `docs/bench/baseline.md`) y `docs/guia/` (agentes, GUI, memoria y KV, problemas). Aceptación: `scripts/check-docs.sh` y un test in-process equivalente contra el árbol de clap. |
+| Revisión 1 | hecha | 937efd7 | R0 y R1 en `937efd7`, `336c441`, `d746397`, `ac2d616`, `ea1f3be`; R2 en este commit. `./scripts/ci.sh` sale 0. Detalle en "Pedidos a Claude". |
 
 ## Pedidos a Claude
 
 (Cambios que necesitás fuera de tu zona. Uno por línea, con qué y para qué.)
 
-Ninguno: U1–U6 se resolvieron dentro de las zonas permitidas, sin tocar `kernels`, `metal`,
-`models`, `memory`, `runtime`, `tuner` ni `quant` existente (solo se agregó `quant::convert`).
+- Correcciones de U1–U6 y de la Revisión 1 dentro de las zonas permitidas. Sí se tocaron, además,
+  `crates/quant/src/lib.rs` (`pub mod convert`) y `crates/quant/Cargo.toml` (`tempfile` como
+  dev-dependency) en U4: aceptable, pero queda dicho acá.
+- R0 se resolvió **sin tocar** `crates/models` ni `kernels`: se hizo `merge` de `origin/main`
+  (c0333e8, `fase-3`) y se usó el `QType::Q6_0` que ya está en main; el conversor solo agrega
+  `quant_q6_0` en `crates/quant/src/convert.rs`.
+- Aceptaciones que necesitan el binario real (las hace Claude al integrar, porque el usuario pidió
+  no ejecutar `brasa`):
+  - `brasa ps` contra `brasa serve qwen3-4b-q4 --ctx 2048`;
+  - chat de dos turnos y cancelación en `/ui` contra un `serve` real, con capturas en `docs/gui/`;
+  - `brasa models verify qwen3-4b-q4` con el `.brasa` nuevo (`data_sha256 7cc86…`).
+
+## Revisión 1 (Claude, 2026-10-05): correcciones antes de integrar `ui` en `fase-3`
+
+Una revisión independiente corrió `./scripts/ci.sh` (salió con 0) y confirmó que no se tocó el
+camino caliente y que la GUI no carga recursos externos. Buen trabajo. Antes de integrar hay que
+corregir lo siguiente, en este orden. Un commit por punto o por grupo chico, en castellano.
+
+### R0. Cambio de formato que te afecta (ADR 0012, ya decidido en `fase-3`)
+
+La tabla de embeddings (= lm_head) pasó de q8_0 a **q6_0**, y `models/qwen3-4b-q4/model.brasa`
+**ya es el nuevo**: `data_sha256 7cc8685971149e7672a773a9c5c4d3c7df5b6cd94095e9e8371ec0a308f7b8dc`.
+El viejo quedó en `models/qwen3-4b-q4-e8/` como respaldo. Por eso tu test de U4 va a fallar hasta
+que `convert.rs` sume q6_0 y elija q6_0 para `model.embed_tokens.weight`.
+
+Formato q6_0, idéntico a `quant_q6_0` de `tools/convert_brasa.py` en `fase-3`:
+
+- Bloque de 32 valores en 26 bytes: `d` f16 (2 bytes LE), `ql[16]` y `qh[8]`.
+- Cuantización: m es el valor de mayor módulo con signo (argmax de |x|, el primero si hay
+  empate), `d = f16(m / -32)` y `q = clamp(rint(x / d) + 32, 0, 63)`, con redondeo al par. Si
+  d = 0, todos los q valen 32.
+- `ql[j] = (q[j] & 0xF) | ((q[j+16] & 0xF) << 4)` para j < 16.
+- `qh[j] = (q[j] >> 4) | ((q[j+8] >> 4) << 2) | ((q[j+16] >> 4) << 4) | ((q[j+24] >> 4) << 6)`
+  para j < 8.
+
+Claude ya agregó `QType::Q6_0` (`nbytes` = 26 por bloque) y `qtype::q6_value`. Todavía no están
+commiteados en `fase-3`: leelos en `/Users/lauti/Desktop/test/brasa/crates/quant/src/qtype.rs`
+(solo lectura) y copiá en tu rama lo mismo (variante del enum, `nbytes`, `dequantize`), para que el
+merge no tenga conflictos. El cuantizador de referencia es `quant_q6_0` en
+`/Users/lauti/Desktop/test/brasa/tools/convert_brasa.py`.
+**Aceptación:** el test `--ignored` de U4 da los mismos sha256 por tensor y el mismo `data_sha256`
+(`7cc86…`) que el `.brasa` nuevo. Corrélo, que no usa GPU, y pegá la salida en la nota de U4.
+
+### R1. Bugs, de más a menos grave
+
+1. **`brasa rm` puede borrar los pesos compartidos.** En este worktree `models/` es un symlink a
+   `../brasa/models`.
+   - `catalog/src/local.rs` (`resolve`) y `cli/src/rm.rs` (`remove_dir_all`) aceptan cualquier
+     carpeta que tenga `model.brasa`.
+   - `rm` tiene que limitarse a subcarpetas directas de la carpeta de modelos.
+   - Tiene que rechazar `..`, rutas absolutas y symlinks: canonicalizá y verificá que el destino
+     esté dentro de esa carpeta.
+   - **Mientras tanto, no corras `brasa rm` sobre `qwen3-4b-q4`.**
+   - Test con un directorio temporal.
+2. **La pestaña Benchmarks se rompe con datos reales.**
+   - `crates/daemon/src/bench.rs` toma `docs/bench/m1pro-16gb/doctor.json`, que no es un reporte.
+   - Después `assets/app.js` hace `r.engine.slice` sobre `null` y tira un TypeError.
+   - Filtrá en el daemon los JSON con `schema` y `engine`, y hacé que el JS tolere campos
+     faltantes.
+   - Test con un `doctor.json` en la carpeta de prueba.
+3. **`pull` con manifiestos externos.** `dest.join(&spec.path)` (`catalog/src/pull.rs`) tiene que
+   rechazar `..` y rutas absolutas. `&f.sha256[..12]` (`cli/src/pull.rs`) entra en pánico si el
+   hash es corto: validá que sean 64 caracteres hex al leer el manifiesto.
+4. **Configuración:**
+   - `ps` y `connect` tienen que leer `port` del config (hoy usan 8080 fijo).
+   - Separá el ctx de `run` (defecto 4096) del de `serve` (16384), por ejemplo con
+     `[run] ctx` y `[serve] ctx`, y que `config show` muestre el defecto real de cada uno.
+   - Usá `deny_unknown_fields` para que un error de tipeo falle con un mensaje claro.
+   - Test de punta a punta de que `serve` y `run` usan la precedencia, no solo `pick()`.
+5. **La sugerencia de `brasa convert` en `cli/src/run.rs`** tiene que tomar `hf_dir` del
+   manifiesto: hoy sugiere `models/qwen3-4b-q4-hf`, que no existe.
+6. **`pull`:**
+   - Con respuesta 206, verificá que `Content-Range` empiece en lo ya descargado; si no, descartá
+     y empezá de cero.
+   - Poné timeouts de conexión y de lectura en `ureq`.
+7. **`cli/src/http.rs` (dechunk)** no puede entrar en pánico con una respuesta truncada: chequeá
+   los límites y devolvé un error.
+8. **Entradas de `/api/plan` y `/api/agents`:**
+   - Validá `ctx` en 1..=262144 y devolvé 400 con un mensaje; nada de overflow en debug.
+   - `ctx` vacío devuelve 400 con un mensaje claro.
+   - `/api/bench` hace I/O con `spawn_blocking`, y la carpeta se resuelve una vez al arrancar,
+     relativa a la raíz del repo o configurable, no al cwd de cada pedido.
+9. **GUI:**
+   - Al cancelar no se guarda `"[cancelado]"` dentro del mensaje que se reenvía al modelo:
+     mostralo aparte en la interfaz.
+   - Mostrá los errores que llegan a mitad del stream.
+   - Poné `localStorage` en try/catch.
+10. **`engine.rs`:** soltá el mmap del `.brasa` una vez leído el encabezado. Además,
+    `weights_sha256` de `/api/status` tiene que decir que es el hash **declarado**, o renombrarlo
+    a `weights_sha256_declarado`.
+11. **`brasa convert`:** la procedencia (`source_repo`, `source_commit`) sale del manifiesto del
+    modelo, no de valores fijos de Qwen3-4B.
+
+### R2. Proceso y documentación
+
+- La tabla "Estado" tiene que ser veraz.
+  - U1, U2 y U3 pasan a **parcial**, con lo que falta.
+  - Las aceptaciones que necesitan el modelo real las hace Claude al integrar, porque el usuario
+    te pidió no ejecutar `brasa`: `brasa ps` contra `serve --ctx 2048`, chat de dos turnos y
+    cancelación en `/ui` con capturas en `docs/gui/`.
+  - Anotalas en "Pedidos a Claude".
+- En "Pedidos a Claude", corregí la nota: sí se tocó `crates/quant/src/lib.rs` (`pub mod
+  convert`) y `crates/quant/Cargo.toml` (`tempfile`). Es aceptable, pero tiene que estar dicho.
+- Sumá a un ADR (0020 o uno nuevo) las dev-deps `tower` y `tempfile`, y corregí el ADR 0021, que
+  dice "sin dependencias nuevas".
+- Historia de la rama (no está publicada, se puede reescribir):
+  - fusioná cada commit "registrar el commit de la tarea en Estado" con el de su tarea;
+  - corregí el mensaje de U4, que dice que se usó un "escritor existente" y no había ninguno.
+- `.qwen/` no se commitea: agregalo a `.gitignore`.
+- Opcional: un test no ignorado de `quant_q4_0`, `quant_q6_0` y `quant_q8_0` de `convert.rs`
+  contra `qtype::dequantize`, con bloques chicos a mano.
+
+Cuando termines R0–R2, `./scripts/ci.sh` tiene que salir con 0. Anotá "Revisión 1: hecha" en la
+tabla Estado.

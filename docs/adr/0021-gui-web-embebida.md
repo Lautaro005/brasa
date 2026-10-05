@@ -39,7 +39,11 @@ y en ancho de teléfono.
 
 ## Consecuencias
 
-- El binario crece con los assets (unas decenas de KB), sin dependencias nuevas.
+- El binario crece con los assets (unas decenas de KB), sin dependencias de runtime nuevas. Las
+  únicas dependencias que agrega esta tarea son de desarrollo (`tower` para los tests del router
+  de axum, `tempfile` para carpetas temporales; ver ADR 0023).
 - La GUI comparte exactamente los mismos endpoints que los agentes; no hay un camino privilegiado.
+- `/api/bench` filtra los JSON que no son reportes (exige `schema` y `engine`, así que ignora
+  `doctor.json`) y el JS tolera campos faltantes.
 - Sin capturas verificadas en esta sesión: la prueba contra un `serve` real a 2K queda pendiente
   (ver `docs/gui/README.md` y "Estado" de `QWEN-DEEPSEEK.md`).
