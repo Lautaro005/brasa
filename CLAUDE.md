@@ -55,6 +55,7 @@ cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, ma
 cargo run -p brasa-cli -- doctor --json
 cargo run --release -p brasa-cli -- run qwen3-4b-q4                      # chat interactivo
 cargo run --release -p brasa-cli -- run qwen3-4b-q4 --no-think -p "Hola"  # una respuesta
+cargo run --release -p brasa-cli -- plan qwen3-4b-q4 --ctx 16384 [--perfil 8gb]  # planner, sin cargar
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
@@ -81,6 +82,7 @@ cargo test --release -p brasa-models --test layers -- --ignored --nocapture     
 cargo test --release -p brasa-models --test forward -- --ignored --nocapture    # T1.6 (~8 min)
 cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4
 cargo test --release -p brasa-runtime --test session -- --ignored --nocapture   # T1.7 greedy y prefijo
+cargo test --release -p brasa-runtime --test planner -- --ignored --nocapture   # T1.8 plan vs real
 ```
 
 Previstos (todavía no existen):

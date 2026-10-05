@@ -13,6 +13,7 @@ brasa-metal.workspace = true
 brasa-kernels.workspace = true
 brasa-quant.workspace = true
 brasa-tokenizer.workspace = true
+brasa-memory.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

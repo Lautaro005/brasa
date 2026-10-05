@@ -51,6 +51,17 @@ printf 'What is 17 * 23? Answer briefly.\nAnd divided by 17?\n' | \
     ./target/release/brasa run qwen3-4b-q4 --seed 7 --max-tokens 400 2>&1 | tee "$out/run-chat.txt"
 grep "swap del sistema" "$out/run.txt" "$out/run-chat.txt"
 
+echo "==> T1.8 planner: un contexto que no entra se rechaza; uno que entra se acepta"
+./target/release/brasa doctor --json > "$out/doctor-plan.json"
+if ./target/release/brasa run qwen3-4b-q4 --ctx 16384 -p hola > "$out/plan-rechazo.txt" 2>&1; then
+    echo "ERROR: ctx 16384 debería rechazarse en 8 GB con KV f32" | tee -a "$out/plan-rechazo.txt"
+else
+    cat "$out/plan-rechazo.txt"
+fi
+./target/release/brasa plan qwen3-4b-q4 --ctx 4096 | tee "$out/plan-acepta.txt"
+./target/release/brasa run qwen3-4b-q4 --ctx 4096 --no-think --max-tokens 50 -p "Decí hola." \
+    2>&1 | tee -a "$out/plan-acepta.txt"
+
 {
     echo "commit: $commit"
     echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -47,7 +47,7 @@ pub struct RunArgs {
     seed: Option<u64>,
 }
 
-fn resolve_model(name: &str) -> Result<PathBuf, String> {
+pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
     let direct = Path::new(name);
     if direct.join("model.brasa").exists() {
         return Ok(direct.to_path_buf());

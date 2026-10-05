@@ -16,3 +16,4 @@ archivos (o pegarlos en la conversación) como evidencia de los criterios que ex
 | T0.2 | `brasa doctor` coincide con `system_profiler` | pendiente |
 | T0.5 | baselines llama.cpp y MLX-LM en 2K, 8K y 16K | pendiente |
 | T1.7 | `brasa run` genera texto coherente sin swap creciente (`run.txt`, `run-chat.txt`) | pendiente |
+| T1.8 | rechaza ctx 16384 con mensaje claro y acepta 4096 (`plan-rechazo.txt`, `plan-acepta.txt`) | pendiente |

@@ -188,6 +188,7 @@ version = "0.0.1"
 dependencies = [
  "brasa-core",
  "brasa-kernels",
+ "brasa-memory",
  "brasa-metal",
  "brasa-quant",
  "brasa-tokenizer",

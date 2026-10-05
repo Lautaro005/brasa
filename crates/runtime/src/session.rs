@@ -4,8 +4,9 @@
 use std::path::Path;
 use std::time::Instant;
 
+use brasa_memory::planner::{self, Budget, Fit, MemoryPlan};
 use brasa_metal::Context;
-use brasa_models::qwen3::{Limits, Qwen3};
+use brasa_models::qwen3::{Allocated, Limits, Qwen3, model_shape};
 use brasa_tokenizer::{StreamDecoder, Tokenizer};
 
 use crate::sampler::Sampler;
@@ -59,19 +60,53 @@ pub struct Session {
 }
 
 impl Session {
-    /// Carga una carpeta de modelo (`model.brasa`, `tokenizer.json`, `tokenizer_config.json`).
+    /// Plan de memoria de cargar `model_dir` con `limits`, sin cargar nada (ADR 0007).
+    /// Devuelve el resultado de compararlo con `budget` y el contexto máximo del modelo.
+    pub fn plan(model_dir: &Path, limits: Limits, budget: &Budget) -> Result<(Fit, usize)> {
+        let (shape, cfg) = model_shape(&model_dir.join("model.brasa"))?;
+        let fit = planner::check(&shape, &limits.session_shape(), budget, cfg.max_position);
+        Ok((fit, cfg.max_position))
+    }
+
+    /// Carga una carpeta de modelo (`model.brasa`, `tokenizer.json`, `tokenizer_config.json`)
+    /// después de verificar que entra en el presupuesto de esta máquina; si no, la rechaza.
     pub fn load(model_dir: &Path, limits: Limits) -> Result<Self> {
+        let budget =
+            Budget::this_machine().ok_or_else(|| Error("no hay dispositivo Metal".into()))?;
+        Self::load_with_budget(model_dir, limits, &budget).map(|(s, _)| s)
+    }
+
+    /// Como `load`, con un presupuesto explícito. Devuelve también el plan aceptado.
+    pub fn load_with_budget(
+        model_dir: &Path,
+        limits: Limits,
+        budget: &Budget,
+    ) -> Result<(Self, MemoryPlan)> {
+        let plan = match Self::plan(model_dir, limits, budget)? {
+            (Fit::Fits(p), _) => p,
+            (Fit::TooBig { plan, max_ctx }, _) => {
+                return Err(Error(planner::rejection_message(
+                    limits.ctx, &plan, budget, max_ctx,
+                )));
+            }
+        };
         let ctx = Context::new()?;
         let tok = Tokenizer::from_dir(model_dir)?;
         let model = Qwen3::load(&ctx, &model_dir.join("model.brasa"), limits)?;
         let vocab = model.cfg.vocab;
-        Ok(Self {
+        let session = Self {
             ctx,
             tok,
             logits: vec![0.0; vocab],
             cached: Vec::with_capacity(limits.ctx),
             model,
-        })
+        };
+        Ok((session, plan))
+    }
+
+    /// Memoria reservada en buffers Metal por el modelo.
+    pub fn allocated(&self) -> Allocated {
+        self.model.allocated()
     }
 
     pub fn tokenizer(&self) -> &Tokenizer {

@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use brasa_kernels::{AttnShape, Kernels, QMatrix, RopeTable, WeightType};
+use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
 use brasa_quant::{BrasaFile, QType};
 
@@ -64,6 +65,46 @@ impl Config {
     pub fn kv_dim(&self) -> usize {
         self.kv_heads * self.head_dim
     }
+}
+
+/// Forma de memoria del modelo en `path`, leyendo solo el encabezado (no carga pesos).
+pub fn model_shape(path: &Path) -> Result<(ModelShape, Config)> {
+    let f = BrasaFile::open(path)?;
+    if f.family() != "qwen3" {
+        return Err(Error(format!("familia {} no soportada", f.family())));
+    }
+    let cfg = Config::from_json(f.config())?;
+    let shape = ModelShape {
+        tensor_bytes: f.tensors().iter().map(|t| t.nbytes as u64).collect(),
+        layers: cfg.layers,
+        hidden: cfg.hidden,
+        heads: cfg.heads,
+        kv_heads: cfg.kv_heads,
+        head_dim: cfg.head_dim,
+        ffn: cfg.ffn,
+        vocab: cfg.vocab,
+    };
+    Ok((shape, cfg))
+}
+
+impl Limits {
+    /// Forma de sesión para el planner (KV f32 en la fase 1).
+    pub fn session_shape(&self) -> SessionShape {
+        SessionShape {
+            ctx: self.ctx,
+            max_tokens: self.max_tokens,
+            max_logit_rows: self.max_logit_rows,
+            kv_elem_bytes: 4,
+        }
+    }
+}
+
+/// Bytes realmente reservados en buffers Metal, por categoría (para validar el planner).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allocated {
+    pub weights: u64,
+    pub kv: u64,
+    pub workspace: u64,
 }
 
 /// Matriz cuantizada en GPU.
@@ -259,6 +300,40 @@ impl Qwen3 {
             rope,
             ws,
         })
+    }
+
+    /// Memoria reservada en buffers Metal (redondeada a páginas como la asigna Metal).
+    pub fn allocated(&self) -> Allocated {
+        fn b<T: brasa_metal::Element>(x: &Buffer<T>) -> u64 {
+            buffer_bytes(x.byte_len() as u64)
+        }
+        let m = |x: &Matrix| b(&x.data);
+        let mut weights = m(&self.embed) + b(&self.final_norm);
+        for l in &self.layers {
+            weights += b(&l.attn_norm) + b(&l.q_norm) + b(&l.k_norm) + b(&l.ffn_norm);
+            weights += [&l.wq, &l.wk, &l.wv, &l.wo, &l.gate, &l.up, &l.down]
+                .iter()
+                .map(|x| m(x))
+                .sum::<u64>();
+        }
+        let w = &self.ws;
+        let workspace = b(&w.x)
+            + b(&w.h)
+            + b(&w.q)
+            + b(&w.attn)
+            + b(&w.gate)
+            + b(&w.up)
+            + b(&w.scores)
+            + b(&w.ids)
+            + b(&w.norm_out)
+            + b(&w.logits)
+            + b(&self.rope.cos)
+            + b(&self.rope.sin);
+        Allocated {
+            weights,
+            kv: b(&self.kv.k) + b(&self.kv.v),
+            workspace,
+        }
     }
 
     fn matmul<'a>(
