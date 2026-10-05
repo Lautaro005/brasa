@@ -66,6 +66,7 @@ tools/make_gguf.sh                             # models/qwen3-4b-q4_0.gguf
 .venv/bin/python tools/make_bench_prompts.py   # fixtures/bench/prompt-{2048,8192,16384}.txt
 cargo run --release -p brasa-cli -- benchmark --baseline llama.cpp --ctx 2048
 cargo run --release -p brasa-cli -- benchmark --baseline mlx-lm --ctx 2048
+cargo run --release -p brasa-cli -- benchmark --ctx 2048                 # Brasa, mismo harness
 ./scripts/run-baselines.sh                     # T0.5: 2K/8K/16K en ambos engines
 python3 tools/bench_table.py                   # regenera docs/bench/baseline.md
 
@@ -83,12 +84,6 @@ cargo test --release -p brasa-models --test forward -- --ignored --nocapture    
 cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4
 cargo test --release -p brasa-runtime --test session -- --ignored --nocapture   # T1.7 greedy y prefijo
 cargo test --release -p brasa-runtime --test planner -- --ignored --nocapture   # T1.8 plan vs real
-```
-
-Previstos (todavía no existen):
-
-```bash
-cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048     # engine propio, fase 1
 ```
 
 (Mantener esta sección verdadera: mover cada comando a la lista de arriba cuando exista.)

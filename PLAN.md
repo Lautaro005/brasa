@@ -76,6 +76,14 @@ Aceptación: en la M2 8 GB rechaza un contexto que no cabe con un mensaje claro 
 
 Compuerta de la fase 1: calidad correcta en las dos Macs. Todavía no se exige velocidad.
 
+## Adelanto de la fase 3 (aprobado el 2026-10-05)
+
+Con los kernels de la fase 1 el prefill rinde ~20 tok/s: un prompt de agente de 15K–30K tokens
+tardaría minutos en el primer turno. Antes de la fase 2 se adelantan de la fase 3 el **GEMM tiled
+de prefill**, la **atención tiled** (prefill y decode) y la medición de Brasa en el harness de
+benchmark (`brasa benchmark` sin `--baseline`). Mismas reglas: referencia CPU, equivalencia,
+microbenchmark, y el test de punta a punta de T1.6 debe seguir pasando.
+
 ## Fase 2 — API para agentes
 
 - `serve` con `/v1/chat/completions`, `/v1/responses` y `/v1/messages`, streaming, cancelación y `/v1/models` con contexto real.

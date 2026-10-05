@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use brasa_bench::brasa::Brasa;
 use brasa_bench::engine::machine_dir;
 use brasa_bench::llama_cpp::LlamaCpp;
 use brasa_bench::mlx::MlxLm;
@@ -21,7 +22,7 @@ pub enum Baseline {
 
 #[derive(Debug, Args)]
 pub struct BenchmarkArgs {
-    /// Engine de referencia a medir. Sin este flag se mide Brasa (disponible desde la fase 1).
+    /// Engine de referencia a medir. Sin este flag se mide Brasa.
     #[arg(long, value_enum)]
     baseline: Option<Baseline>,
     /// Modelo del registro del harness.
@@ -48,6 +49,9 @@ pub struct BenchmarkArgs {
     /// Binario de llama.cpp.
     #[arg(long, default_value = "llama-completion")]
     llama_bin: String,
+    /// Tokens por bloque de prefill de Brasa.
+    #[arg(long, default_value_t = 128)]
+    chunk: usize,
     /// Intérprete de Python con mlx-lm (venv de tools/).
     #[arg(long, default_value = ".venv/bin/python")]
     python: String,
@@ -119,9 +123,17 @@ pub fn run(args: BenchmarkArgs) -> Result<()> {
             })
         }
         None => {
-            return Err(BenchError(
-                "el engine de Brasa todavía no existe (fase 1); usar --baseline".into(),
-            ));
+            let dir: std::path::PathBuf = args
+                .weights
+                .clone()
+                .unwrap_or_else(|| model.brasa_dir.into());
+            Box::new(Brasa {
+                bin: std::env::current_exe().map_err(|e| BenchError(e.to_string()))?,
+                weights: dir.join("model.brasa"),
+                model_dir: dir,
+                quant: model.brasa_quant.into(),
+                chunk: args.chunk,
+            })
         }
     };
     if !engine.weights_path().exists() {

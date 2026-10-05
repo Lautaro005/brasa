@@ -2,6 +2,7 @@
 //!
 //! Los baselines (llama.cpp, MLX-LM) se ejecutan como procesos externos; nunca se enlazan.
 
+pub mod brasa;
 pub mod engine;
 pub mod llama_cpp;
 pub mod measure;

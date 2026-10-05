@@ -1,5 +1,6 @@
 //! Binario `brasa`.
 
+mod bench_once;
 mod benchmark;
 mod doctor;
 mod plan;
@@ -32,12 +33,21 @@ enum Command {
     Run(run::RunArgs),
     /// Plan de memoria de un modelo y contexto, sin cargarlo.
     Plan(plan::PlanArgs),
+    /// Una corrida medida para `brasa benchmark` (uso interno).
+    #[command(hide = true)]
+    BenchOnce(bench_once::BenchOnceArgs),
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Doctor { json } => doctor::run(json),
+        Command::BenchOnce(args) => {
+            if let Err(e) = bench_once::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::Plan(args) => match plan::run(args) {
             Ok(true) => {}
             Ok(false) => std::process::exit(2),

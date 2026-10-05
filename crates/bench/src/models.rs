@@ -12,6 +12,8 @@ pub struct ModelSpec {
     pub gguf_quant: &'static str,
     pub mlx_path: &'static str,
     pub mlx_quant: &'static str,
+    pub brasa_dir: &'static str,
+    pub brasa_quant: &'static str,
 }
 
 pub const MODELS: &[ModelSpec] = &[ModelSpec {
@@ -22,6 +24,8 @@ pub const MODELS: &[ModelSpec] = &[ModelSpec {
     gguf_quant: "Q4_0 (bloques de 32, escala FP16)",
     mlx_path: "models/qwen3-4b-mlx-q4g32",
     mlx_quant: "MLX 4 bits, grupos de 32 (escala y bias BF16)",
+    brasa_dir: "models/qwen3-4b-q4",
+    brasa_quant: "q4_0 g32 + q8_0 embeddings (.brasa, ADR 0006)",
 }];
 
 pub fn find(name: &str) -> Option<&'static ModelSpec> {

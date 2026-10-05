@@ -57,6 +57,8 @@ pub struct Session {
     logits: Vec<f32>,
     /// Tokens cuyo KV está en la caché, en orden de posición.
     cached: Vec<u32>,
+    /// Si es `true`, los tokens de parada se bloquean (benchmarks: generar siempre `max_new`).
+    pub ignore_stop: bool,
 }
 
 impl Session {
@@ -99,9 +101,15 @@ impl Session {
             tok,
             logits: vec![0.0; vocab],
             cached: Vec::with_capacity(limits.ctx),
+            ignore_stop: false,
             model,
         };
         Ok((session, plan))
+    }
+
+    /// Olvida la secuencia en caché (el próximo `generate` hace prefill completo).
+    pub fn reset(&mut self) {
+        self.cached.clear();
     }
 
     /// Memoria reservada en buffers Metal por el modelo.
@@ -167,6 +175,11 @@ impl Session {
         let mut stop = StopReason::MaxTokens;
         let t1 = Instant::now();
         while generated < max_new {
+            if self.ignore_stop {
+                for id in &self.tok.stop_ids {
+                    self.logits[*id as usize] = f32::NEG_INFINITY;
+                }
+            }
             let next = sampler.sample(&self.logits);
             if generated == 0 {
                 ttft_ms = t0.elapsed().as_secs_f64() * 1e3;
