@@ -47,25 +47,23 @@ Las dependencias solo apuntan hacia abajo: `cli` y `daemon` dependen de `runtime
 
 ## Comandos
 
-Disponibles hoy:
-
 ```bash
 ./scripts/ci.sh                                # fmt --check + clippy -D warnings + test (CI local)
 cargo build --release
 cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all --check
+cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, macOS, Metal, presión
+cargo run -p brasa-cli -- doctor --json
+./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 ```
 
 Previstos (todavía no existen):
 
 ```bash
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica de kernels
-cargo run -p brasa-cli -- doctor               # chip, RAM, macOS, Metal
 cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048
 ```
 
-(Ajustar esta sección apenas existan los comandos reales; mantenerla verdadera.)
+(Mantener esta sección verdadera: mover cada comando a la lista de arriba cuando exista.)
 
 ## Requisitos de API para agentes
 

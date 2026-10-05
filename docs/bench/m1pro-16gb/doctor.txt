@@ -1,0 +1,30 @@
+brasa 0.0.1
+
+Hardware
+  chip            Apple M1 Pro
+  modelo          MacBookPro18,1
+  CPU             10 núcleos (8 rendimiento + 2 eficiencia)
+  GPU             16 núcleos
+  RAM             16.00 GiB
+  macOS           27.0 (26A428)
+  arquitectura    aarch64
+
+Metal
+  dispositivo     Apple M1 Pro
+  familia         apple7, metal3, metal4
+  memoria unif.   sí
+  working set rec 11.84 GiB
+  buffer máximo   8.88 GiB
+  threadgroup mem 32 KiB
+
+Memoria del sistema
+  presión         advertencia
+  disponible      33% (según el kernel)
+  libre           0.65 GiB
+  activa          2.27 GiB
+  inactiva        2.29 GiB
+  wired           3.05 GiB
+  comprimida      7.12 GiB
+  swap            11.10 GiB usados de 12.00 GiB
+
+Aviso: el sistema ya está bajo presión de memoria o usando swap. Los benchmarks no son representativos en este estado; cerrá aplicaciones antes de medir.

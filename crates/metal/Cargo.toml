@@ -7,5 +7,11 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-metal.workspace = true
+serde.workspace = true
+
 [lints]
 workspace = true
