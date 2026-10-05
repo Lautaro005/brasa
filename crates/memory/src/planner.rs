@@ -11,7 +11,7 @@ pub const BUDGET_HEADROOM: u64 = 512 * MIB;
 /// sampler). Medida en T1.8 y redondeada hacia arriba (ver tests de brasa-models).
 pub const PROCESS_OVERHEAD: u64 = 256 * MIB;
 /// Alineación de la capacidad de la KV cache por capa (`brasa_kernels::KV_ALIGN`).
-pub const KV_ALIGN: usize = 32;
+pub const KV_ALIGN: usize = 64;
 /// Claves por tramo de la atención de decode (`brasa_kernels::DECODE_CHUNK`).
 pub const DECODE_CHUNK: usize = 128;
 /// Granularidad del contexto elegido automáticamente.

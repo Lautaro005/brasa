@@ -225,7 +225,7 @@ fn decode_attention_lanes_otros_grupos() {
     let mut rng = Rng::new(25);
     let (hkv, dim) = (8, 128);
     for hq in [8usize, 16, 64] {
-        assert!(brasa_kernels::decode_lanes_supports(hq, hkv));
+        assert!(brasa_kernels::gqa_supported(hq, hkv));
         for kv in KVS {
             let mut w = 0f32;
             for pos0 in [0usize, 300, 4095] {
@@ -274,5 +274,5 @@ fn decode_attention_lanes_otros_grupos() {
             assert!(w <= 1e-5, "grupo {} {}: {w}", hq / hkv, kv.name());
         }
     }
-    assert!(!brasa_kernels::decode_lanes_supports(24, 8));
+    assert!(!brasa_kernels::gqa_supported(24, 8));
 }

@@ -118,11 +118,23 @@ pub struct Kernels {
     gemm_tiled_q8_0: Pipeline,
     /// Variantes por [`KvType`] (índice `KvType as usize`).
     flash_attn: [Pipeline; 2],
+    /// `flash_attn_gqa` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
+    flash_attn_gqa: [[Pipeline; 2]; 4],
     attn_decode_partial: [Pipeline; 2],
-    /// `attn_decode_lanes` por tamaño de grupo GQA ([`DECODE_LANES_GROUPS`]) y tipo de KV.
+    /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
     attn_decode_lanes: [[Pipeline; 2]; 4],
     store_kv: [Pipeline; 2],
     attn_decode_reduce: Pipeline,
+}
+
+/// Compila `function` para cada tamaño de grupo de [`GQA_GROUPS`] (`#define GQA_G n`) y tipo de KV.
+fn gqa_variants(
+    ctx: &Context,
+    source: &str,
+    function: &str,
+) -> Result<[[Pipeline; 2]; 4], MetalError> {
+    let v = |g: usize| kv_variants(ctx, &format!("#define GQA_G {g}\n{source}"), function);
+    Ok([v(1)?, v(2)?, v(4)?, v(8)?])
 }
 
 /// Compila `function` de `source` para cada tipo de KV (f16 con `#define KV_F16 1`).
@@ -159,28 +171,8 @@ impl Kernels {
             gemm_tiled_q8_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
             flash_attn: kv_variants(ctx, FLASH_ATTENTION, "flash_attn_f32")?,
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
-            attn_decode_lanes: [
-                kv_variants(
-                    ctx,
-                    &format!("#define GQA_G 1\n{DECODE_ATTENTION}"),
-                    "attn_decode_lanes",
-                )?,
-                kv_variants(
-                    ctx,
-                    &format!("#define GQA_G 2\n{DECODE_ATTENTION}"),
-                    "attn_decode_lanes",
-                )?,
-                kv_variants(
-                    ctx,
-                    &format!("#define GQA_G 4\n{DECODE_ATTENTION}"),
-                    "attn_decode_lanes",
-                )?,
-                kv_variants(
-                    ctx,
-                    &format!("#define GQA_G 8\n{DECODE_ATTENTION}"),
-                    "attn_decode_lanes",
-                )?,
-            ],
+            attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
+            flash_attn_gqa: gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
                 ctx.pipeline(KV, "store_kv_f16")?,
@@ -513,7 +505,7 @@ impl Kernels {
 
     /// Atención de decode "una lane por clave": cada simdgroup atiende un tramo de claves para
     /// todas las cabezas de query de un grupo GQA, leyendo K y V una vez por grupo. El grupo
-    /// (`hq / hkv`) tiene que estar en [`DECODE_LANES_GROUPS`] (ver [`decode_lanes_supports`]).
+    /// (`hq / hkv`) tiene que estar en [`GQA_GROUPS`] (ver [`gqa_supported`]).
     /// Mismo scratch y reducción que `decode_attention`.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_attention_lanes<'a>(
@@ -541,10 +533,7 @@ impl Kernels {
             partials.len() >= decode_partials_len(hq, lk),
             "scratch de decode chico"
         );
-        let gi = DECODE_LANES_GROUPS
-            .iter()
-            .position(|&g| hq % hkv == 0 && g == hq / hkv)
-            .expect("decode_attention_lanes: grupo GQA no compilado");
+        let gi = gqa_index(hq, hkv).expect("decode_attention_lanes: grupo GQA no compilado");
         let scale = 1.0 / (dim as f32).sqrt();
         cmd.dispatch_groups(
             &self.attn_decode_lanes[gi][kv.idx()],
@@ -591,6 +580,26 @@ impl Kernels {
         assert_eq!(dim, 128, "flash_attention requiere head_dim 128");
         assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
         let scale = 1.0 / (dim as f32).sqrt();
+        if let Some(gi) = gqa_index(hq, hkv) {
+            // Variante GQA: FA_ROWS filas (FA_ROWS / grupo queries × grupo cabezas) por threadgroup.
+            let qt = FA_ROWS / GQA_GROUPS[gi];
+            cmd.dispatch_groups(
+                &self.flash_attn_gqa[gi][kv.idx()],
+                &[
+                    q,
+                    k,
+                    v,
+                    o,
+                    Arg::u32(tokens as u32),
+                    Arg::u32(hkv as u32),
+                    Arg::u32(pos0 as u32),
+                    Arg::f32(scale),
+                ],
+                [groups(tokens, qt), hkv, 1],
+                [128, 1, 1],
+            );
+            return;
+        }
         cmd.dispatch_groups(
             &self.flash_attn[kv.idx()],
             &[
@@ -662,12 +671,21 @@ impl Kernels {
     }
 }
 
-/// Tamaños de grupo GQA (`hq / hkv`) para los que se compila `decode_attention_lanes`.
-pub const DECODE_LANES_GROUPS: [usize; 4] = [1, 2, 4, 8];
+/// Tamaños de grupo GQA (`hq / hkv`) para los que se compilan `decode_attention_lanes` y la
+/// variante GQA de `flash_attention`.
+pub const GQA_GROUPS: [usize; 4] = [1, 2, 4, 8];
 
-/// Si `decode_attention_lanes` sirve para `hq` cabezas de query y `hkv` de KV.
-pub fn decode_lanes_supports(hq: usize, hkv: usize) -> bool {
-    hq % hkv == 0 && DECODE_LANES_GROUPS.contains(&(hq / hkv))
+/// Si hay kernels compilados para el grupo GQA de `hq` cabezas de query y `hkv` de KV.
+pub fn gqa_supported(hq: usize, hkv: usize) -> bool {
+    gqa_index(hq, hkv).is_some()
+}
+
+/// Índice en [`GQA_GROUPS`] del grupo de `hq / hkv`.
+fn gqa_index(hq: usize, hkv: usize) -> Option<usize> {
+    if hkv == 0 || hq % hkv != 0 {
+        return None;
+    }
+    GQA_GROUPS.iter().position(|&g| g == hq / hkv)
 }
 
 /// Simdgroups (tramos) por threadgroup de `decode_attention_lanes` (`SG_PER_TG` en MSL).
@@ -681,8 +699,12 @@ pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
     hq * lk.div_ceil(DECODE_CHUNK) * 130
 }
 
+/// Filas (queries × cabezas del grupo) por threadgroup de la variante GQA de `flash_attention`
+/// (`FA_ROWS` en MSL).
+const FA_ROWS: usize = 16;
+
 /// Alineación (en posiciones) que necesita la KV cache para `flash_attention`.
-pub const KV_ALIGN: usize = 32;
+pub const KV_ALIGN: usize = 64;
 
 /// Forma de una llamada de atención.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

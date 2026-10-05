@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use brasa_kernels::{
-    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_lanes_supports,
-    decode_partials_len,
+    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_partials_len,
+    gqa_supported,
 };
 use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
@@ -474,7 +474,7 @@ impl Qwen3 {
             kv: kvt,
         };
         let (kc, vc) = self.kv.args(layer_off);
-        if tokens == 1 && decode_lanes_supports(c.heads, c.kv_heads) {
+        if tokens == 1 && gqa_supported(c.heads, c.kv_heads) {
             k.decode_attention_lanes(
                 cmd,
                 Arg::buf(&ws.q),

@@ -193,7 +193,7 @@ fn main() {
         let keys_seen = (tokens * pos0 + tokens * (tokens + 1) / 2) as f64;
         let flops = 4.0 * (hq * hd) as f64 * keys_seen;
         let q = ctx.buffer_from(&rng.vec(tokens * hq * hd, 1.0)).unwrap();
-        let cap = lk.next_multiple_of(32);
+        let cap = lk.next_multiple_of(brasa_kernels::KV_ALIGN);
         let (kv_k, kv_v) = (rng.vec(cap * hkv * hd, 1.0), rng.vec(cap * hkv * hd, 1.0));
         let o = ctx.buffer::<f32>(tokens * hq * hd).unwrap();
         let shape = AttnShape {
