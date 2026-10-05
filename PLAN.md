@@ -164,6 +164,15 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   - q/k/v en un dispatch y gate/up/SwiGLU en otro: 20,97 → 20,48 ms.
 
   Mejor corrida A/B a 2K: 47,2 tok/s (pared 21,2 ms). Faltan ~1,5 ms para 50,8.
+
+  Atención de decode (`attn_decode_lanes`): tenía ~60 µs fijos por capa porque cada lane leía K
+  y V de a una fila y pagaba la latencia de memoria en serie (`attn_decode_sweep`: 93 µs con 128
+  claves). Con las lecturas de K y de V agrupadas de a 4 antes de los productos, mismos bits
+  (T1.6 idéntico en f32, f16 y q8_0):
+  - por capa, f16: 2K 148 → 103 µs, 16K 777 → 564 µs; q8_0: 2K 165 → 110 µs, 16K 783 → 590 µs;
+  - A/B del modelo, 4 rondas alternadas: a 2K (f16) 47,1 → 50,5 tok/s (pared 21,24 → 19,82 ms);
+    a 16K (q8_0) 22,9 → 26,1 tok/s.
+  Quedan ~0,1 ms para 50,8 a 2K; la cifra final se mide en T3.6 con la máquina liviana.
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
 
