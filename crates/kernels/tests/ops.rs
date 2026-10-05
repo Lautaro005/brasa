@@ -121,6 +121,7 @@ fn embed_q8_0_exacto() {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Path {
     Gemv,
+    GemvSimple,
     Naive,
     Tiled,
 }
@@ -146,6 +147,7 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
     let mut cmd = ctx.command().unwrap();
     match path {
         Path::Gemv => k.gemv(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
+        Path::GemvSimple => k.gemv_simple(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
         Path::Naive => k.gemm_naive(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
         Path::Tiled => k.gemm(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
     }
@@ -164,14 +166,14 @@ fn matmul_q4_0_y_q8_0() {
     // (filas, columnas): q/o proj, gate/up, down, y una forma chica (sin tiled: 5 % 64 != 0).
     for (rows, cols) in [(4096, 2560), (9728, 2560), (2560, 9728), (5, 64)] {
         for tokens in [1, 3] {
-            for path in [Path::Gemv, Path::Naive, Path::Tiled] {
+            for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
                 worst = worst.max(check_matmul(WeightType::Q4_0, path, rows, cols, tokens));
             }
         }
     }
     // lm_head q8_0 (filas reducidas para que el test sea rápido) y una forma chica.
     for (rows, cols) in [(8192, 2560), (6, 32)] {
-        for path in [Path::Gemv, Path::Naive, Path::Tiled] {
+        for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
             worst = worst.max(check_matmul(WeightType::Q8_0, path, rows, cols, 2));
         }
     }

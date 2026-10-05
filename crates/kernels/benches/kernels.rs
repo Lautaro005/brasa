@@ -124,6 +124,15 @@ fn main() {
             cols,
         };
         let wbytes = (rows * cols) as f64 * 18.0 / 32.0;
+        let t = time(&ctx, |c| {
+            k.gemv_simple(c, m, Arg::buf(&x), Arg::buf(&out), 1)
+        });
+        report(
+            &format!("gemv_simple_q4_0 {name} {rows}×{cols} T=1"),
+            t,
+            wbytes,
+            2.0 * (rows * cols) as f64,
+        );
         let t = time(&ctx, |c| k.gemv(c, m, Arg::buf(&x), Arg::buf(&out), 1));
         report(
             &format!("gemv_q4_0 {name} {rows}×{cols} T=1"),
@@ -148,6 +157,15 @@ fn main() {
             2.0 * 512.0 * (rows * cols) as f64,
         );
     }
+    let t = time(&ctx, |c| {
+        k.gemv_simple(c, emb_m, Arg::buf(&x), Arg::buf(&out), 1)
+    });
+    report(
+        "gemv_simple_q8_0 lm_head 151936×2560 T=1",
+        t,
+        (vocab * h) as f64 * 34.0 / 32.0,
+        2.0 * (vocab * h) as f64,
+    );
     let t = time(&ctx, |c| k.gemv(c, emb_m, Arg::buf(&x), Arg::buf(&out), 1));
     report(
         "gemv_q8_0 lm_head 151936×2560 T=1",
@@ -223,6 +241,23 @@ fn main() {
             });
             report(
                 &format!("decode_attention T=1 ctx={lk}"),
+                t,
+                2.0 * 4.0 * (lk * hkv * hd) as f64,
+                4.0 * (hq * lk * hd) as f64,
+            );
+            let t = time(&ctx, |c| {
+                k.decode_attention_gqa(
+                    c,
+                    Arg::buf(&q),
+                    Arg::buf(&kc),
+                    Arg::buf(&vc),
+                    &part,
+                    Arg::buf(&o),
+                    shape,
+                )
+            });
+            report(
+                &format!("decode_attention_gqa T=1 ctx={lk}"),
                 t,
                 2.0 * 4.0 * (lk * hkv * hd) as f64,
                 4.0 * (hq * lk * hd) as f64,

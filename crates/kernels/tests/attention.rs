@@ -107,6 +107,53 @@ fn decode_attention_gqa() {
 }
 
 #[test]
+fn decode_attention_gqa_compartida() {
+    let ctx = Context::new().unwrap();
+    let k = Kernels::new(&ctx).unwrap();
+    let mut rng = Rng::new(23);
+    let (hq, hkv, dim) = (32, 8, 128);
+    let mut worst = 0f32;
+    // Contextos con tramos parciales, exactos y muchos tramos.
+    for pos0 in [0usize, 1, 255, 256, 700, 4095, 16383] {
+        let lk = pos0 + 1;
+        let q = rng.vec(hq * dim, 2.0);
+        let kc = rng.vec(lk * hkv * dim, 2.0);
+        let vc = rng.vec(lk * hkv * dim, 3.0);
+        let (expected, vmax) = reference::attention(&q, &kc, &vc, 1, hq, hkv, dim, pos0);
+        let gq = ctx.buffer_from(&q).unwrap();
+        let gk = ctx.buffer_from(&kc).unwrap();
+        let gv = ctx.buffer_from(&vc).unwrap();
+        let part = ctx
+            .buffer::<f32>(brasa_kernels::decode_partials_len(hq, lk))
+            .unwrap();
+        let mut o = ctx.buffer::<f32>(hq * dim).unwrap();
+        let shape = AttnShape {
+            tokens: 1,
+            hq,
+            hkv,
+            dim,
+            pos0,
+        };
+        let mut cmd = ctx.command().unwrap();
+        k.decode_attention_gqa(
+            &mut cmd,
+            Arg::buf(&gq),
+            Arg::buf(&gk),
+            Arg::buf(&gv),
+            &part,
+            Arg::buf(&o),
+            shape,
+        );
+        cmd.commit_and_wait().unwrap();
+        for ((g, e), m) in o.as_mut_slice().iter().zip(&expected).zip(&vmax) {
+            worst = worst.max((g - e).abs() / m.max(1e-30));
+        }
+    }
+    eprintln!("decode attention GQA compartida: error máximo / max|v| {worst:.2e}");
+    assert!(worst <= 1e-5, "{worst}");
+}
+
+#[test]
 fn atencion_gqa_causal() {
     let ctx = Context::new().unwrap();
     let k = Kernels::new(&ctx).unwrap();

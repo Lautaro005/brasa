@@ -10,7 +10,8 @@
 use std::path::Path;
 
 use brasa_kernels::{
-    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_partials_len,
+    AttnShape, DECODE_GQA_MIN_KEYS, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType,
+    decode_partials_len,
 };
 use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
@@ -438,7 +439,17 @@ impl Qwen3 {
             Arg::buf_at(&self.kv.k, layer_off),
             Arg::buf_at(&self.kv.v, layer_off),
         );
-        if tokens == 1 {
+        if tokens == 1 && pos0 + 1 >= DECODE_GQA_MIN_KEYS {
+            k.decode_attention_gqa(
+                cmd,
+                Arg::buf(&ws.q),
+                kc,
+                vc,
+                &ws.partials,
+                Arg::buf(&ws.attn),
+                shape,
+            );
+        } else if tokens == 1 {
             k.decode_attention(
                 cmd,
                 Arg::buf(&ws.q),

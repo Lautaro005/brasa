@@ -70,11 +70,14 @@ pub struct Kernels {
     gemm_q8_0: Pipeline,
     attn_scores_f32: Pipeline,
     attn_pv_f32: Pipeline,
+    gemv_fast_q4_0: Pipeline,
+    gemv_fast_q8_0: Pipeline,
     gemm_tiled_q4_0: Pipeline,
     gemm_tiled_q8_0: Pipeline,
     flash_attn_f32: Pipeline,
     attn_decode_partial: Pipeline,
     attn_decode_reduce: Pipeline,
+    attn_decode_gqa_partial: Pipeline,
 }
 
 fn groups(n: usize, per: usize) -> usize {
@@ -97,11 +100,14 @@ impl Kernels {
             gemm_q8_0: ctx.pipeline(MATMUL, "gemm_q8_0_f32")?,
             attn_scores_f32: ctx.pipeline(ATTENTION, "attn_scores_f32")?,
             attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
+            gemv_fast_q4_0: ctx.pipeline(MATMUL, "gemv_fast_q4_0_f32")?,
+            gemv_fast_q8_0: ctx.pipeline(MATMUL, "gemv_fast_q8_0_f32")?,
             gemm_tiled_q4_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
             gemm_tiled_q8_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
             flash_attn_f32: ctx.pipeline(FLASH_ATTENTION, "flash_attn_f32")?,
             attn_decode_partial: ctx.pipeline(DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_reduce: ctx.pipeline(DECODE_ATTENTION, "attn_decode_reduce")?,
+            attn_decode_gqa_partial: ctx.pipeline(DECODE_ATTENTION, "attn_decode_gqa_partial")?,
         })
     }
 
@@ -240,8 +246,39 @@ impl Kernels {
         );
     }
 
-    /// GEMV: `y[t, :] = W · x[t, :]` para `t < tokens`, un simdgroup por fila (decode, T chico).
+    /// GEMV para decode: `y[t, :] = W · x[t, :]` para `t < tokens` (T chico). Usa la versión de
+    /// 4 filas por simdgroup si `rows % 8 == 0`; si no, la simple.
     pub fn gemv<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: QMatrix<'a>,
+        x: Arg<'a>,
+        y: Arg<'a>,
+        tokens: usize,
+    ) {
+        if w.rows % 8 != 0 {
+            return self.gemv_simple(cmd, w, x, y, tokens);
+        }
+        let p = match w.qtype {
+            WeightType::Q4_0 => &self.gemv_fast_q4_0,
+            WeightType::Q8_0 => &self.gemv_fast_q8_0,
+        };
+        cmd.dispatch_groups(
+            p,
+            &[
+                Arg::buf(w.data),
+                x,
+                y,
+                Arg::u32(w.rows as u32),
+                Arg::u32(w.cols as u32),
+            ],
+            [w.rows / 8, tokens, 1],
+            [64, 1, 1],
+        );
+    }
+
+    /// GEMV simple: un simdgroup por fila (respaldo y referencia de rendimiento).
+    pub fn gemv_simple<'a>(
         &self,
         cmd: &mut Command<'a>,
         w: QMatrix<'a>,
@@ -378,6 +415,62 @@ impl Kernels {
         );
     }
 
+    /// Atención de decode compartiendo K/V entre las cabezas de query de cada grupo GQA (una
+    /// lectura de la caché por grupo). Mismo scratch y misma reducción que `decode_attention`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_attention_gqa<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        q: Arg<'a>,
+        k: Arg<'a>,
+        v: Arg<'a>,
+        partials: &'a Buffer<f32>,
+        o: Arg<'a>,
+        shape: AttnShape,
+    ) {
+        let AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim,
+            pos0,
+        } = shape;
+        assert_eq!(tokens, 1, "decode_attention es para un token");
+        assert_eq!(dim, 128, "decode_attention requiere head_dim 128");
+        let lk = pos0 + 1;
+        assert!(
+            partials.len() >= decode_partials_len(hq, lk),
+            "scratch de decode chico"
+        );
+        let scale = 1.0 / (dim as f32).sqrt();
+        let group = hq / hkv;
+        assert!(
+            hq % hkv == 0 && group <= 8,
+            "decode_attention_gqa: grupo de 1 a 8 cabezas"
+        );
+        cmd.dispatch_groups(
+            &self.attn_decode_gqa_partial,
+            &[
+                q,
+                k,
+                v,
+                Arg::buf(partials),
+                Arg::u32(hq as u32),
+                Arg::u32(hkv as u32),
+                Arg::u32(lk as u32),
+                Arg::f32(scale),
+            ],
+            [groups(lk, DECODE_CHUNK), hkv, 1],
+            [32 * group, 1, 1],
+        );
+        cmd.dispatch_groups(
+            &self.attn_decode_reduce,
+            &[Arg::buf(partials), o, Arg::u32(lk as u32)],
+            [hq, 1, 1],
+            [dim, 1, 1],
+        );
+    }
+
     /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes).
     /// `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN` posiciones
     /// más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
@@ -468,6 +561,10 @@ impl Kernels {
         );
     }
 }
+
+/// Desde cuántas claves conviene `decode_attention_gqa` sobre `decode_attention` (medido en
+/// M1 Pro: 1,8× a 16K, similar a 8K, 15 % más lenta a 2K).
+pub const DECODE_GQA_MIN_KEYS: usize = 4096;
 
 /// Claves por tramo de `decode_attention` (`CHUNK` en MSL).
 pub const DECODE_CHUNK: usize = 256;
