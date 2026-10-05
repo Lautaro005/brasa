@@ -15,7 +15,8 @@ presupuesto se compara.
 - `pesos`: suma de `nbytes` de los tensores del archivo.
 - `kv`: `2 · capas · ctx · kv_heads · head_dim · bytes_por_elemento` (f32 en la fase 1).
 - `workspace`: los buffers que reserva `Qwen3::load` (activaciones de un bloque de prefill,
-  scratch de puntajes de atención `bloque · cabezas · ctx`, logits, tabla RoPE `ctx · head_dim`).
+  logits, tabla RoPE `ctx · head_dim`). Con la atención tiled no hay scratch de puntajes; la KV
+  cache se reserva con capacidad alineada a 32 posiciones por capa.
   Un test compara esta fórmula con lo que el modelo reserva de verdad.
 - `overhead`: memoria del proceso fuera de esos buffers (tokenizer, runtime de Metal, binario,
   sampler). Constante medida (ver abajo) redondeada hacia arriba.

@@ -131,9 +131,18 @@ fn main() {
             wbytes,
             2.0 * (rows * cols) as f64,
         );
+        let t = time(&ctx, |c| {
+            k.gemm_naive(c, m, Arg::buf(&x), Arg::buf(&out), 512)
+        });
+        report(
+            &format!("gemm_naive_q4_0 {name} {rows}×{cols} T=512"),
+            t,
+            wbytes,
+            2.0 * 512.0 * (rows * cols) as f64,
+        );
         let t = time(&ctx, |c| k.gemm(c, m, Arg::buf(&x), Arg::buf(&out), 512));
         report(
-            &format!("gemm_q4_0 {name} {rows}×{cols} T=512"),
+            &format!("gemm_tiled_q4_0 {name} {rows}×{cols} T=512"),
             t,
             wbytes,
             2.0 * 512.0 * (rows * cols) as f64,
@@ -149,11 +158,18 @@ fn main() {
 
     // Atención simple (sin tiling): decode con distintos largos de contexto y un prefill corto.
     let (hq, hkv) = (32usize, 8usize);
-    for (tokens, pos0) in [(1usize, 2047usize), (1, 8191), (1, 16383), (64, 448)] {
+    for (tokens, pos0) in [
+        (1usize, 2047usize),
+        (1, 8191),
+        (1, 16383),
+        (64, 448),
+        (128, 1920),
+    ] {
         let lk = pos0 + tokens;
         let q = ctx.buffer_from(&rng.vec(tokens * hq * hd, 1.0)).unwrap();
-        let kc = ctx.buffer_from(&rng.vec(lk * hkv * hd, 1.0)).unwrap();
-        let vc = ctx.buffer_from(&rng.vec(lk * hkv * hd, 1.0)).unwrap();
+        let cap = lk.next_multiple_of(32);
+        let kc = ctx.buffer_from(&rng.vec(cap * hkv * hd, 1.0)).unwrap();
+        let vc = ctx.buffer_from(&rng.vec(cap * hkv * hd, 1.0)).unwrap();
         let scores = ctx.buffer::<f32>(tokens * hq * lk).unwrap();
         let o = ctx.buffer::<f32>(tokens * hq * hd).unwrap();
         let shape = AttnShape {
@@ -175,7 +191,45 @@ fn main() {
             )
         });
         report(
-            &format!("attention T={tokens} ctx={lk}"),
+            &format!("attention_simple T={tokens} ctx={lk}"),
+            t,
+            2.0 * 4.0 * (lk * hkv * hd) as f64,
+            4.0 * (tokens * hq * lk * hd) as f64,
+        );
+        let t = time(&ctx, |c| {
+            k.flash_attention(
+                c,
+                Arg::buf(&q),
+                Arg::buf(&kc),
+                Arg::buf(&vc),
+                Arg::buf(&o),
+                shape,
+            )
+        });
+        if tokens == 1 {
+            let part = ctx
+                .buffer::<f32>(brasa_kernels::decode_partials_len(hq, lk))
+                .unwrap();
+            let t = time(&ctx, |c| {
+                k.decode_attention(
+                    c,
+                    Arg::buf(&q),
+                    Arg::buf(&kc),
+                    Arg::buf(&vc),
+                    &part,
+                    Arg::buf(&o),
+                    shape,
+                )
+            });
+            report(
+                &format!("decode_attention T=1 ctx={lk}"),
+                t,
+                2.0 * 4.0 * (lk * hkv * hd) as f64,
+                4.0 * (hq * lk * hd) as f64,
+            );
+        }
+        report(
+            &format!("flash_attention T={tokens} ctx={lk}"),
             t,
             2.0 * 4.0 * (lk * hkv * hd) as f64,
             4.0 * (tokens * hq * lk * hd) as f64,

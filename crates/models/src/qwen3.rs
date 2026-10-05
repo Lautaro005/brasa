@@ -9,7 +9,9 @@
 
 use std::path::Path;
 
-use brasa_kernels::{AttnShape, Kernels, QMatrix, RopeTable, WeightType};
+use brasa_kernels::{
+    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_partials_len,
+};
 use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
 use brasa_quant::{BrasaFile, QType};
@@ -162,9 +164,10 @@ struct Workspace {
     attn: Buffer<f32>,
     gate: Buffer<f32>,
     up: Buffer<f32>,
-    scores: Buffer<f32>,
     ids: Buffer<u32>,
     norm_out: Buffer<f32>,
+    /// Parciales de la atención de decode (un token).
+    partials: Buffer<f32>,
     logits: Buffer<f32>,
 }
 
@@ -273,7 +276,8 @@ impl Qwen3 {
         let rope = RopeTable::new(ctx, cfg.rope_theta, cfg.head_dim, limits.ctx)?;
 
         let t = limits.max_tokens;
-        let kv_len = cfg.layers * limits.ctx * kvd;
+        // Capacidad por capa alineada para flash_attention (lee bloques de KV_ALIGN posiciones).
+        let kv_len = cfg.layers * limits.ctx.next_multiple_of(KV_ALIGN) * kvd;
         let ws = Workspace {
             x: ctx.buffer(t * h)?,
             h: ctx.buffer(t * h)?,
@@ -281,9 +285,9 @@ impl Qwen3 {
             attn: ctx.buffer(t * qd)?,
             gate: ctx.buffer(t * ffn)?,
             up: ctx.buffer(t * ffn)?,
-            scores: ctx.buffer(t * cfg.heads * limits.ctx)?,
             ids: ctx.buffer(t)?,
             norm_out: ctx.buffer(t * h)?,
+            partials: ctx.buffer(decode_partials_len(cfg.heads, limits.ctx))?,
             logits: ctx.buffer(limits.max_logit_rows * cfg.vocab)?,
         };
         Ok(Self {
@@ -323,9 +327,9 @@ impl Qwen3 {
             + b(&w.attn)
             + b(&w.gate)
             + b(&w.up)
-            + b(&w.scores)
             + b(&w.ids)
             + b(&w.norm_out)
+            + b(&w.partials)
             + b(&w.logits)
             + b(&self.rope.cos)
             + b(&self.rope.sin);
@@ -358,8 +362,9 @@ impl Qwen3 {
         let (k, ws, l) = (&self.kernels, &self.ws, &self.layers[li]);
         let kvd = c.kv_dim();
         // Vista de la caché de esta capa desde la posición pos0.
-        let kv_off = (li * self.limits.ctx + pos0) * kvd;
-        let layer_off = li * self.limits.ctx * kvd;
+        let cap = self.limits.ctx.next_multiple_of(KV_ALIGN);
+        let kv_off = (li * cap + pos0) * kvd;
+        let layer_off = li * cap * kvd;
 
         k.rms_norm(
             cmd,
@@ -422,21 +427,30 @@ impl Qwen3 {
             c.head_dim,
             pos0,
         );
-        k.attention(
-            cmd,
-            Arg::buf(&ws.q),
+        let shape = AttnShape {
+            tokens,
+            hq: c.heads,
+            hkv: c.kv_heads,
+            dim: c.head_dim,
+            pos0,
+        };
+        let (kc, vc) = (
             Arg::buf_at(&self.kv.k, layer_off),
             Arg::buf_at(&self.kv.v, layer_off),
-            &ws.scores,
-            Arg::buf(&ws.attn),
-            AttnShape {
-                tokens,
-                hq: c.heads,
-                hkv: c.kv_heads,
-                dim: c.head_dim,
-                pos0,
-            },
         );
+        if tokens == 1 {
+            k.decode_attention(
+                cmd,
+                Arg::buf(&ws.q),
+                kc,
+                vc,
+                &ws.partials,
+                Arg::buf(&ws.attn),
+                shape,
+            );
+        } else {
+            k.flash_attention(cmd, Arg::buf(&ws.q), kc, vc, Arg::buf(&ws.attn), shape);
+        }
         self.matmul(cmd, &l.wo, Arg::buf(&ws.attn), Arg::buf(&ws.h), tokens);
         k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
 

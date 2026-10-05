@@ -118,7 +118,14 @@ fn embed_q8_0_exacto() {
     assert_eq!(out.as_mut_slice(), expected.as_slice());
 }
 
-fn check_matmul(qtype: WeightType, gemm: bool, rows: usize, cols: usize, tokens: usize) -> f32 {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Path {
+    Gemv,
+    Naive,
+    Tiled,
+}
+
+fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens: usize) -> f32 {
     let (ctx, k) = setup();
     let mut rng = Rng::new((rows * 31 + cols + tokens) as u64);
     let (w, q) = match qtype {
@@ -137,10 +144,10 @@ fn check_matmul(qtype: WeightType, gemm: bool, rows: usize, cols: usize, tokens:
         cols,
     };
     let mut cmd = ctx.command().unwrap();
-    if gemm {
-        k.gemm(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens);
-    } else {
-        k.gemv(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens);
+    match path {
+        Path::Gemv => k.gemv(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
+        Path::Naive => k.gemm_naive(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
+        Path::Tiled => k.gemm(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
     }
     cmd.commit_and_wait().unwrap();
     y.as_mut_slice()
@@ -154,21 +161,44 @@ fn check_matmul(qtype: WeightType, gemm: bool, rows: usize, cols: usize, tokens:
 #[test]
 fn matmul_q4_0_y_q8_0() {
     let mut worst = 0f32;
-    // (filas, columnas, tokens): q/o proj, gate/up, down, y una forma chica no múltiplo de 4.
+    // (filas, columnas): q/o proj, gate/up, down, y una forma chica (sin tiled: 5 % 64 != 0).
     for (rows, cols) in [(4096, 2560), (9728, 2560), (2560, 9728), (5, 64)] {
         for tokens in [1, 3] {
-            for gemm in [false, true] {
-                let e = check_matmul(WeightType::Q4_0, gemm, rows, cols, tokens);
-                worst = worst.max(e);
+            for path in [Path::Gemv, Path::Naive, Path::Tiled] {
+                worst = worst.max(check_matmul(WeightType::Q4_0, path, rows, cols, tokens));
             }
         }
     }
     // lm_head q8_0 (filas reducidas para que el test sea rápido) y una forma chica.
     for (rows, cols) in [(8192, 2560), (6, 32)] {
-        for gemm in [false, true] {
-            worst = worst.max(check_matmul(WeightType::Q8_0, gemm, rows, cols, 2));
+        for path in [Path::Gemv, Path::Naive, Path::Tiled] {
+            worst = worst.max(check_matmul(WeightType::Q8_0, path, rows, cols, 2));
         }
     }
     eprintln!("matmul: error máximo / Σ|w·x| {worst:.2e}");
+    assert!(worst <= 1e-5, "{worst}");
+}
+
+#[test]
+fn gemm_tiled_bordes_de_tokens() {
+    // Tokens que no son múltiplo del bloque de 32 y bloques completos.
+    let mut worst = 0f32;
+    for tokens in [31, 32, 33, 70, 128] {
+        worst = worst.max(check_matmul(
+            WeightType::Q4_0,
+            Path::Tiled,
+            1024,
+            2560,
+            tokens,
+        ));
+        worst = worst.max(check_matmul(
+            WeightType::Q8_0,
+            Path::Tiled,
+            512,
+            2560,
+            tokens,
+        ));
+    }
+    eprintln!("gemm tiled (bordes): error máximo / Σ|w·x| {worst:.2e}");
     assert!(worst <= 1e-5, "{worst}");
 }

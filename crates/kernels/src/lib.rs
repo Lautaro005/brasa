@@ -27,6 +27,9 @@ pub mod sources {
     pub const EMBED: &str = include_str!("metal/embed.metal");
     pub const MATMUL: &str = include_str!("metal/matmul.metal");
     pub const ATTENTION: &str = include_str!("metal/attention.metal");
+    pub const MATMUL_TILED: &str = include_str!("metal/matmul_tiled.metal");
+    pub const FLASH_ATTENTION: &str = include_str!("metal/flash_attention.metal");
+    pub const DECODE_ATTENTION: &str = include_str!("metal/decode_attention.metal");
 }
 
 /// Hilos por threadgroup para kernels elemento a elemento.
@@ -67,6 +70,11 @@ pub struct Kernels {
     gemm_q8_0: Pipeline,
     attn_scores_f32: Pipeline,
     attn_pv_f32: Pipeline,
+    gemm_tiled_q4_0: Pipeline,
+    gemm_tiled_q8_0: Pipeline,
+    flash_attn_f32: Pipeline,
+    attn_decode_partial: Pipeline,
+    attn_decode_reduce: Pipeline,
 }
 
 fn groups(n: usize, per: usize) -> usize {
@@ -89,6 +97,11 @@ impl Kernels {
             gemm_q8_0: ctx.pipeline(MATMUL, "gemm_q8_0_f32")?,
             attn_scores_f32: ctx.pipeline(ATTENTION, "attn_scores_f32")?,
             attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
+            gemm_tiled_q4_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
+            gemm_tiled_q8_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
+            flash_attn_f32: ctx.pipeline(FLASH_ATTENTION, "flash_attn_f32")?,
+            attn_decode_partial: ctx.pipeline(DECODE_ATTENTION, "attn_decode_partial")?,
+            attn_decode_reduce: ctx.pipeline(DECODE_ATTENTION, "attn_decode_reduce")?,
         })
     }
 
@@ -254,8 +267,40 @@ impl Kernels {
         );
     }
 
-    /// GEMM simple: `y[t, :] = W · x[t, :]`, un hilo por salida (prefill; sin tiling todavía).
+    /// GEMM para prefill: `y[t, :] = W · x[t, :]`. Usa el kernel tiled (simdgroup matrix) si
+    /// `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple.
     pub fn gemm<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: QMatrix<'a>,
+        x: Arg<'a>,
+        y: Arg<'a>,
+        tokens: usize,
+    ) {
+        if w.rows % 64 != 0 || w.cols % 32 != 0 {
+            return self.gemm_naive(cmd, w, x, y, tokens);
+        }
+        let p = match w.qtype {
+            WeightType::Q4_0 => &self.gemm_tiled_q4_0,
+            WeightType::Q8_0 => &self.gemm_tiled_q8_0,
+        };
+        cmd.dispatch_groups(
+            p,
+            &[
+                Arg::buf(w.data),
+                x,
+                y,
+                Arg::u32(w.rows as u32),
+                Arg::u32(w.cols as u32),
+                Arg::u32(tokens as u32),
+            ],
+            [w.rows / 64, groups(tokens, 32), 1],
+            [128, 1, 1],
+        );
+    }
+
+    /// GEMM simple: un hilo por salida, sin tiling (referencia de rendimiento y respaldo).
+    pub fn gemm_naive<'a>(
         &self,
         cmd: &mut Command<'a>,
         w: QMatrix<'a>,
@@ -278,6 +323,98 @@ impl Kernels {
             ],
             [w.rows, tokens, 1],
             [64, 1, 1],
+        );
+    }
+
+    /// Atención de decode (un token en la posición `pos0`) con las claves repartidas en tramos
+    /// de `DECODE_CHUNK`. `partials` debe tener al menos `decode_partials_len(hq, pos0 + 1)`
+    /// floats. `head_dim` debe ser 128.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_attention<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        q: Arg<'a>,
+        k: Arg<'a>,
+        v: Arg<'a>,
+        partials: &'a Buffer<f32>,
+        o: Arg<'a>,
+        shape: AttnShape,
+    ) {
+        let AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim,
+            pos0,
+        } = shape;
+        assert_eq!(tokens, 1, "decode_attention es para un token");
+        assert_eq!(dim, 128, "decode_attention requiere head_dim 128");
+        let lk = pos0 + 1;
+        assert!(
+            partials.len() >= decode_partials_len(hq, lk),
+            "scratch de decode chico"
+        );
+        let scale = 1.0 / (dim as f32).sqrt();
+        cmd.dispatch_groups(
+            &self.attn_decode_partial,
+            &[
+                q,
+                k,
+                v,
+                Arg::buf(partials),
+                Arg::u32(hq as u32),
+                Arg::u32(hkv as u32),
+                Arg::u32(lk as u32),
+                Arg::f32(scale),
+            ],
+            [groups(lk, DECODE_CHUNK), hq, 1],
+            [128, 1, 1],
+        );
+        cmd.dispatch_groups(
+            &self.attn_decode_reduce,
+            &[Arg::buf(partials), o, Arg::u32(lk as u32)],
+            [hq, 1, 1],
+            [dim, 1, 1],
+        );
+    }
+
+    /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes).
+    /// `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN` posiciones
+    /// más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
+    pub fn flash_attention<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        q: Arg<'a>,
+        k: Arg<'a>,
+        v: Arg<'a>,
+        o: Arg<'a>,
+        shape: AttnShape,
+    ) {
+        let AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim,
+            pos0,
+        } = shape;
+        assert_eq!(dim, 128, "flash_attention requiere head_dim 128");
+        assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
+        let scale = 1.0 / (dim as f32).sqrt();
+        cmd.dispatch_groups(
+            &self.flash_attn_f32,
+            &[
+                q,
+                k,
+                v,
+                o,
+                Arg::u32(tokens as u32),
+                Arg::u32(hq as u32),
+                Arg::u32(hkv as u32),
+                Arg::u32(pos0 as u32),
+                Arg::f32(scale),
+            ],
+            [groups(tokens, 32), hq, 1],
+            [128, 1, 1],
         );
     }
 
@@ -331,6 +468,17 @@ impl Kernels {
         );
     }
 }
+
+/// Claves por tramo de `decode_attention` (`CHUNK` en MSL).
+pub const DECODE_CHUNK: usize = 256;
+
+/// Floats del scratch de parciales de `decode_attention` para `hq` cabezas y `lk` claves.
+pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
+    hq * lk.div_ceil(DECODE_CHUNK) * 130
+}
+
+/// Alineación (en posiciones) que necesita la KV cache para `flash_attention`.
+pub const KV_ALIGN: usize = 32;
 
 /// Forma de una llamada de atención.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

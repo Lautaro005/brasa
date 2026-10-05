@@ -10,6 +10,10 @@ pub const BUDGET_HEADROOM: u64 = 512 * MIB;
 /// Memoria del proceso fuera de los buffers planificados (tokenizer, runtime de Metal, binario,
 /// sampler). Medida en T1.8 y redondeada hacia arriba (ver tests de brasa-models).
 pub const PROCESS_OVERHEAD: u64 = 256 * MIB;
+/// Alineación de la capacidad de la KV cache por capa (`brasa_kernels::KV_ALIGN`).
+pub const KV_ALIGN: usize = 32;
+/// Claves por tramo de la atención de decode (`brasa_kernels::DECODE_CHUNK`).
+pub const DECODE_CHUNK: usize = 256;
 /// Granularidad del contexto elegido automáticamente.
 pub const CTX_STEP: usize = 256;
 
@@ -59,14 +63,15 @@ pub fn workspace_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
     3 * f(t * h) // x, h, norm_out
         + 2 * f(t * qd) // q, attn
         + 2 * f(t * m.ffn) // gate, up
-        + f(t * m.heads * s.ctx) // puntajes de atención
         + f(t) // ids
+        + f(m.heads * s.ctx.div_ceil(DECODE_CHUNK) * (m.head_dim + 2)) // parciales de decode
         + f(s.max_logit_rows * m.vocab) // logits
         + 2 * f(s.ctx * m.head_dim / 2) // tabla RoPE cos y sin
 }
 
 pub fn kv_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
-    2 * buffer_bytes((m.layers * s.ctx * m.kv_heads * m.head_dim * s.kv_elem_bytes) as u64)
+    let cap = s.ctx.next_multiple_of(KV_ALIGN);
+    2 * buffer_bytes((m.layers * cap * m.kv_heads * m.head_dim * s.kv_elem_bytes) as u64)
 }
 
 pub fn plan(m: &ModelShape, s: &SessionShape) -> MemoryPlan {
