@@ -12,6 +12,9 @@ Estado: aceptada (T1.1)
 - **Math mode `Safe` por defecto** (sin fast-math): la equivalencia contra la referencia CPU es
   el criterio de entrada de cada kernel. Un kernel puede pedir fast-math solo si su test de
   equivalencia sigue pasando con la tolerancia documentada.
+- **Funciones trascendentes con `precise::`** (`precise::exp`, `precise::sqrt`, ...). Medido en
+  M1 Pro durante T1.4: aun con math mode `Safe`, `exp` da 1,07e-6 de error relativo (~18 ULP) en
+  SwiGLU; `precise::exp` da 2,4e-7 (~4 ULP).
 - **Buffers `Shared`** (memoria unificada, accesibles desde CPU sin copias), tipados por
   elemento (`Buffer<T>`), con seguimiento de hazards de Metal activado. Se revisa en la fase 3.
 - **`Command<'a>`**: un command buffer con un único compute encoder serial. Toma prestados los

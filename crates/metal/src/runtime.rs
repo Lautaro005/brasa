@@ -253,21 +253,44 @@ impl Context {
 /// Argumento de un dispatch, en el índice dado por su posición.
 #[derive(Debug, Clone, Copy)]
 pub enum Arg<'a> {
-    /// Buffer completo (offset 0).
-    Buf(&'a MtlBuffer),
-    /// Constantes pequeñas pasadas por valor (`setBytes`, hasta 4 KiB).
-    Bytes(&'a [u8]),
+    /// Buffer desde un offset en bytes.
+    Buf(&'a MtlBuffer, usize),
+    /// Constante pequeña copiada en el argumento (`setBytes`), sin asignar memoria.
+    Inline([u8; INLINE_MAX], usize),
 }
+
+/// Tamaño máximo de una constante `Inline`.
+pub const INLINE_MAX: usize = 32;
 
 impl<'a> Arg<'a> {
     pub fn buf<T: Element>(b: &'a Buffer<T>) -> Self {
-        Arg::Buf(b.raw())
+        Arg::Buf(b.raw(), 0)
     }
 
-    /// Valor plano pasado por `setBytes` (por ejemplo, un `u32` con un tamaño).
-    pub fn value<T: Element>(v: &'a T) -> Self {
-        // SAFETY: T es un tipo plano; se reinterpreta como bytes de solo lectura.
-        Arg::Bytes(unsafe { std::slice::from_raw_parts((v as *const T).cast(), size_of::<T>()) })
+    /// Buffer a partir del elemento `elem` (vista sin copia, por ejemplo una capa del KV).
+    pub fn buf_at<T: Element>(b: &'a Buffer<T>, elem: usize) -> Self {
+        assert!(elem <= b.len(), "offset fuera del buffer");
+        Arg::Buf(b.raw(), elem * size_of::<T>())
+    }
+
+    /// Valor plano copiado en el argumento (por ejemplo, un `u32` con un tamaño).
+    pub fn value<T: Element>(v: T) -> Self {
+        let n = size_of::<T>();
+        assert!(n <= INLINE_MAX, "constante demasiado grande para Inline");
+        let mut bytes = [0u8; INLINE_MAX];
+        // SAFETY: T es un tipo plano de `n` bytes; se copia a un arreglo de al menos `n` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping((&raw const v).cast::<u8>(), bytes.as_mut_ptr(), n)
+        };
+        Arg::Inline(bytes, n)
+    }
+
+    pub fn u32(v: u32) -> Self {
+        Self::value(v)
+    }
+
+    pub fn f32(v: f32) -> Self {
+        Self::value(v)
     }
 }
 
@@ -333,15 +356,17 @@ impl<'a> Command<'a> {
     fn bind(&mut self, args: &[Arg<'a>]) {
         for (i, arg) in args.iter().enumerate() {
             match arg {
-                // SAFETY: buffer vivo durante 'a, índice dentro de los 31 slots de Metal.
-                Arg::Buf(b) => unsafe { self.encoder.setBuffer_offset_atIndex(Some(b), 0, i) },
-                Arg::Bytes(bytes) => {
-                    assert!(bytes.len() <= 4096, "setBytes admite hasta 4 KiB");
-                    // SAFETY: Metal copia los bytes durante la llamada.
+                // SAFETY: buffer vivo durante 'a, offset dentro del buffer, índice dentro de los
+                // 31 slots de Metal.
+                Arg::Buf(b, off) => unsafe {
+                    self.encoder.setBuffer_offset_atIndex(Some(b), *off, i)
+                },
+                Arg::Inline(bytes, n) => {
+                    // SAFETY: Metal copia los `n` bytes durante la llamada.
                     unsafe {
                         self.encoder.setBytes_length_atIndex(
                             NonNull::new(bytes.as_ptr().cast_mut().cast()).unwrap(),
-                            bytes.len(),
+                            *n,
                             i,
                         )
                     }
@@ -394,7 +419,7 @@ kernel void fill(device float* out [[buffer(0)]], constant float& v [[buffer(1)]
         let mut cmd = ctx.command().unwrap();
         cmd.dispatch(
             &p1,
-            &[Arg::buf(&out), Arg::value(&v)],
+            &[Arg::buf(&out), Arg::f32(v)],
             [1000, 1, 1],
             [256, 1, 1],
         );

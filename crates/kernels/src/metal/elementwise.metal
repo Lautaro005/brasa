@@ -12,3 +12,15 @@ kernel void add_f32(device const float* a   [[buffer(0)]],
         out[i] = a[i] + b[i];
     }
 }
+
+// SwiGLU: out[i] = silu(gate[i]) * up[i], con silu(x) = x / (1 + e^-x).
+kernel void swiglu_f32(device const float* gate [[buffer(0)]],
+                       device const float* up   [[buffer(1)]],
+                       device float*       out  [[buffer(2)]],
+                       constant uint&      n    [[buffer(3)]],
+                       uint i [[thread_position_in_grid]]) {
+    if (i < n) {
+        float g = gate[i];
+        out[i] = (g / (1.0f + precise::exp(-g))) * up[i];
+    }
+}
