@@ -143,6 +143,9 @@ pub struct Kernels {
     gemv_q6_0: Pipeline,
     gemm_q6_0: Pipeline,
     gemv_fast_q6_0: Pipeline,
+    gemv_scaled_q4_0: Pipeline,
+    gemv_scaled_q6_0: Pipeline,
+    add_norm_prep: Pipeline,
     gemv_q4_0: Pipeline,
     gemv_q8_0: Pipeline,
     gemm_q4_0: Pipeline,
@@ -200,6 +203,9 @@ impl Kernels {
             gemv_q6_0: ctx.pipeline(MATMUL, "gemv_q6_0_f32")?,
             gemm_q6_0: ctx.pipeline(MATMUL, "gemm_q6_0_f32")?,
             gemv_fast_q6_0: ctx.pipeline(MATMUL, "gemv_fast_q6_0_f32")?,
+            gemv_scaled_q4_0: ctx.pipeline(MATMUL, "gemv_scaled_q4_0_f32")?,
+            gemv_scaled_q6_0: ctx.pipeline(MATMUL, "gemv_scaled_q6_0_f32")?,
+            add_norm_prep: ctx.pipeline(NORM, "add_norm_prep")?,
             gemv_q4_0: ctx.pipeline(MATMUL, "gemv_q4_0_f32")?,
             gemv_q8_0: ctx.pipeline(MATMUL, "gemv_q8_0_f32")?,
             gemm_q4_0: ctx.pipeline(MATMUL, "gemm_q4_0_f32")?,
@@ -368,6 +374,72 @@ impl Kernels {
 
     /// GEMV para decode: `y[t, :] = W · x[t, :]` para `t < tokens` (T chico). Usa la versión de
     /// 4 filas por simdgroup si `rows % 8 == 0`; si no, la simple.
+    /// Preparación de RMSNorm para decode (T3.5): `x += h` (si hay `h`), `xw = x · w` y sumas
+    /// parciales de `x²` en `ss` (una por cada 256 elementos; ver [`norm_partials`]). Lo consume
+    /// [`Kernels::gemv_scaled`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_norm_prep<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        x: Arg<'a>,
+        h: Option<Arg<'a>>,
+        w: Arg<'a>,
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        n: usize,
+    ) {
+        let add = h.is_some();
+        cmd.dispatch_groups(
+            &self.add_norm_prep,
+            &[
+                x,
+                h.unwrap_or(x),
+                w,
+                xw,
+                ss,
+                Arg::u32(n as u32),
+                Arg::u32(add as u32),
+            ],
+            [norm_partials(n), 1, 1],
+            [NORM_PREP_TG, 1, 1],
+        );
+    }
+
+    /// `y = W · RMSNorm(x)` para un token a partir de [`Kernels::add_norm_prep`]: `xw = x · w` y
+    /// las sumas parciales `ss` de `x²`. Requiere `rows % 8 == 0`; q4_0 o q6_0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemv_scaled<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: QMatrix<'a>,
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        eps: f32,
+        y: Arg<'a>,
+    ) {
+        assert_eq!(w.rows % 8, 0, "gemv_scaled: filas % 8");
+        let p = match w.qtype {
+            WeightType::Q4_0 => &self.gemv_scaled_q4_0,
+            WeightType::Q6_0 => &self.gemv_scaled_q6_0,
+            WeightType::Q8_0 => panic!("gemv_scaled: q4_0 o q6_0"),
+        };
+        cmd.dispatch_groups(
+            p,
+            &[
+                Arg::buf(w.data),
+                xw,
+                y,
+                Arg::u32(w.rows as u32),
+                Arg::u32(w.cols as u32),
+                ss,
+                Arg::u32(norm_partials(w.cols) as u32),
+                Arg::f32(eps),
+            ],
+            [w.rows / 8, 1, 1],
+            [64, 1, 1],
+        );
+    }
+
     pub fn gemv<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -818,6 +890,14 @@ pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
 /// Filas (queries × cabezas del grupo) por threadgroup de la variante GQA de `flash_attention`
 /// (`FA_ROWS` en MSL).
 const FA_ROWS: usize = 16;
+
+/// Hilos por threadgroup de `add_norm_prep` (cada uno escribe una suma parcial).
+const NORM_PREP_TG: usize = 256;
+
+/// Sumas parciales de `x²` que escribe `add_norm_prep` para un vector de `n` elementos.
+pub fn norm_partials(n: usize) -> usize {
+    n.div_ceil(NORM_PREP_TG)
+}
 
 /// Alineación (en posiciones) que necesita la KV cache para `flash_attention`.
 pub const KV_ALIGN: usize = 64;

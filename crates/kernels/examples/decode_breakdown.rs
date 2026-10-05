@@ -215,6 +215,20 @@ fn main() {
             shape,
         );
     });
+    let ssb = ctx.buffer::<f32>(brasa_kernels::norm_partials(h)).unwrap();
+    let prep2 = rep!(c => {
+        k.add_norm_prep(c, Arg::buf(&x), Some(Arg::buf(&hb)), Arg::buf(&nw), Arg::buf(&attn), Arg::buf(&ssb), h);
+        k.add_norm_prep(c, Arg::buf(&x), Some(Arg::buf(&hb)), Arg::buf(&nw), Arg::buf(&attn), Arg::buf(&ssb), h);
+    });
+    let scaled_qkv = rep!(c => {
+        k.gemv_scaled(c, mq, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&q));
+        k.gemv_scaled(c, mk, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&kn));
+        k.gemv_scaled(c, mv, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&vn));
+    });
+    let scaled_gu = rep!(c => {
+        k.gemv_scaled(c, mg, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&gate));
+        k.gemv_scaled(c, mu, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&up));
+    });
     let t = time(&ctx, |c| {
         k.gemv(c, head, Arg::buf(&hb), Arg::buf(&logits), 1)
     });
@@ -226,4 +240,11 @@ fn main() {
         "qk_norm_rope_store (fusionado)",
         qk_fused * 1e3
     );
+    println!(
+        "{:<34} {:>9.3}   (reemplaza rms_norm H ×2 + add ×2)",
+        "add_norm_prep (×2)",
+        prep2 * 1e3
+    );
+    println!("{:<34} {:>9.3}", "gemv_scaled q, k, v", scaled_qkv * 1e3);
+    println!("{:<34} {:>9.3}", "gemv_scaled gate, up", scaled_gu * 1e3);
 }
