@@ -5,6 +5,7 @@
 pub mod engine;
 pub mod llama_cpp;
 pub mod measure;
+pub mod mlx;
 pub mod models;
 pub mod report;
 

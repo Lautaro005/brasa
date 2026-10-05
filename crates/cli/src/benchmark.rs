@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use brasa_bench::engine::machine_dir;
 use brasa_bench::llama_cpp::LlamaCpp;
+use brasa_bench::mlx::MlxLm;
 use brasa_bench::report::BenchReport;
 use brasa_bench::{BenchConfig, BenchError, Engine, Job, Result, models, run_benchmark};
 use clap::{Args, ValueEnum};
@@ -14,6 +15,8 @@ use serde::Deserialize;
 pub enum Baseline {
     #[value(name = "llama.cpp")]
     LlamaCpp,
+    #[value(name = "mlx-lm")]
+    MlxLm,
 }
 
 #[derive(Debug, Args)]
@@ -45,6 +48,9 @@ pub struct BenchmarkArgs {
     /// Binario de llama.cpp.
     #[arg(long, default_value = "llama-completion")]
     llama_bin: String,
+    /// Intérprete de Python con mlx-lm (venv de tools/).
+    #[arg(long, default_value = ".venv/bin/python")]
+    python: String,
     /// Carpeta de salida (por defecto docs/bench/<chip>-<ram>gb).
     #[arg(long)]
     out_dir: Option<PathBuf>,
@@ -99,6 +105,19 @@ pub fn run(args: BenchmarkArgs) -> Result<()> {
             quant: model.gguf_quant.into(),
             extra_args: args.engine_args.clone(),
         }),
+        Some(Baseline::MlxLm) => {
+            if !args.engine_args.is_empty() {
+                return Err(BenchError("--engine-arg no se admite con mlx-lm".into()));
+            }
+            Box::new(MlxLm {
+                python: args.python.clone(),
+                model_dir: args
+                    .weights
+                    .clone()
+                    .unwrap_or_else(|| model.mlx_path.into()),
+                quant: model.mlx_quant.into(),
+            })
+        }
         None => {
             return Err(BenchError(
                 "el engine de Brasa todavía no existe (fase 1); usar --baseline".into(),
@@ -107,7 +126,7 @@ pub fn run(args: BenchmarkArgs) -> Result<()> {
     };
     if !engine.weights_path().exists() {
         return Err(BenchError(format!(
-            "no existen los pesos {} (ver tools/make_gguf.sh)",
+            "no existen los pesos {} (ver la sección Comandos de CLAUDE.md)",
             engine.weights_path().display()
         )));
     }
@@ -177,9 +196,9 @@ fn print_summary(r: &BenchReport) {
     );
     let gib = |b: f64| b / (1u64 << 30) as f64;
     println!(
-        "  pico RSS  {:>9.2} GiB    footprint {:.2} GiB",
-        gib(s.peak_rss_bytes.median),
-        gib(s.peak_footprint_bytes.median)
+        "  memoria   {:>9.2} GiB    (pico de footprint; RSS {:.2} GiB)",
+        gib(s.peak_footprint_bytes.median),
+        gib(s.peak_rss_bytes.median)
     );
     println!(
         "  sistema   presión inicial {}, peor {}, swap +{} MiB",

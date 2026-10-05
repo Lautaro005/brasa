@@ -29,6 +29,9 @@ impl LlamaCpp {
             "99",
             "-fa",
             "auto",
+            // Pesos en memoria propia: con mmap no entran en el footprint (ADR 0002).
+            "-lm",
+            "none",
             "--ignore-eos",
             "--temp",
             "0",

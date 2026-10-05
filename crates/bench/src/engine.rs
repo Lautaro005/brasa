@@ -77,7 +77,7 @@ pub fn run_benchmark(
     for i in 0..cfg.runs {
         let r = engine.run_once(job)?;
         eprintln!(
-            "{} ctx {}: corrida {}/{}: prefill {:.1} tok/s, decode {:.1} tok/s, TTFT {:.0} ms, RSS {:.2} GiB",
+            "{} ctx {}: corrida {}/{}: prefill {:.1} tok/s, decode {:.1} tok/s, TTFT {:.0} ms, footprint {:.2} GiB",
             engine.name(),
             job.ctx,
             i + 1,
@@ -85,7 +85,7 @@ pub fn run_benchmark(
             r.prefill_tok_s,
             r.decode_tok_s,
             r.ttft_ms,
-            r.peak_rss_bytes as f64 / (1u64 << 30) as f64
+            r.peak_footprint_bytes as f64 / (1u64 << 30) as f64
         );
         runs.push(r);
     }

@@ -27,18 +27,23 @@ template, para que todos los engines procesen la misma secuencia. `gen` = 128.
 - Decode tok/s = (tokens generados − 1) / tiempo de generarlos, sin el primero.
 - TTFT = tiempo desde el prompt ya tokenizado hasta el primer token generado. No incluye carga del
   modelo.
-- Pico de memoria: se guardan dos métricas de `/usr/bin/time -l` del proceso del engine.
-  - `peak_rss` ("maximum resident set size"): incluye páginas de archivos mapeados. Es la métrica
-    principal, porque llama.cpp mapea el GGUF con `mmap` y sus pesos no aparecen en el footprint.
-  - `peak_footprint` ("peak memory footprint"): memoria anónima, comprimida y de GPU; es lo que
-    mira jetsam. Medido en M1 Pro: llama.cpp 2K da 392 MB de footprint y 2,79 GB de RSS.
-  MLX además reporta su pico de GPU (`mx.get_peak_memory`).
+- Pico de memoria = "peak memory footprint" del proceso según `/usr/bin/time -l` (máximo de
+  `phys_footprint` en la vida del proceso: memoria anónima, comprimida y de GPU). Para que cuente
+  los pesos en todos los engines, llama.cpp se ejecuta con `-lm none` (sin mmap): con mmap las
+  páginas del GGUF son de archivo y no entran en el footprint (medido en M1 Pro, 2K: 0,37 GiB de
+  footprint con mmap, 3,20 GiB sin mmap, misma velocidad: 489 tok/s de prefill en ambos casos).
+  También se guarda el RSS máximo como dato secundario: en MLX los buffers de Metal no aparecen
+  completos en el RSS (1,98 GiB de RSS contra 3,98 GiB de footprint). MLX además reporta su pico
+  de GPU (`mx.get_peak_memory`). Brasa se mide con la misma regla: si mapea pesos desde archivo,
+  el reporte debe sumarlos.
 - Durante cada corrida se muestrea la memoria del sistema (`MemorySampler`): crecimiento de swap y
   peor nivel de presión. Una corrida con swap creciente se marca como no válida.
 
-**Ejecución.** Decodificación greedy, EOS ignorado (para generar siempre `gen` tokens),
+**Ejecución.** Cada corrida es un proceso nuevo. MLX hace dentro del proceso un calentamiento de
+1 token antes de medir, equivalente al que llama.cpp hace al cargar. Decodificación greedy, EOS ignorado (para generar siempre `gen` tokens),
 1 corrida de calentamiento descartada + 3 medidas; se reporta la mediana y el rango.
-llama.cpp con todas las capas en GPU (`-ngl 99`), flash attention `auto` y KV FP16 por defecto;
+llama.cpp con todas las capas en GPU (`-ngl 99`), flash attention `auto`, `-lm none` y KV FP16 por
+defecto;
 las variantes (KV Q8) se reportan como filas aparte.
 
 **Reporte.** JSON en `docs/bench/<chip>-<ram>/`, con chip, RAM, macOS, commit de Brasa, engine y
