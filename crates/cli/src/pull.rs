@@ -62,7 +62,8 @@ pub fn run(a: PullArgs) -> Result<(), String> {
                     "  {:<40} {:>10}  {}…",
                     f.path,
                     human(f.size.unwrap_or(0)),
-                    &f.sha256[..12]
+                    // El manifiesto valida 64 hex al leerse, pero no se indexa a ciegas.
+                    f.sha256.get(..12).unwrap_or(&f.sha256)
                 );
             }
             println!("  total: {}", human(total));

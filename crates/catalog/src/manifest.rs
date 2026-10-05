@@ -2,11 +2,28 @@
 //! sha256, cuantización destino, contexto máximo y licencia. Los de fábrica van embebidos en el
 //! binario; además se pueden leer de una carpeta (`$BRASA_CATALOG`).
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde::Deserialize;
 
 use crate::{Error, Result};
+
+/// Comprueba que `path` sea relativa y sin `.` ni `..` (defensa contra manifiestos externos).
+pub fn safe_relative(path: &str) -> std::result::Result<(), String> {
+    if path.is_empty() {
+        return Err("ruta vacía".into());
+    }
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return Err(format!("ruta absoluta no permitida: {path:?}"));
+    }
+    for c in p.components() {
+        if !matches!(c, Component::Normal(_)) {
+            return Err(format!("ruta no permitida (`.` o `..`): {path:?}"));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FileSpec {
@@ -39,7 +56,24 @@ const BUILTIN: &[&str] = &[include_str!("../manifests/qwen3-4b-q4.toml")];
 
 impl Manifest {
     pub fn parse(text: &str) -> Result<Self> {
-        toml::from_str(text).map_err(|e| Error(format!("manifiesto inválido: {e}")))
+        let m: Self =
+            toml::from_str(text).map_err(|e| Error(format!("manifiesto inválido: {e}")))?;
+        m.validate()?;
+        Ok(m)
+    }
+
+    /// Valida los campos que el resto del código asume: sha256 de 64 hex y rutas seguras.
+    fn validate(&self) -> Result<()> {
+        for f in &self.files {
+            if f.sha256.len() != 64 || !f.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(Error(format!(
+                    "{}: sha256 inválido en {:?} (se esperan 64 dígitos hex)",
+                    self.name, f.path
+                )));
+            }
+            safe_relative(&f.path).map_err(|e| Error(format!("{}: {e}", self.name)))?;
+        }
+        Ok(())
     }
 
     pub fn builtin() -> Result<Vec<Self>> {
@@ -109,5 +143,34 @@ mod tests {
         let m = Manifest::find("qwen3-4b-q4").unwrap();
         assert_eq!(m.family, "qwen3");
         assert!(Manifest::find("no-existe").is_err());
+    }
+
+    #[test]
+    fn rechaza_sha256_corto_y_rutas_inseguras() {
+        let base = r#"
+name = "x"
+family = "qwen3"
+source_repo = "a/b"
+source_revision = "r"
+hf_dir = "x-hf"
+max_context = 4096
+files = [{ path = "%PATH%", sha256 = "%SHA%" , size = 1}]
+"#;
+        let malo = base
+            .replace("%PATH%", "model.safetensors")
+            .replace("%SHA%", "abc");
+        assert!(Manifest::parse(&malo).is_err());
+        let escape = base
+            .replace("%PATH%", "../fuera.safetensors")
+            .replace("%SHA%", &"0".repeat(64));
+        assert!(Manifest::parse(&escape).is_err());
+        let absoluto = base
+            .replace("%PATH%", "/etc/passwd")
+            .replace("%SHA%", &"0".repeat(64));
+        assert!(Manifest::parse(&absoluto).is_err());
+        let ok = base
+            .replace("%PATH%", "sub/model.safetensors")
+            .replace("%SHA%", &"a".repeat(64));
+        assert!(Manifest::parse(&ok).is_ok());
     }
 }

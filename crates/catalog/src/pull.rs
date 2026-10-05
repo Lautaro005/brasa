@@ -5,6 +5,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -13,6 +14,14 @@ use crate::{Error, Result};
 
 /// Endpoint por defecto de Hugging Face.
 pub const HF_ENDPOINT: &str = "https://huggingface.co";
+
+/// Agente `ureq` con timeouts de conexión y de lectura (evita colgarse en una red lenta).
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(60))
+        .build()
+}
 
 /// URL de un archivo en una revisión fija (layout de HF).
 pub fn file_url(endpoint: &str, repo: &str, revision: &str, path: &str) -> String {
@@ -64,6 +73,21 @@ fn net_err(e: ureq::Error) -> Error {
     }
 }
 
+/// Pide el archivo; si `have > 0`, con `Range`. Si el servidor responde 416 (no acepta
+/// reanudar), se vuelve a pedir completo.
+fn call(agent: &ureq::Agent, url: &str, have: u64) -> Result<ureq::Response> {
+    let req = if have > 0 {
+        agent.get(url).set("Range", &format!("bytes={have}-"))
+    } else {
+        agent.get(url)
+    };
+    match req.call() {
+        Ok(r) => Ok(r),
+        Err(ureq::Error::Status(416, _)) if have > 0 => agent.get(url).call().map_err(net_err),
+        Err(e) => Err(net_err(e)),
+    }
+}
+
 /// Descarga todos los archivos del manifiesto en `dest`. `progress(path, recibido, total)`.
 pub fn download(
     manifest: &Manifest,
@@ -95,6 +119,7 @@ pub fn download_file(
     dest: &Path,
     progress: &mut impl FnMut(&str, u64, Option<u64>),
 ) -> Result<PathBuf> {
+    crate::manifest::safe_relative(&spec.path).map_err(|e| Error(format!("{repo}: {e}")))?;
     let final_path = dest.join(&spec.path);
     if let Some(parent) = final_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
@@ -116,33 +141,40 @@ pub fn download_file(
         have = hash_into(&mut f, &mut hasher)?;
     }
     let url = file_url(endpoint, repo, revision, &spec.path);
-    let mut req = ureq::get(&url);
-    if have > 0 {
-        req = req.set("Range", &format!("bytes={have}-"));
-    }
-    let resp = match req.call() {
-        Ok(r) => r,
-        Err(ureq::Error::Status(416, _)) if have > 0 => {
-            // El servidor no acepta reanudar: se empieza de cero.
-            std::fs::remove_file(&part).ok();
+    let agent = agent();
+    let mut resp = call(&agent, &url, have)?;
+    let status = resp.status();
+    let mut file;
+    if status == 206 {
+        // Con 206, el servidor tiene que empezar en lo que ya tenemos; si no, se descarta.
+        let expect = format!("bytes {have}-");
+        let cont = resp
+            .header("Content-Range")
+            .is_some_and(|cr| cr.starts_with(&expect));
+        if !cont {
             hasher = Sha256::new();
             have = 0;
-            ureq::get(&url).call().map_err(net_err)?
+            std::fs::remove_file(&part).ok();
+            let fresh = agent.get(&url).call().map_err(net_err)?;
+            if fresh.status() == 206 {
+                return Err(Error(format!(
+                    "{url}: el servidor no respondió el archivo completo"
+                )));
+            }
+            file = File::create(&part).map_err(|e| io_err(&part, e))?;
+            resp = fresh;
+        } else {
+            file = OpenOptions::new()
+                .append(true)
+                .open(&part)
+                .map_err(|e| io_err(&part, e))?;
         }
-        Err(e) => return Err(net_err(e)),
-    };
-    let status = resp.status();
-    let mut file = if status == 206 {
-        OpenOptions::new()
-            .append(true)
-            .open(&part)
-            .map_err(|e| io_err(&part, e))?
     } else {
         // 200: contenido completo; si había parcial, se descarta.
         hasher = Sha256::new();
         have = 0;
-        File::create(&part).map_err(|e| io_err(&part, e))?
-    };
+        file = File::create(&part).map_err(|e| io_err(&part, e))?;
+    }
     let mut reader = resp.into_reader();
     let mut buf = vec![0u8; 1 << 20];
     loop {
