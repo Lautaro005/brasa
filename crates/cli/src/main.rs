@@ -149,6 +149,50 @@ fn main() {
 }
 
 #[cfg(test)]
+mod docs_tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    /// Aceptación de U6 (equivalente in-process de `scripts/check-docs.sh`): todo subcomando
+    /// citado en README.md y docs/guia/ existe en el CLI. No ejecuta el binario.
+    #[test]
+    fn subcomandos_citados_en_la_guia_existen() {
+        let root = Cli::command();
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = vec![repo.join("README.md")];
+        for e in std::fs::read_dir(repo.join("docs/guia")).unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().is_some_and(|x| x == "md") {
+                files.push(p);
+            }
+        }
+        let mut cited = std::collections::BTreeSet::new();
+        for f in &files {
+            let text = std::fs::read_to_string(f).unwrap();
+            for chunk in text.split("brasa ").skip(1) {
+                let word = chunk
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                    .next()
+                    .unwrap_or("");
+                if !word.is_empty() && !word.starts_with('-') {
+                    cited.insert(word.to_string());
+                }
+            }
+        }
+        for sub in &cited {
+            assert!(
+                root.find_subcommand(sub).is_some(),
+                "el subcomando {sub:?} citado en las guías no existe"
+            );
+        }
+        assert!(
+            cited.contains("serve") && cited.contains("doctor") && cited.contains("models"),
+            "la guía no cita los comandos esperados: {cited:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod help_tests {
     use super::Cli;
     use clap::{Command, CommandFactory};

@@ -178,8 +178,11 @@ bf16 → f32 → q4), documentá exactamente por qué y no lo des por cerrado.
 | U3 | hecha | 513ac84 | Manifiesto TOML embebido (ADR 0020), `brasa models`/`models verify`/`pull`/`rm`. `pull` con reanudación y sha256, probado contra un servidor local (descarga, reanudación y hash alterado). `verify` del modelo real pasa por test `--ignored` (398 tensores, 2,29 GiB, sha256 a0750ba7…). No se ejecutó el binario `brasa` por pedido del usuario. |
 | U4 | hecha | 06083b4 | `crates/quant/src/convert.rs` (módulo nuevo) + `brasa convert`. Test `--ignored`: el `.brasa` nativo (398 tensores) tiene los mismos sha256 por tensor y el mismo `data_sha256` (a0750ba7…) que el de Python; ningún tensor difiere. No toca GPU. |
 | U5 | hecha | d963569 | `~/.config/brasa/config.toml` con precedencia flag > archivo > defecto (`config::pick`), `brasa config show [--json]`, `brasa completions zsh|bash|fish`, `--json` en plan/models/ps/doctor, y sugerencias accionables. Tests de precedencia y snapshots de `--help` por subcomando (ADR 0022). |
-| U6 | pendiente | | |
+| U6 | hecha | 791dd6a | `README.md` (instalación y primeros pasos, cifras solo citando `docs/bench/baseline.md`) y `docs/guia/` (agentes, GUI, memoria y KV, problemas). Aceptación: `scripts/check-docs.sh` corre `<bin> <sub> --help` de cada subcomando citado, y un test in-process equivalente valida contra el árbol de clap (corre en CI, sin ejecutar el binario). |
 
 ## Pedidos a Claude
 
 (Cambios que necesitás fuera de tu zona. Uno por línea, con qué y para qué.)
+
+Ninguno: U1–U6 se resolvieron dentro de las zonas permitidas, sin tocar `kernels`, `metal`,
+`models`, `memory`, `runtime`, `tuner` ni `quant` existente (solo se agregó `quant::convert`).
