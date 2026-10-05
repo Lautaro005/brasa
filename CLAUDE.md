@@ -68,6 +68,8 @@ python3 tools/bench_table.py                   # regenera docs/bench/baseline.md
 
 # Fixtures de referencia (ADR 0003): FP32 propio + validación contra transformers BF16
 .venv/bin/python tools/make_fixtures.py all    # fixtures/qwen3-4b/ (~10 min en M1 Pro)
+.venv/bin/python tools/make_tokenizer_cases.py # casos borde del tokenizer contra HF tokenizers
+cargo test -p brasa-tokenizer                  # T1.2: template y tokens contra las fixtures
 ```
 
 Previstos (todavía no existen):

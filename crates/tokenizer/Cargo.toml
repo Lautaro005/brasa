@@ -1,6 +1,6 @@
 [package]
 name = "brasa-tokenizer"
-description = "Tokenizer BPE y chat template."
+description = "Tokenizer BPE byte-level y chat template."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,14 @@ rust-version.workspace = true
 
 [dependencies]
 brasa-core.workspace = true
+fancy-regex.workspace = true
+unicode-normalization.workspace = true
+minijinja.workspace = true
+minijinja-contrib.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+unicode-normalization.workspace = true
 
 [lints]
 workspace = true
