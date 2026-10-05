@@ -109,7 +109,8 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
 - **T3.2 Atención de prefill.** FlashAttention que comparte K/V entre las cabezas de un grupo GQA y
   lee la caché f16. Aceptación: equivalencia contra la referencia CPU, `flash_attention` T=512 a 16K
   ≥ 3× la variante actual, T1.6 sigue pasando.
-  Estado (2026-10-05): 1,47× en f32 (ADR 0010); el 3× probablemente pide Q/P en f16 (decisión abierta).
+  Estado (2026-10-05): 1,47× en f32 (ADR 0010). Q/P en f16 se probó y no acelera (+1 %), revertido.
+  Criterio no cumplido; se sigue con T3.3 y se vuelve con perfilado de GPU.
 - **T3.3 GEMM de prefill.** Aceptación: ≥ 3,5 TFLOPS en las tres formas de Qwen3-4B con T=512 y
   T1.6 sigue pasando.
 - **T3.4 KV Q8** (perfil de agente 16K). Aceptación: fixtures `kvq8`, T1.6 con su referencia,

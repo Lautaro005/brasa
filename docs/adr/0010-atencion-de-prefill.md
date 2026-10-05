@@ -1,6 +1,6 @@
 # ADR 0010 — Atención de prefill (T3.2)
 
-Estado: aceptada en f32; el paso a media precisión queda abierto (decisión del usuario)
+Estado: aceptada en f32. Media precisión (Q y P en f16) probada y descartada (2026-10-05)
 
 ## Contexto
 
@@ -49,3 +49,33 @@ Conclusiones:
   Redondear Q y P cambia los puntajes ~5e-4 relativo, así que hace falta una referencia que
   redondee igual y otra tolerancia, igual que en ADR 0009. Es una decisión de precisión
   (regla 3) y queda para el usuario.
+
+## Prueba de Q y P en f16 (2026-10-05)
+
+El usuario aprobó probarlo con una condición: entra solo si el microbenchmark mejora ≥ 1,5×. Si no
+acelera, no vale la pérdida de precisión (regla 3).
+
+Variante probada sobre `flash_attn_gqa` con KV f16:
+
+- Q escalada y P en memoria threadgroup como `half`.
+- K y V cargados como `simdgroup_half8x8` sin convertir.
+- S, O, m y l en f32 (`simdgroup_multiply_accumulate` mixto).
+- Salida escrita directo desde los fragmentos.
+
+El error contra la referencia sin redondear fue 5e-4 / max|v|, y el layout de los fragmentos se
+verificó correcto.
+
+Medido en M1 Pro 16 GB, macOS 27.0, commit 6cd264a, con `cargo bench -p brasa-kernels`
+(`flash_attention` T=512 a 16K):
+
+| Variante | GFLOP/s |
+|---|---:|
+| f32 (la aceptada) | 1167 |
+| Q/K/V/P en f16, 16 filas | 1180 |
+| ídem con 32 filas (usa la memoria threadgroup liberada) | 627 |
+
+No llega a la condición (+1 %), así que se revirtió. En el M1 el MMA en f16 no es más rápido que
+en f32, y achicar la memoria threadgroup tampoco ayuda. Lo que le da ventaja a llama.cpp en este
+equipo no es la precisión. Queda para un intento futuro, con perfilado (Xcode GPU counters) antes
+de tocar el kernel. Con esto no hay ninguna decisión de precisión pendiente en la atención.
+
