@@ -77,3 +77,40 @@ su ventaja, no del MMA.
   a `down`. Los pesos q4 decuantizados no son exactos en f16 (d · q necesita hasta 14 bits de
   mantisa). La alternativa exacta es guardar q como entero en f16 y aplicar d aparte, a costa de
   más productos.
+
+## Calidad de las entradas en f16 (2026-10-05)
+
+El usuario delegó la decisión. Se midió con `tools/eval_embed_quant.py`, con la referencia FP32
+sobre los pesos de `model.brasa` (tabla q6_0, ADR 0012), en las 2898 posiciones de
+`fixtures/qwen3-4b` y contra FP32 sin cuantizar:
+
+| Entradas de cada proyección lineal | top-1 vs FP32 | KL top-20 media | p99 |
+|---|---:|---:|---:|
+| activaciones y pesos f32 | 88,34 % | 9,49e-2 | 1,06 |
+| activaciones f16 | 88,34 % | 9,49e-2 | 1,07 |
+| activaciones y pesos decuantizados f16 | 88,34 % | 9,49e-2 | 1,07 |
+
+Redondear a f16 no se ve al lado del error de q4 (~9 % relativo por peso), y no hubo desbordes.
+
+**Decisión:** el GEMM de prefill con pesos y activaciones en f16 y acumulación f32 se acepta en
+calidad, pero entra solo si el microbenchmark mejora al menos 15 % sobre 2,82 TFLOPS. Si no
+acelera, no se cambia la numérica. Si entra, la verificación de T1.6 sigue el esquema de ADR 0009:
+
+- tolerancia según el piso medido;
+- pérdida de top-1 contra la referencia sin redondear.
+
+**Resultado (mismo día).** Variante con As y Bs en `half`, fragmentos `simdgroup_half8x8` y
+acumuladores f32. Medido en M1 Pro con `cargo bench`, alternando:
+
+| Variante | q_proj | gate/up | down |
+|---|---:|---:|---:|
+| f32 (la actual) | 2798 GFLOP/s | 2800 | 2788 |
+| entradas f16 | 3005 | 3016 | 2985 |
+| entradas f16 + salida directa desde los fragmentos (6 KiB de memoria threadgroup) | 2978 | 2987 | 2954 |
+| f32 + salida directa | 2821 | 2811 | 2798 |
+
++7,6 %, debajo del umbral de 15 %: **no entra** y el GEMM sigue en f32. Liberar la memoria
+threadgroup (salida directa) no sumó ocupancia útil. Con el MMA a la misma velocidad en f16 y en
+f32 (`mma_peak`), lo que queda entre 2,8 y 3,5 TFLOPS no se cierra con precisión en este chip.
+**T3.3 queda en 2,82 TFLOPS (criterio no cumplido) y se resuelve al cerrar la fase (T3.6).**
+
