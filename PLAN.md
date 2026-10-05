@@ -138,6 +138,16 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   Sin cambiar precisión, lo que queda suma ~1,5 ms: fusiones de ops chicas, codificar el token
   siguiente durante la GPU y el costo fijo de la atención. No alcanza; 50,8 pide además bajar el
   lm_head de q8_0 (413 MB por token, 2,4 ms) a menos bits. Es decisión del usuario (ADR 0006).
+
+  Hecho después, con resultados idénticos a los de antes:
+  - la GPU arranca con las dos primeras capas mientras se codifican las demás (CPU por token
+    ~0,68 → ~0,50 ms);
+  - `qk_norm_rope_store` reemplaza seis dispatches por capa y da los mismos bits (A/B en 8 corridas
+    alternadas: GPU mínima 22,08 → 21,57 ms).
+
+  Probado sin éxito: RMSNorm con los valores en registros (T=1 igual; T=512, 0,059 → 0,142 ms).
+  Las cifras absolutas se vuelven a medir con la máquina liviana en T3.6: con la máquina ocupada
+  (otros procesos usando la GPU) el decode a 2K oscila entre 40,6 y 43,7 tok/s.
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
 
