@@ -41,6 +41,16 @@ echo "Cerrá las demás aplicaciones antes de seguir (Enter para continuar)."
 read -r _
 ./scripts/run-baselines.sh "$out" 2>&1 | tee "$out/baselines.log" || true
 
+echo "==> T1.7 brasa run (generación sin swap creciente)"
+[[ -f models/qwen3-4b-q4/model.brasa ]] || \
+    .venv/bin/python tools/convert_brasa.py models/qwen3-4b-hf models/qwen3-4b-q4
+./target/release/brasa run qwen3-4b-q4 --no-think --seed 42 --max-tokens 200 \
+    -p "Explicá en tres oraciones qué es una caché de KV en un transformer." \
+    2>&1 | tee "$out/run.txt"
+printf 'What is 17 * 23? Answer briefly.\nAnd divided by 17?\n' | \
+    ./target/release/brasa run qwen3-4b-q4 --seed 7 --max-tokens 400 2>&1 | tee "$out/run-chat.txt"
+grep "swap del sistema" "$out/run.txt" "$out/run-chat.txt"
+
 {
     echo "commit: $commit"
     echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

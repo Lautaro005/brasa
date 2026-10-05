@@ -53,6 +53,8 @@ cargo build --release
 cargo test --workspace
 cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, macOS, Metal, presión
 cargo run -p brasa-cli -- doctor --json
+cargo run --release -p brasa-cli -- run qwen3-4b-q4                      # chat interactivo
+cargo run --release -p brasa-cli -- run qwen3-4b-q4 --no-think -p "Hola"  # una respuesta
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
@@ -78,6 +80,7 @@ cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   
 cargo test --release -p brasa-models --test layers -- --ignored --nocapture     # T1.5
 cargo test --release -p brasa-models --test forward -- --ignored --nocapture    # T1.6 (~8 min)
 cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4
+cargo test --release -p brasa-runtime --test session -- --ignored --nocapture   # T1.7 greedy y prefijo
 ```
 
 Previstos (todavía no existen):

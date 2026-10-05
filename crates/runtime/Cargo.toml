@@ -15,5 +15,8 @@ brasa-memory.workspace = true
 brasa-tuner.workspace = true
 brasa-tokenizer.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
