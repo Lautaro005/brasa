@@ -29,6 +29,7 @@ impl PressureLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SystemMemory {
     pub total: u64,
+    /// Libre de verdad (sin las páginas especulativas, que se cuentan aparte).
     pub free: u64,
     pub active: u64,
     pub inactive: u64,
@@ -50,7 +51,8 @@ pub fn system_memory() -> SystemMemory {
     let swap = sysctl_value::<libc::xsw_usage>("vm.swapusage");
     SystemMemory {
         total: sysctl_u64("hw.memsize").unwrap_or(0),
-        free: vm.free_count as u64 * page,
+        // En XNU `free_count` incluye las páginas especulativas; se reportan por separado.
+        free: vm.free_count.saturating_sub(vm.speculative_count) as u64 * page,
         active: vm.active_count as u64 * page,
         inactive: vm.inactive_count as u64 * page,
         speculative: vm.speculative_count as u64 * page,
