@@ -207,6 +207,33 @@ def responses_herramientas_stream():
 
 
 @case
+def responses_herramienta_custom():
+    # Herramienta de entrada libre, como `apply_patch` de Codex: llega como `custom_tool_call`.
+    c = oa()
+    tools = [{"type": "custom", "name": "shout",
+              "description": "Repeats the given text in uppercase. The input is the raw text, not JSON."}]
+    ask = "Use the shout tool with the text: hola brasa"
+    s = c.responses.create(model=MODEL, input=ask, tools=tools, temperature=0, max_output_tokens=200, stream=True)
+    delta, final = "", None
+    for ev in s:
+        if ev.type == "response.custom_tool_call_input.delta":
+            delta += ev.delta
+        if ev.type == "response.completed":
+            final = ev.response
+    calls = [o for o in final.output if o.type == "custom_tool_call"]
+    assert calls and calls[0].name == "shout", final.output
+    call = calls[0]
+    assert call.input == delta and "hola brasa" in call.input.lower(), (call.input, delta)
+    follow = [
+        {"role": "user", "content": ask},
+        {"type": "custom_tool_call", "call_id": call.call_id, "name": call.name, "input": call.input},
+        {"type": "custom_tool_call_output", "call_id": call.call_id, "output": "HOLA BRASA"},
+    ]
+    r2 = c.responses.create(model=MODEL, input=follow, tools=tools, temperature=0, max_output_tokens=200)
+    assert "HOLA BRASA" in r2.output_text.upper(), r2.output_text
+
+
+@case
 def responses_error_de_contexto():
     try:
         oa().responses.create(model=MODEL, input=HUGE, max_output_tokens=5)
