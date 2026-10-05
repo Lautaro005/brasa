@@ -1,7 +1,8 @@
 //! `brasa convert <dir-hf> <dir-salida>`: conversión nativa a `.brasa` sin Python (U4).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use brasa_catalog::manifest::Manifest;
 use brasa_quant::convert::convert;
 use clap::Args;
 
@@ -11,24 +12,51 @@ pub struct ConvertArgs {
     src: PathBuf,
     /// Carpeta de salida (`model.brasa`, `tokenizer.json`, `tokenizer_config.json`).
     dst: PathBuf,
-    /// Repo de origen (va al encabezado del `.brasa`).
-    #[arg(long, default_value = "Qwen/Qwen3-4B")]
-    source_repo: String,
-    /// Revisión de origen (va al encabezado del `.brasa`).
-    #[arg(long, default_value = "1cfa9a7208912126459214e8b04321603b3df60c")]
-    source_commit: String,
+    /// Repo de origen (por defecto, el del manifiesto del modelo).
+    #[arg(long)]
+    source_repo: Option<String>,
+    /// Revisión de origen (por defecto, la del manifiesto del modelo).
+    #[arg(long)]
+    source_commit: Option<String>,
     /// Salida en JSON.
     #[arg(long)]
     json: bool,
 }
 
+/// Procedencia para el encabezado: los flags mandan; si faltan, sale del manifiesto cuyo nombre
+/// coincide con la carpeta de salida (o cuyo `hf_dir` coincide con la de entrada).
+fn provenance(
+    src: &Path,
+    dst: &Path,
+    repo_flag: Option<String>,
+    commit_flag: Option<String>,
+) -> Result<(String, String), String> {
+    let m = Manifest::all().ok().and_then(|all| {
+        let dst_name = dst.file_name().map(|s| s.to_string_lossy().into_owned());
+        let src_name = src.file_name().map(|s| s.to_string_lossy().into_owned());
+        all.into_iter()
+            .find(|m| Some(&m.name) == dst_name.as_ref() || Some(&m.hf_dir) == src_name.as_ref())
+    });
+    let repo = repo_flag
+        .or_else(|| m.as_ref().map(|m| m.source_repo.clone()))
+        .ok_or("no sé el repo de origen: pasá --source-repo o usá una carpeta con manifiesto")?;
+    let commit = commit_flag
+        .or_else(|| m.as_ref().map(|m| m.source_revision.clone()))
+        .ok_or(
+            "no sé la revisión de origen: pasá --source-commit o usá una carpeta con manifiesto",
+        )?;
+    Ok((repo, commit))
+}
+
 pub fn run(a: ConvertArgs) -> Result<(), String> {
+    let (repo, commit) = provenance(&a.src, &a.dst, a.source_repo, a.source_commit)?;
     eprintln!(
-        "convirtiendo {} -> {} (sin Python) …",
+        "convirtiendo {} -> {} ({repo} @ {}) …",
         a.src.display(),
-        a.dst.display()
+        a.dst.display(),
+        commit.chars().take(12).collect::<String>()
     );
-    let r = convert(&a.src, &a.dst, &a.source_repo, &a.source_commit).map_err(|e| e.0)?;
+    let r = convert(&a.src, &a.dst, &repo, &commit).map_err(|e| e.0)?;
     if a.json {
         println!(
             "{}",
