@@ -146,6 +146,8 @@ pub struct Kernels {
     gemv_scaled_q4_0: Pipeline,
     gemv_scaled_q6_0: Pipeline,
     add_norm_prep: Pipeline,
+    gemv_scaled3_q4_0: Pipeline,
+    gemv_scaled_swiglu_q4_0: Pipeline,
     gemv_q4_0: Pipeline,
     gemv_q8_0: Pipeline,
     gemm_q4_0: Pipeline,
@@ -206,6 +208,8 @@ impl Kernels {
             gemv_scaled_q4_0: ctx.pipeline(MATMUL, "gemv_scaled_q4_0_f32")?,
             gemv_scaled_q6_0: ctx.pipeline(MATMUL, "gemv_scaled_q6_0_f32")?,
             add_norm_prep: ctx.pipeline(NORM, "add_norm_prep")?,
+            gemv_scaled3_q4_0: ctx.pipeline(MATMUL, "gemv_scaled3_q4_0_f32")?,
+            gemv_scaled_swiglu_q4_0: ctx.pipeline(MATMUL, "gemv_scaled_swiglu_q4_0_f32")?,
             gemv_q4_0: ctx.pipeline(MATMUL, "gemv_q4_0_f32")?,
             gemv_q8_0: ctx.pipeline(MATMUL, "gemv_q8_0_f32")?,
             gemm_q4_0: ctx.pipeline(MATMUL, "gemm_q4_0_f32")?,
@@ -436,6 +440,79 @@ impl Kernels {
                 Arg::f32(eps),
             ],
             [w.rows / 8, 1, 1],
+            [64, 1, 1],
+        );
+    }
+
+    /// Tres [`Kernels::gemv_scaled`] con la misma entrada en un dispatch (q, k y v de una capa).
+    /// q4_0, filas de cada matriz múltiplo de 8. Mismos bits que las tres llamadas separadas.
+    pub fn gemv_scaled3<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: [QMatrix<'a>; 3],
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        eps: f32,
+        y: [Arg<'a>; 3],
+    ) {
+        let cols = w[0].cols;
+        for m in &w {
+            assert_eq!(m.qtype, WeightType::Q4_0, "gemv_scaled3: q4_0");
+            assert_eq!(m.cols, cols, "gemv_scaled3: misma entrada");
+            assert_eq!(m.rows % 8, 0, "gemv_scaled3: filas % 8");
+        }
+        let total = w[0].rows + w[1].rows + w[2].rows;
+        let [y0, y1, y2] = y;
+        cmd.dispatch_groups(
+            &self.gemv_scaled3_q4_0,
+            &[
+                Arg::buf(w[0].data),
+                Arg::buf(w[1].data),
+                Arg::buf(w[2].data),
+                xw,
+                y0,
+                y1,
+                y2,
+                Arg::u32(w[0].rows as u32),
+                Arg::u32(w[1].rows as u32),
+                Arg::u32(cols as u32),
+                ss,
+                Arg::u32(norm_partials(cols) as u32),
+                Arg::f32(eps),
+            ],
+            [total / 8, 1, 1],
+            [64, 1, 1],
+        );
+    }
+
+    /// `y = silu(Wg · n) · (Wu · n)` con `n = RMSNorm(x)` desde [`Kernels::add_norm_prep`], en un
+    /// dispatch. q4_0, filas múltiplo de 8. Mismos bits que dos `gemv_scaled` más `swiglu`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemv_scaled_swiglu<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        gate: QMatrix<'a>,
+        up: QMatrix<'a>,
+        xw: Arg<'a>,
+        ss: Arg<'a>,
+        eps: f32,
+        y: Arg<'a>,
+    ) {
+        assert!(gate.qtype == WeightType::Q4_0 && up.qtype == WeightType::Q4_0);
+        assert!(gate.rows == up.rows && gate.cols == up.cols && gate.rows % 8 == 0);
+        cmd.dispatch_groups(
+            &self.gemv_scaled_swiglu_q4_0,
+            &[
+                Arg::buf(gate.data),
+                Arg::buf(up.data),
+                xw,
+                y,
+                Arg::u32(gate.cols as u32),
+                ss,
+                Arg::u32(norm_partials(gate.cols) as u32),
+                Arg::f32(eps),
+            ],
+            [gate.rows / 8, 1, 1],
             [64, 1, 1],
         );
     }

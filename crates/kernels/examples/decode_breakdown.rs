@@ -229,6 +229,19 @@ fn main() {
         k.gemv_scaled(c, mg, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&gate));
         k.gemv_scaled(c, mu, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&up));
     });
+    let merged_qkv = rep!(c => {
+        k.gemv_scaled3(
+            c,
+            [mq, mk, mv],
+            Arg::buf(&attn),
+            Arg::buf(&ssb),
+            1e-6,
+            [Arg::buf(&q), Arg::buf(&kn), Arg::buf(&vn)],
+        );
+    });
+    let merged_gu = rep!(c => {
+        k.gemv_scaled_swiglu(c, mg, mu, Arg::buf(&attn), Arg::buf(&ssb), 1e-6, Arg::buf(&gate));
+    });
     let t = time(&ctx, |c| {
         k.gemv(c, head, Arg::buf(&hb), Arg::buf(&logits), 1)
     });
@@ -247,4 +260,14 @@ fn main() {
     );
     println!("{:<34} {:>9.3}", "gemv_scaled q, k, v", scaled_qkv * 1e3);
     println!("{:<34} {:>9.3}", "gemv_scaled gate, up", scaled_gu * 1e3);
+    println!(
+        "{:<34} {:>9.3}",
+        "gemv_scaled3 q, k, v (1 dispatch)",
+        merged_qkv * 1e3
+    );
+    println!(
+        "{:<34} {:>9.3}   (reemplaza gate + up + swiglu)",
+        "gemv_scaled_swiglu",
+        merged_gu * 1e3
+    );
 }

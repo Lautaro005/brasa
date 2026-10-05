@@ -172,3 +172,110 @@ fn add_norm_prep_y_gemv_scaled_igual_a_la_referencia() {
     eprintln!("add_norm_prep + gemv_scaled: error máximo / Σ|w·h| {worst:.2e}");
     assert!(worst <= 1e-5, "{worst}");
 }
+
+#[test]
+fn gemv_scaled3_y_swiglu_igual_a_las_llamadas_separadas() {
+    // Bit a bit contra gemv_scaled ×3 y gemv_scaled ×2 + swiglu (formas de Qwen3-4B).
+    use brasa_kernels::{QMatrix, WeightType};
+    let ctx = Context::new().unwrap();
+    let k = Kernels::new(&ctx).unwrap();
+    let mut rng = Rng::new(41);
+    let (h, ffn, eps) = (2560usize, 9728usize, 1e-6f32);
+    let mats: Vec<(usize, Vec<u8>)> = [4096, 1024, 1024, ffn, ffn]
+        .iter()
+        .map(|&r| (r, rng.q4_0(r, h)))
+        .collect();
+    let bufs: Vec<_> = mats
+        .iter()
+        .map(|(_, w)| ctx.buffer_from(w).unwrap())
+        .collect();
+    let m = |i: usize| QMatrix {
+        data: &bufs[i],
+        qtype: WeightType::Q4_0,
+        rows: mats[i].0,
+        cols: h,
+    };
+    let x = ctx.buffer_from(&rng.vec(h, 30.0)).unwrap();
+    let nw = ctx.buffer_from(&rng.vec(h, 1.0)).unwrap();
+    let xw = ctx.buffer::<f32>(h).unwrap();
+    let ss = ctx.buffer::<f32>(brasa_kernels::norm_partials(h)).unwrap();
+    let out = |n: usize| ctx.buffer::<f32>(n).unwrap();
+    let (mut a, mut b): (Vec<_>, Vec<_>) = (
+        [4096, 1024, 1024, ffn, ffn, ffn]
+            .iter()
+            .map(|&n| out(n))
+            .collect(),
+        [4096, 1024, 1024, ffn].iter().map(|&n| out(n)).collect(),
+    );
+    let mut cmd = ctx.command().unwrap();
+    k.add_norm_prep(
+        &mut cmd,
+        Arg::buf(&x),
+        None,
+        Arg::buf(&nw),
+        Arg::buf(&xw),
+        Arg::buf(&ss),
+        h,
+    );
+    for i in 0..3 {
+        k.gemv_scaled(
+            &mut cmd,
+            m(i),
+            Arg::buf(&xw),
+            Arg::buf(&ss),
+            eps,
+            Arg::buf(&a[i]),
+        );
+    }
+    k.gemv_scaled(
+        &mut cmd,
+        m(3),
+        Arg::buf(&xw),
+        Arg::buf(&ss),
+        eps,
+        Arg::buf(&a[3]),
+    );
+    k.gemv_scaled(
+        &mut cmd,
+        m(4),
+        Arg::buf(&xw),
+        Arg::buf(&ss),
+        eps,
+        Arg::buf(&a[4]),
+    );
+    k.swiglu(&mut cmd, &a[3], &a[4], &a[5], ffn);
+    k.gemv_scaled3(
+        &mut cmd,
+        [m(0), m(1), m(2)],
+        Arg::buf(&xw),
+        Arg::buf(&ss),
+        eps,
+        [Arg::buf(&b[0]), Arg::buf(&b[1]), Arg::buf(&b[2])],
+    );
+    k.gemv_scaled_swiglu(
+        &mut cmd,
+        m(3),
+        m(4),
+        Arg::buf(&xw),
+        Arg::buf(&ss),
+        eps,
+        Arg::buf(&b[3]),
+    );
+    cmd.commit_and_wait().unwrap();
+    let bits = |v: &mut brasa_metal::Buffer<f32>| {
+        v.as_mut_slice()
+            .iter()
+            .map(|f| f.to_bits())
+            .collect::<Vec<_>>()
+    };
+    for i in 0..3 {
+        assert!(
+            bits(&mut a[i]) == bits(&mut b[i]),
+            "gemv_scaled3: salida {i} distinta"
+        );
+    }
+    assert!(
+        bits(&mut a[5]) == bits(&mut b[3]),
+        "gemv_scaled_swiglu distinto"
+    );
+}

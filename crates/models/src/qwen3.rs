@@ -449,9 +449,14 @@ impl Qwen3 {
         if decode {
             let h = (li > 0).then(|| Arg::buf(&ws.h));
             self.norm_prep(cmd, h, &l.attn_norm);
-            self.gemv_normed(cmd, &l.wq, Arg::buf(&ws.q));
-            self.gemv_normed(cmd, &l.wk, Arg::buf(&ws.k_new));
-            self.gemv_normed(cmd, &l.wv, Arg::buf(&ws.v_new));
+            k.gemv_scaled3(
+                cmd,
+                [l.wq.q(), l.wk.q(), l.wv.q()],
+                Arg::buf(&ws.norm_out),
+                Arg::buf(&ws.ss),
+                c.eps,
+                [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
+            );
         } else {
             k.rms_norm(
                 cmd,
@@ -514,8 +519,16 @@ impl Qwen3 {
         self.matmul(cmd, &l.wo, Arg::buf(&ws.attn), Arg::buf(&ws.h), tokens);
         if decode {
             self.norm_prep(cmd, Some(Arg::buf(&ws.h)), &l.ffn_norm);
-            self.gemv_normed(cmd, &l.gate, Arg::buf(&ws.gate));
-            self.gemv_normed(cmd, &l.up, Arg::buf(&ws.up));
+            // gate, up y SwiGLU en un dispatch; el resultado queda en ws.gate.
+            k.gemv_scaled_swiglu(
+                cmd,
+                l.gate.q(),
+                l.up.q(),
+                Arg::buf(&ws.norm_out),
+                Arg::buf(&ws.ss),
+                c.eps,
+                Arg::buf(&ws.gate),
+            );
         } else {
             k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
             k.rms_norm(
@@ -529,8 +542,8 @@ impl Qwen3 {
             );
             self.matmul(cmd, &l.gate, Arg::buf(&ws.h), Arg::buf(&ws.gate), tokens);
             self.matmul(cmd, &l.up, Arg::buf(&ws.h), Arg::buf(&ws.up), tokens);
+            k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);
         }
-        k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);
         self.matmul(cmd, &l.down, Arg::buf(&ws.gate), Arg::buf(&ws.h), tokens);
         // En decode, la suma residual de down queda pendiente: la hace el norm_prep siguiente
         // (de la próxima capa o el final, antes del lm_head).
