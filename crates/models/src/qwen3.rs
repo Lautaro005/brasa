@@ -4,9 +4,9 @@
 //!   h = RMSNorm(x); q, k, v = W·h (k y v se escriben directo en la caché de la capa)
 //!   q, k = RMSNorm por cabeza (QK-norm); q, k = RoPE; o = atención(q, K, V)
 //!   x += Wo·o; h = RMSNorm(x); x += Wdown·(silu(Wgate·h) · Wup·h)
-//! Activaciones en f32; KV cache en f32 o f16 (`Limits.kv`, ADR 0009): K y V se calculan en un
-//! scratch f32 (QK-norm y RoPE incluidos) y `store_kv` las escribe en la caché. Todos los buffers
-//! se asignan en `Qwen3::load`; el forward solo encola dispatches.
+//! Activaciones en f32; KV cache en f32, f16 o Q8 (`Limits.kv`, ADR 0009): K y V se calculan en un
+//! scratch f32 y `qk_norm_rope_store` aplica QK-norm y RoPE y las escribe en la caché, en un solo
+//! dispatch. Todos los buffers se asignan en `Qwen3::load`; el forward solo encola dispatches.
 
 use std::path::Path;
 
@@ -448,48 +448,8 @@ impl Qwen3 {
         self.matmul(cmd, &l.wq, Arg::buf(&ws.h), Arg::buf(&ws.q), tokens);
         self.matmul(cmd, &l.wk, Arg::buf(&ws.h), Arg::buf(&ws.k_new), tokens);
         self.matmul(cmd, &l.wv, Arg::buf(&ws.h), Arg::buf(&ws.v_new), tokens);
-        // QK-norm: RMSNorm por cabeza, en el lugar.
-        k.rms_norm(
-            cmd,
-            Arg::buf(&ws.q),
-            Arg::buf(&l.q_norm),
-            Arg::buf(&ws.q),
-            tokens * c.heads,
-            c.head_dim,
-            c.eps,
-        );
-        k.rms_norm(
-            cmd,
-            Arg::buf(&ws.k_new),
-            Arg::buf(&l.k_norm),
-            Arg::buf(&ws.k_new),
-            tokens * c.kv_heads,
-            c.head_dim,
-            c.eps,
-        );
-        k.rope_neox(
-            cmd,
-            Arg::buf(&ws.q),
-            &self.rope,
-            tokens,
-            c.heads,
-            c.head_dim,
-            pos0,
-        );
-        k.rope_neox(
-            cmd,
-            Arg::buf(&ws.k_new),
-            &self.rope,
-            tokens,
-            c.kv_heads,
-            c.head_dim,
-            pos0,
-        );
-        // K y V de los tokens nuevos a la caché, en su tipo.
+        // QK-norm, RoPE y K/V a la caché (en su tipo), en un dispatch (T3.5).
         let kvt = self.limits.kv;
-        let (k_dst, v_dst) = self.kv.args(kv_off);
-        k.store_kv(cmd, kvt, Arg::buf(&ws.k_new), k_dst, tokens * kvd);
-        k.store_kv(cmd, kvt, Arg::buf(&ws.v_new), v_dst, tokens * kvd);
         let shape = AttnShape {
             tokens,
             hq: c.heads,
@@ -498,6 +458,17 @@ impl Qwen3 {
             pos0,
             kv: kvt,
         };
+        let (k_dst, v_dst) = self.kv.args(kv_off);
+        k.qk_norm_rope_store(
+            cmd,
+            kvt,
+            [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
+            [Arg::buf(&l.q_norm), Arg::buf(&l.k_norm)],
+            c.eps,
+            &self.rope,
+            [k_dst, v_dst],
+            shape,
+        );
         let (kc, vc) = self.kv.args(layer_off);
         if tokens == 1 && gqa_supported(c.heads, c.kv_heads) {
             k.decode_attention_lanes(

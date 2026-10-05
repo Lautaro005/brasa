@@ -36,6 +36,7 @@ pub mod sources {
     pub const FLASH_ATTENTION: &str = include_str!("metal/flash_attention.metal");
     pub const DECODE_ATTENTION: &str = include_str!("metal/decode_attention.metal");
     pub const KV: &str = include_str!("metal/kv.metal");
+    pub const QKV: &str = include_str!("metal/qkv.metal");
     /// Acceso a la KV cache por tipo; [`super::kv_source`] lo antepone a los kernels de atención.
     pub const KV_ACCESS: &str = include_str!("metal/kv_access.metal");
 }
@@ -154,6 +155,8 @@ pub struct Kernels {
     /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
     attn_decode_lanes: [[Pipeline; 3]; 4],
     store_kv: [Pipeline; 3],
+    /// `qk_norm_rope_store` por tipo de KV (T3.5).
+    qk_norm_rope_store: [Pipeline; 3],
     attn_decode_reduce: Pipeline,
 }
 
@@ -201,6 +204,7 @@ impl Kernels {
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
             flash_attn_gqa: gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
+            qk_norm_rope_store: kv_variants(ctx, QKV, "qk_norm_rope_store")?,
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
                 ctx.pipeline(KV, "store_kv_f16")?,
@@ -462,6 +466,60 @@ impl Kernels {
             ],
             [w.rows, tokens, 1],
             [64, 1, 1],
+        );
+    }
+
+    /// QK-norm, RoPE y escritura de K y V en la caché en un solo dispatch (T3.5). Mismos bits
+    /// que `rms_norm` de q y k, `rope_neox` de q y k y `store_kv` de k y v. `q` y `k` se
+    /// actualizan en el lugar; `k_dst`/`v_dst` apuntan a la caché desde `pos0`. head_dim 128.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qk_norm_rope_store<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        kv: KvType,
+        qkv: [Arg<'a>; 3],
+        norms: [Arg<'a>; 2],
+        eps: f32,
+        table: &'a RopeTable,
+        dst: [Arg<'a>; 2],
+        shape: AttnShape,
+    ) {
+        let AttnShape {
+            tokens,
+            hq,
+            hkv,
+            dim,
+            pos0,
+            ..
+        } = shape;
+        assert_eq!(dim, 128, "qk_norm_rope_store requiere head_dim 128");
+        assert_eq!(dim, table.dim, "dimensión de la tabla RoPE");
+        assert!(
+            pos0 + tokens <= table.max_pos,
+            "posición fuera de la tabla RoPE"
+        );
+        let [q, k, v] = qkv;
+        let [qn, kn] = norms;
+        let [kd, vd] = dst;
+        cmd.dispatch_groups(
+            &self.qk_norm_rope_store[kv.idx()],
+            &[
+                q,
+                k,
+                v,
+                qn,
+                kn,
+                Arg::buf(&table.cos),
+                Arg::buf(&table.sin),
+                kd,
+                vd,
+                Arg::u32(hq as u32),
+                Arg::u32(hkv as u32),
+                Arg::u32(pos0 as u32),
+                Arg::f32(eps),
+            ],
+            [tokens * (hq + 2 * hkv), 1, 1],
+            [dim, 1, 1],
         );
     }
 

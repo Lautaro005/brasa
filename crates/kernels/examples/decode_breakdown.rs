@@ -203,10 +203,27 @@ fn main() {
             k.gemv(c, md, Arg::buf(&gate), Arg::buf(&hb), 1);
         }),
     );
+    let qk_fused = rep!(c => {
+        k.qk_norm_rope_store(
+            c,
+            KvType::F16,
+            [Arg::buf(&q), Arg::buf(&kn), Arg::buf(&vn)],
+            [Arg::buf(&hw), Arg::buf(&hw)],
+            1e-6,
+            &rope,
+            [Arg::buf(&kvst), Arg::buf(&kvst)],
+            shape,
+        );
+    });
     let t = time(&ctx, |c| {
         k.gemv(c, head, Arg::buf(&hb), Arg::buf(&logits), 1)
     });
     total += t;
     println!("{:<34} {:>9.3}", "lm_head (q8_0, una vez)", t * 1e3);
     println!("{:<34} {:>9.3}", "suma", total * 1e3);
+    println!(
+        "{:<34} {:>9.3}   (reemplaza rms_norm q/k + rope + store_kv)",
+        "qk_norm_rope_store (fusionado)",
+        qk_fused * 1e3
+    );
 }
