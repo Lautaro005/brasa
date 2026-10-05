@@ -1,0 +1,12 @@
+# Entorno offline de tools/ (Python 3.12). Instalar con:
+#   python3.12 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
+# gguf se instala desde el mismo commit de llama.cpp que el binario de baseline.
+huggingface_hub[hf_xet]==1.33.0
+tokenizers==0.23.2
+transformers==5.18.0
+torch==2.14.1
+safetensors==0.8.0
+numpy==2.5.3
+mlx==0.32.3
+mlx-lm==0.32.0
+gguf @ git+https://github.com/ggml-org/llama.cpp@7fe450e19305b828c199d602c23a8337aaa1f03b#subdirectory=gguf-py

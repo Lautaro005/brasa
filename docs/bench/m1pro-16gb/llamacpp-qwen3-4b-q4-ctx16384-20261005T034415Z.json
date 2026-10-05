@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "timestamp": "2026-10-05T03:44:15Z",
+  "brasa_commit": "d16f20500a1f",
+  "machine": {
+    "chip": "Apple M1 Pro",
+    "model": "MacBookPro18,1",
+    "memory_bytes": 17179869184,
+    "gpu_cores": 16,
+    "cpu_performance_cores": 8,
+    "cpu_efficiency_cores": 2,
+    "macos_version": "27.0",
+    "macos_build": "26A428"
+  },
+  "engine": {
+    "name": "llama.cpp",
+    "version": "0.5.0 (build 11146, commit 7fe450e19)",
+    "settings": [
+      "-n",
+      "128",
+      "-c",
+      "16384",
+      "-ngl",
+      "99",
+      "-fa",
+      "auto",
+      "-lm",
+      "none",
+      "--ignore-eos",
+      "--temp",
+      "0",
+      "-s",
+      "0",
+      "-no-cnv",
+      "--simple-io",
+      "--no-display-prompt"
+    ],
+    "label": ""
+  },
+  "model": {
+    "name": "qwen3-4b-q4",
+    "source_repo": "Qwen/Qwen3-4B",
+    "source_commit": "1cfa9a7208912126459214e8b04321603b3df60c",
+    "quant": "Q4_0 (bloques de 32, escala FP16)",
+    "weights_path": "models/qwen3-4b-q4_0.gguf",
+    "weights_sha256": "1d48be6063dbb33ec31888feaaad8b445d71a9479e44163a7ac799f1cac5a2f1",
+    "weights_bytes": 2369547104
+  },
+  "ctx": 16384,
+  "prompt_tokens": 16256,
+  "gen_tokens": 128,
+  "prompt_sha256": "6bd85823bcdac06b2839a4458cfa87e1c8fad16a4d3ff4ac6bb931c715a56e11",
+  "warmup_runs": 1,
+  "runs": [
+    {
+      "ttft_ms": 62562.15,
+      "prefill_ms": 62562.15,
+      "prefill_tok_s": 259.83761747318465,
+      "decode_ms": 4420.22,
+      "decode_tokens": 127,
+      "decode_tok_s": 28.731601594490773,
+      "peak_rss_bytes": 5378129920,
+      "peak_footprint_bytes": 5584573168
+    },
+    {
+      "ttft_ms": 62598.18,
+      "prefill_ms": 62598.18,
+      "prefill_tok_s": 259.6880612183933,
+      "decode_ms": 4435.69,
+      "decode_tokens": 127,
+      "decode_tok_s": 28.631396693637292,
+      "peak_rss_bytes": 5235769344,
+      "peak_footprint_bytes": 5586375432
+    },
+    {
+      "ttft_ms": 62589.5,
+      "prefill_ms": 62589.5,
+      "prefill_tok_s": 259.7240751244218,
+      "decode_ms": 4595.14,
+      "decode_tokens": 127,
+      "decode_tok_s": 27.637895689794,
+      "peak_rss_bytes": 5314428928,
+      "peak_footprint_bytes": 5585605384
+    }
+  ],
+  "summary": {
+    "ttft_ms": {
+      "median": 62589.5,
+      "min": 62562.15,
+      "max": 62598.18
+    },
+    "prefill_tok_s": {
+      "median": 259.7240751244218,
+      "min": 259.6880612183933,
+      "max": 259.83761747318465
+    },
+    "decode_tok_s": {
+      "median": 28.631396693637292,
+      "min": 27.637895689794,
+      "max": 28.731601594490773
+    },
+    "peak_rss_bytes": {
+      "median": 5314428928.0,
+      "min": 5235769344.0,
+      "max": 5378129920.0
+    },
+    "peak_footprint_bytes": {
+      "median": 5585605384.0,
+      "min": 5584573168.0,
+      "max": 5586375432.0
+    }
+  },
+  "system": {
+    "start_pressure": "normal",
+    "worst_pressure": "normal",
+    "start_available_percent": 69,
+    "min_available_percent": 30,
+    "start_swap_used": 10750787584,
+    "swap_growth": 0
+  },
+  "valid": true,
+  "invalid_reasons": [],
+  "notes": []
+}

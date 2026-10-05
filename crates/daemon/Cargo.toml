@@ -1,0 +1,23 @@
+[package]
+name = "brasa-daemon"
+description = "API HTTP local compatible con OpenAI y Anthropic, scheduler y Model Manager."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-runtime.workspace = true
+brasa-tokenizer.workspace = true
+brasa-catalog.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

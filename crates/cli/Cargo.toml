@@ -1,0 +1,31 @@
+[package]
+name = "brasa-cli"
+description = "Binario brasa."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "brasa"
+path = "src/main.rs"
+
+[dependencies]
+brasa-core.workspace = true
+brasa-memory.workspace = true
+brasa-tuner.workspace = true
+brasa-runtime.workspace = true
+brasa-tokenizer.workspace = true
+brasa-daemon.workspace = true
+brasa-catalog.workspace = true
+brasa-bench.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

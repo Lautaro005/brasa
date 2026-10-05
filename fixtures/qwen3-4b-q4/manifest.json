@@ -1,0 +1,719 @@
+{
+  "model": {
+    "repo": "Qwen/Qwen3-4B",
+    "commit": "1cfa9a7208912126459214e8b04321603b3df60c"
+  },
+  "reference": "tools/qwen3_ref.py, FP32 sobre los pesos decuantizados de model.brasa (ADR 0006)",
+  "torch": "2.14.1",
+  "greedy_tokens": 32,
+  "topk": 20,
+  "layout": "little-endian; logits por posición de prompt + greedy[:-1]; la fila j predice el token j+1; greedy genera siempre 32 tokens (no se detiene en EOS)",
+  "prompts": [
+    {
+      "id": "en-plain",
+      "kind": "text",
+      "prompt_tokens": 5,
+      "greedy_text": " Paris. The capital of Germany is Berlin. The capital of Spain is Madrid. The capital of Italy is Rome. The capital of Greece is Athens. The capital",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "bbaff4d2ecd5892d4a442b0f53131641bf6e6f284761dd20fc0664bc97145762"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            5
+          ],
+          "sha256": "5d2eb20a2c858ea86a32b984887767141c5b02b7530bdcc42b0fa31d31cee0d0"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "9bb0e04d3a85a4b433eb4ce1f3b2499fc4953ca1046d7d872d1925c0432e1938"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "dd6a897c4ade7680b7ecf2391c90385e7ef7240148cdd4db645fcfe896e96d6f"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            36,
+            20
+          ],
+          "sha256": "ff3177b0eff1a589174b1546800baf67a04fb2324d9c9d21d7d2569efa486b3f"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            36,
+            20
+          ],
+          "sha256": "4a6a15797ac4f50903ae58ead11e48b6f894a873c1f0191746f60e055f2e5557"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            36
+          ],
+          "sha256": "eb25ea67b86df957d05ada6dea2d12521922e60397c8ddb310b2ab87eb058b39"
+        },
+        "embed": {
+          "file": "embed.f32",
+          "dtype": "float32",
+          "shape": [
+            5,
+            2560
+          ],
+          "sha256": "1e2daeb3ab0ca99e788d4cf35a4e237e15d61ca373dcd85707c2150a057bb548"
+        },
+        "layer_00": {
+          "file": "layer_00.f32",
+          "dtype": "float32",
+          "shape": [
+            5,
+            2560
+          ],
+          "sha256": "4c3c29ee3f36f478f2ca8269c598d8ef6e484bbea0a06f3a06d0d3e43e392c8c"
+        },
+        "layer_35": {
+          "file": "layer_35.f32",
+          "dtype": "float32",
+          "shape": [
+            5,
+            2560
+          ],
+          "sha256": "1649bcc9d2d741dfd570cf45f26a409dc4b56b082568cae7bb668fa7b6db1426"
+        }
+      }
+    },
+    {
+      "id": "es-plain",
+      "kind": "text",
+      "prompt_tokens": 19,
+      "greedy_text": " vivía solo en una cabaña de madera. Un día, un hombre llegó a su puerta y le dijo: \"Quiero un cuch",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "ade60cf57e8201e7f4f11c6b93d9142773a9cdf2d4a687e2d53b13af3cba74c8"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            19
+          ],
+          "sha256": "bc923fe8f4cf590d358df0d7aa73817f2365ceaab50c060f1c9ede606f2fa376"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "e1bb49480353bdf2d65c01d65ac38df9691d64febade147ffb92f80b2f28b1fd"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "435a4929bf8eb8c88c9e81b6316242cdc1fa3175200fd6a5cd7666beb3647d72"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            50,
+            20
+          ],
+          "sha256": "de4d5e0a8d5d2cece6f34cc59a89ea6a7f36d6f53b849a2bddee572378e5ada7"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            50,
+            20
+          ],
+          "sha256": "756b026d5628c9df758f9bb17b9a923f7a2629f1a8b5930eff00315518b9f34a"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            50
+          ],
+          "sha256": "8bf5e15e1c1958c85da43e5e747335986fba5b29a7faa3740d53ab0aac2af29e"
+        }
+      }
+    },
+    {
+      "id": "code-rust",
+      "kind": "text",
+      "prompt_tokens": 31,
+      "greedy_text": "        _ => fibonacci(n - 1) + fibonacci(n - 2),\n    }\n}\n\nfn main() {\n    let result = fibonacci(10);\n",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "43c58e0a76c70823e0a7f54028d0831c0f5f7707f160104a46f2704c529b27ac"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            31
+          ],
+          "sha256": "e7896a255d09a0d7238fed62a98397f7403f3de94f13054fddccf341e3a235ed"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "f1501548e883dd56ea6003f48d96ab46c363afa40a65e1402d19a669e24150c8"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "3c2d8b6034851e83a105453e5ba201563a9481c4c75845c2db1e1f539a4d6330"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            62,
+            20
+          ],
+          "sha256": "f1bffec6350af2bfac7d601922f4763551a473edf19c60a455314b5b71335e64"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            62,
+            20
+          ],
+          "sha256": "aae66a66c3fe8e4c0a30fcd8f0da92fa730134076bb871ca905ad0ee67bc410a"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            62
+          ],
+          "sha256": "5cea00aec80c6c573ff4ea755c5faa1af94a6754137b28405ca2eb5992b23c07"
+        },
+        "embed": {
+          "file": "embed.f32",
+          "dtype": "float32",
+          "shape": [
+            31,
+            2560
+          ],
+          "sha256": "58ed4ebe8e226f7a5736ea8add1b9c1dd983e6eec90f7ab32c8c216f63eaf01c"
+        },
+        "layer_00": {
+          "file": "layer_00.f32",
+          "dtype": "float32",
+          "shape": [
+            31,
+            2560
+          ],
+          "sha256": "cdfa8c92410bdb1192c5078628f7ae0ac7482302f06f15d3291166a2fc84c3a1"
+        },
+        "layer_35": {
+          "file": "layer_35.f32",
+          "dtype": "float32",
+          "shape": [
+            31,
+            2560
+          ],
+          "sha256": "de99ebd853500c7391b00a197800ab1a3a71690c37528a6d3bce0c1fa849913e"
+        }
+      }
+    },
+    {
+      "id": "unicode",
+      "kind": "text",
+      "prompt_tokens": 35,
+      "greedy_text": " 10\n\n  10\n\n  10\n\n  10\n\n  10\n\n  10\n\n  1",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "077cf1805f0be2ed8d219c78deb6a4d3677f7e18b67e9ea6266e394f37a84444"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            35
+          ],
+          "sha256": "365d312a9d35ba62acb0345a01956d70a89449fe658fd857b6b185861db7250a"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "45c364c2376c53b5da9eea6299d93907ca7ff6ce3296f864d71b29a22edeae78"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "c599f4bfcdc8cd8f465c1dadfbe61fff525f86d1939e148d887c70c4e98e6030"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            66,
+            20
+          ],
+          "sha256": "7acbc806e7accffc50a7c95d638f67b68ee234b438a78aec1078d74b5d566d2e"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            66,
+            20
+          ],
+          "sha256": "f2bc6c4111e978ade6e42edbb098bc43e57b920aee95c7bf558f3b0fdd0b9086"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            66
+          ],
+          "sha256": "b1890c3b894e025ddd0cb572f618ec6aef485275f2a98cccb4af71f434b2384b"
+        }
+      }
+    },
+    {
+      "id": "chat-system",
+      "kind": "chat",
+      "prompt_tokens": 39,
+      "greedy_text": "<think>\nOkay, the user is asking about \"caché de KV en un transformer\". First, I need to make sure I understand the question correctly.",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "0a116a40a9baf282bfe23c125c2db63337a9de6a0c52f78f54b6788ababfb091"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            39
+          ],
+          "sha256": "85d5f90721d2a187550f2763cfecb107f5a27f442589fa81719d1c7bf8b066c7"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "bf3ed3aa2d17937b050720665a8e019b026bc897b214d7cb13f6d73a98cf20c2"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "636cdcf4b5085222c6afffa453829bcc2618ba01ef98c5f7f0c4736872326899"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            70,
+            20
+          ],
+          "sha256": "64cb12738c48c065c1004815903717f1d5d0bed6d411bb72e28f6c7b89e95708"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            70,
+            20
+          ],
+          "sha256": "d2c636bd5f006415d8330f13eaa9552f9ad671eb0ea781c18b0fb844b9d5011c"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            70
+          ],
+          "sha256": "3a70cf70ef323ed7515ee67bc6a42891d7c64b96d219cfdfa884f6a8f2d2b76e"
+        },
+        "embed": {
+          "file": "embed.f32",
+          "dtype": "float32",
+          "shape": [
+            39,
+            2560
+          ],
+          "sha256": "ee79c212dfa75a501bd4dd14a2112c56dfd4277bb99abcfb4df171a6952d4062"
+        },
+        "layer_00": {
+          "file": "layer_00.f32",
+          "dtype": "float32",
+          "shape": [
+            39,
+            2560
+          ],
+          "sha256": "52b2619606aec9565d1e7ef6f6a768db5f9e056fdd2cf1ab0dde01a1c54fdeb0"
+        },
+        "layer_35": {
+          "file": "layer_35.f32",
+          "dtype": "float32",
+          "shape": [
+            39,
+            2560
+          ],
+          "sha256": "b558ea03e9a051594f55878a80a95dbdbde76e491e1525d07f34d18b32639125"
+        }
+      }
+    },
+    {
+      "id": "chat-no-think",
+      "kind": "chat",
+      "prompt_tokens": 20,
+      "greedy_text": "Silicon whispers light,  \nApple's core ignites the flame—  \npower in the core.<|im_end|><|im_end|>\n\n**Note:** This haiku captures the essence",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "a711faac0d3eca9b64bb64b2bdaee4db8118b0db39c22dd5680eaa3935be6ce2"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            20
+          ],
+          "sha256": "77ae1d4fb19e58b71d3ce84de0b24fad66aa1206d396c4a035152dc867b587fc"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "e8aef4432dec3db6e831ec424d7a703ea3abd23435daac9c449100fb78403168"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "84748bdc3beb58fd91add6aaf08b2c56aaaec3be3e7310e9f7b1d2fdf08b3cee"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            51,
+            20
+          ],
+          "sha256": "36bfcddeec7adbfe10c9d8de649952d604b2b1f83ad9b46eee92b8e118edcdfa"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            51,
+            20
+          ],
+          "sha256": "1c3b6d215673af9a111e4b1430b9883d611ce35447eeb8207e48e05018037a34"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            51
+          ],
+          "sha256": "5b31ca59dc1a0273bb9a309155a38c2da7aca12ea140d2c99089e0862c25a2fc"
+        }
+      }
+    },
+    {
+      "id": "chat-multiturn-think",
+      "kind": "chat",
+      "prompt_tokens": 38,
+      "greedy_text": "<think>\nOkay, the user asked for 17 multiplied by 23, which I calculated as 391. Now they're asking to divide",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "9785e0a161c10ab0e8e3ff4e0242ebfe2154b70c96a6e91489a729a4a0778fd8"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            38
+          ],
+          "sha256": "57305a67fc499fed095e0d2275e843fce5e0a1eea5cd913de76cd43f53f53965"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "246fe2c3535ddf32846965e5088357eeb56a6f2c1599de66794aed848915a38d"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "0005fa0a686af905aaac9e3bd0f3b5ae8fe99566c509516c2936ca6f7d3d1f8c"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            69,
+            20
+          ],
+          "sha256": "a213249ac3a92a0bc5d69f0f46418a05a9bf4d7ad9b6fa11458b6e0227751610"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            69,
+            20
+          ],
+          "sha256": "9040ed7ea2bb36d0604f7e208cc517c887e4baed2109f2e36b0af3077708f757"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            69
+          ],
+          "sha256": "d208f8ed8bfd7c5ad6942f14ca885e9f998f06df74a67c63f3f0b202be3835bf"
+        }
+      }
+    },
+    {
+      "id": "tools-definition",
+      "kind": "chat",
+      "prompt_tokens": 239,
+      "greedy_text": "<think>\nOkay, the user is asking to see the contents of Cargo.toml. Let me think about how to approach this.\n\nFirst, I need to check",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "bbd093bb08fd832b0349f7762bc51d73499f3b3ce5851b056b91c118c8aaccd4"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            239
+          ],
+          "sha256": "bf8629cb1710381a551d0f381780e40b84c129c8aeaa0b5571b43eace6c0fa16"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "7a8f8c180f0b7825c4db9bd6d295b88f54733f1a8b3db3e435f9e48af6e7a78d"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "38f402a5f3b3cacb9e93f38cce1c78556c4c1d45bd90333f5a4185238d715868"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            270,
+            20
+          ],
+          "sha256": "5aa7253590968034595166688f9549821d0aea35aafb37e38064432298ff62cf"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            270,
+            20
+          ],
+          "sha256": "6bcecd7b34a6ae2655756fa1adee993568607b60789f2526f66323193d954978"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            270
+          ],
+          "sha256": "d08e196c0ee491c04f7cde8e933bc8e4b3fc96212f6fac551f5e4f372609f62f"
+        }
+      }
+    },
+    {
+      "id": "tools-roundtrip",
+      "kind": "chat",
+      "prompt_tokens": 242,
+      "greedy_text": "<think>\nOkay, the user asked, \"What crates are in the workspace?\" I need to figure out how to answer that.\n\nFirst, I tried using the",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "394e79ad152ff63109ebfd9278aa1284f0af32f0a1412983282e9c0956f17328"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            242
+          ],
+          "sha256": "ea51cd4000a64ec022830a1b1d3474c7aea14219538397168c0e366a0f8ae202"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "39b2f43426cd075ca69d5e27c227852b1619afa4a1db8944e2ea433faef387d9"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "182dd6a82f389d34ca629d641a233ed67a861d587bdaf7ee51ed315450f4b4e9"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            273,
+            20
+          ],
+          "sha256": "54d5c9611034d0f1d5e7254c08685c2d58b5df16d022418b9d34c8a744eb9435"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            273,
+            20
+          ],
+          "sha256": "0de7fb2ac242d8db39fb3009a511d5e251436d68389e97365d023aa91cc08c76"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            273
+          ],
+          "sha256": "b4fa8005d21536b2a876411fae524c2f7961ce1d2d377da94289b9a0202bf2b6"
+        }
+      }
+    },
+    {
+      "id": "long-context",
+      "kind": "text",
+      "prompt_tokens": 1920,
+      "greedy_text": " B/token (76 KiB).\n- Q4 por bloques de 32 (32 B): 58 912 B/token",
+      "files": {
+        "prompt": {
+          "file": "prompt.txt",
+          "sha256": "8117de9591d25d73ba9b9f9fdbc5041bff6b5d6647354d5b980a9916a0f28bc6"
+        },
+        "tokens": {
+          "file": "tokens.i32",
+          "dtype": "int32",
+          "shape": [
+            1920
+          ],
+          "sha256": "56979af50200807a2a6a6c400c40f5920a810deced2de54aae366aacd0804f12"
+        },
+        "greedy": {
+          "file": "greedy.i32",
+          "dtype": "int32",
+          "shape": [
+            32
+          ],
+          "sha256": "53d33d40bd994cbd2c37f45caa8cf1403fad9dcaf4bb7eab027c32f25b93dc9d"
+        },
+        "last_logits": {
+          "file": "last_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            151936
+          ],
+          "sha256": "5613911e6c61cd2abbb43dd3df349006fb44d0c11ae2684ff8c8a7979e4876cf"
+        },
+        "topk_ids": {
+          "file": "topk_ids.i32",
+          "dtype": "int32",
+          "shape": [
+            1951,
+            20
+          ],
+          "sha256": "be03fcaf4e284fb5bf595373ee35cbb7b88e8d1f716f90cc7c1855c2e29b7f2d"
+        },
+        "topk_logits": {
+          "file": "topk_logits.f32",
+          "dtype": "float32",
+          "shape": [
+            1951,
+            20
+          ],
+          "sha256": "af3bb9fdb38ef7b6d61f8f3ccca05452a0ca841d3f5a2382816bd12a5e1a6cfc"
+        },
+        "logsumexp": {
+          "file": "logsumexp.f32",
+          "dtype": "float32",
+          "shape": [
+            1951
+          ],
+          "sha256": "a96663e02cdf5bba85315d67681aaf03dfa46923d7f7941f193ed88f1f302991"
+        }
+      }
+    }
+  ],
+  "weights": {
+    "file": "models/qwen3-4b-q4/model.brasa",
+    "data_sha256": "a0750ba715bcd6839c5a6a5386c0539c50d7808fb5a60afa2b03f4caa7c6c89c"
+  },
+  "fixtures_sha256": "60cc00187dd5929373f575b2b20fa00e36c245a736cab4b6e56f0e0558372bcb"
+}

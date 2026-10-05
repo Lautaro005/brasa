@@ -1,0 +1,24 @@
+[package]
+name = "brasa-models"
+description = "Adaptadores por familia de modelo y grafo de forward."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+brasa-kernels.workspace = true
+brasa-quant.workspace = true
+brasa-tokenizer.workspace = true
+brasa-memory.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

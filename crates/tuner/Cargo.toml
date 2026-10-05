@@ -1,0 +1,16 @@
+[package]
+name = "brasa-tuner"
+description = "Autotuner, fingerprint de hardware y base de tuning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
