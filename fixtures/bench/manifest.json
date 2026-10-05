@@ -1,0 +1,21 @@
+{
+  "gen_tokens": 128,
+  "tokenizer": "Qwen/Qwen3-4B@1cfa9a72",
+  "prompts": {
+    "2048": {
+      "file": "prompt-2048.txt",
+      "prompt_tokens": 1920,
+      "sha256": "8117de9591d25d73ba9b9f9fdbc5041bff6b5d6647354d5b980a9916a0f28bc6"
+    },
+    "8192": {
+      "file": "prompt-8192.txt",
+      "prompt_tokens": 8064,
+      "sha256": "23e006c7e99cf09ffec3e49d7b52dcf3ce844d776d2aefc6096a11f51d12d7d2"
+    },
+    "16384": {
+      "file": "prompt-16384.txt",
+      "prompt_tokens": 16256,
+      "sha256": "6bd85823bcdac06b2839a4458cfa87e1c8fad16a4d3ff4ac6bb931c715a56e11"
+    }
+  }
+}

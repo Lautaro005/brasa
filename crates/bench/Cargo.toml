@@ -9,7 +9,12 @@ rust-version.workspace = true
 
 [dependencies]
 brasa-core.workspace = true
+brasa-memory.workspace = true
+brasa-tuner.workspace = true
 brasa-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

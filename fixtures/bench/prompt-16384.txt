@@ -1,0 +1,1747 @@
+### Archivo: CLAUDE.md
+
+# CLAUDE.md — Brasa
+
+Brasa es un engine de inferencia local, propio y open source, optimizado para Apple Silicon. Se opera desde la terminal (`brasa`), expone una API local compatible con OpenAI y Anthropic, y más adelante tendrá una GUI web. Su uso principal es servir **agentes con herramientas** (Codex, Claude Code, Pi, Hermes, Cline, OpenCode), no chat general.
+
+Documento de arquitectura completo: "Arquitectura del engine de inferencia para Apple Silicon" (Claude Docs). Plan de tareas: `PLAN.md`.
+
+## Hardware objetivo
+
+- **Desarrollo y perfil 16 GB:** MacBook Pro M1 Pro, 16 GB.
+- **Perfil 8 GB:** Mac M2, 8 GB. Todo cambio de memoria o kernels se valida también acá.
+- Primer modelo: **Qwen3-4B** (transformer denso, GQA, Apache-2.0), cuantización Q4 por grupos de 32.
+
+## Reglas no negociables
+
+1. **Nada de Ollama, llama.cpp ni MLX en el camino caliente.** Pueden usarse solo en `crates/bench` como baseline y en `tools/` para generar referencias.
+2. **Ningún kernel Metal entra sin tres cosas:** implementación de referencia en CPU, test de equivalencia numérica con tolerancia documentada y microbenchmark.
+3. **Correcto primero, rápido después.** Una optimización que cambia logits fuera de tolerancia se revierte.
+4. **Decode sin asignaciones:** buffers, scratch y KV se preasignan al cargar el modelo. Cualquier `alloc` en el loop de decode es un bug.
+5. **Memoria presupuestada:** antes de cargar se calcula pesos + KV + workspace + scratch + margen del sistema. Si no entra, se baja el contexto o se rechaza; nunca swap silencioso.
+6. **Nada se afirma sin medir.** Velocidad, memoria y calidad se reportan como "medido en <chip> <RAM>" o "estimado". No se escriben cifras de speedup en docs o README sin un reporte de `brasa benchmark` que las respalde.
+7. **Python solo offline** (`tools/`): conversión, cuantización, logits de referencia. El binario final no depende de Python.
+8. **La API compatible es transporte.** Los tipos internos son propios (`crates/core`); los formatos OpenAI y Anthropic se traducen en `crates/daemon`.
+9. **Sin telemetría saliente.** El fingerprint de hardware es local y no incluye número de serie ni identificadores personales.
+
+## Estructura
+
+```text
+crates/core        tipos comunes (DType, Shape, errores, config)
+crates/metal       dispositivo, buffers, command queues, cache de pipelines
+crates/kernels     fuentes .metal y registro de variantes por chip
+crates/quant       empaquetado Q4/Q8 y formato nativo de pesos
+crates/tokenizer   BPE y chat template
+crates/models      adaptadores por familia (qwen3 primero) y grafo de forward
+crates/memory      planner de memoria, KV cache, presupuesto por perfil
+crates/tuner       autotuner, fingerprint, base de tuning
+crates/runtime     sesión: prefill, decode, sampling, prefix cache
+crates/catalog     manifiestos, descarga, verificación por hash
+crates/bench       harness y reportes comparables
+crates/daemon      API HTTP, scheduler, Model Manager
+crates/cli         binario `brasa`
+tools/             Python offline
+fixtures/          logits y tokens de referencia
+docs/adr/          decisiones de arquitectura
+```
+
+Las dependencias solo apuntan hacia abajo: `cli` y `daemon` dependen de `runtime`; `runtime` de `models`, `memory`, `tuner`; todos de `metal` y `core`. `metal` no depende de nada del producto.
+
+## Comandos
+
+```bash
+./scripts/ci.sh                                # fmt --check + clippy -D warnings + test (CI local)
+cargo build --release
+cargo test --workspace
+cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, macOS, Metal, presión
+cargo run -p brasa-cli -- doctor --json
+./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
+```
+
+Previstos (todavía no existen):
+
+```bash
+cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica de kernels
+cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048
+```
+
+(Mantener esta sección verdadera: mover cada comando a la lista de arriba cuando exista.)
+
+## Requisitos de API para agentes
+
+- `POST /v1/chat/completions` con streaming SSE y `tools`/`tool_calls`.
+- `POST /v1/responses` (subconjunto mínimo con streaming y herramientas).
+- `POST /v1/messages` formato Anthropic con `tool_use`, para Claude Code.
+- `GET /v1/models` informa el **contexto real del perfil de memoria**, no el nominal del modelo.
+- Cancelación de generación y errores en el formato del cliente.
+- Prefix caching: los agentes reenvían el mismo prompt largo en cada turno; el TTFT depende de reutilizar su KV.
+- Suite `conformance` en CI contra el SDK oficial de OpenAI y un cliente Anthropic. Verificar los formatos contra la versión actual de cada herramienta antes de cerrar la fase 2.
+
+## Contexto para agentes
+
+Los agentes de código mandan prompts de 15K a 30K tokens. Un perfil de 2K de contexto sirve para pruebas pero no para este caso de uso. Perfil por defecto en modo agente: **16K con KV Q8**, y medir en la Mac de 8 GB si es estable.
+
+## Flujo de trabajo
+
+- Trabajar una tarea de `PLAN.md` por vez. Cada tarea tiene criterio de aceptación verificable por comando.
+- Antes de una decisión de diseño no trivial, escribir un ADR corto en `docs/adr/`.
+- Registrar resultados de benchmark en `docs/bench/` con chip, RAM, macOS, commit del engine y commit de pesos.
+- Si un criterio no se cumple, no avanzar de fase: documentar el bloqueo.
+
+## Git
+
+- Commits pequeños y descriptivos, uno por tarea.
+- No incluir la línea `Claude-Session: ...` en los mensajes de commit. Co-Authored-By puede quedar.
+- No hacer push ni abrir PR sin pedirlo.
+
+
+### Archivo: PLAN.md
+
+# PLAN.md — Brasa
+
+Estado: fases 0 y 1 desglosadas; el resto está a nivel de objetivo. Cada tarea termina con un comando que demuestra el criterio.
+
+## Qué cambia por usar agentes con herramientas
+
+- **Prefix cache y tool calling suben de prioridad:** pasan de la fase 3 a la fase 2, porque sin ellos Codex y Claude Code no son usables.
+- **Contexto:** el perfil de agente apunta a 16K con KV Q8 (en Qwen3-4B, 1,20 GiB de KV; ver tabla); 2K queda solo para tests. A confirmar con mediciones.
+- **Calidad de herramientas:** Qwen3-4B es chico para agentes complejos. Sirve para validar el engine; el valor se mide en latencia, memoria y estabilidad, no en que reemplace a un modelo grande.
+
+## KV cache de Qwen3-4B
+
+Calculado desde el `config.json` real (`Qwen/Qwen3-4B` @ `1cfa9a72`): 36 capas, 8 cabezas KV,
+`head_dim` 128, 32 cabezas de query (GQA 4:1). Por token se guardan K y V:
+2 × 36 × 8 × 128 = 73 728 elementos.
+
+- FP16: 147 456 B/token (144 KiB).
+- Q8 por bloques de 32 con escala FP16 (34 B cada 32 elementos): 78 336 B/token (76,5 KiB).
+
+| Contexto | KV FP16 | KV Q8 (g32) |
+|---:|---:|---:|
+| 2 048 | 288 MiB | 153 MiB |
+| 8 192 | 1,13 GiB | 612 MiB |
+| 16 384 | 2,25 GiB | 1,20 GiB |
+| 32 768 | 4,50 GiB | 2,39 GiB |
+| 40 960 (máx. nativo) | 5,63 GiB | 2,99 GiB |
+
+Cálculo, no medición: no incluye workspace de atención ni padding de alineación. El planner (T1.8)
+usa estas cifras como piso.
+
+## Fase 0 — Base y contrato
+
+**T0.1 Workspace.** Crear el workspace de Rust con los crates vacíos de `CLAUDE.md`, CI local (`fmt`, `clippy`, `test`).
+Aceptación: `cargo test --workspace` pasa en limpio.
+
+**T0.2 `doctor`.** Detectar chip, GPU cores, RAM física, versión de macOS, familia Metal y presión de memoria actual.
+Aceptación: `brasa doctor` imprime los datos correctos en la M1 Pro 16 GB y en la M2 8 GB; salida también en `--json`.
+
+**T0.3 Telemetría de memoria.** Medir memoria residente del proceso y presión del sistema durante una ejecución.
+Aceptación: un test arranca un buffer de tamaño conocido y el reporte lo refleja dentro de un margen.
+
+**T0.4 Harness de benchmark.** Formato de reporte (chip, RAM, macOS, commit, modelo, cuantización, contexto, TTFT, prefill tok/s, decode tok/s, pico de memoria).
+Aceptación: `brasa benchmark --baseline llama.cpp` ejecuta Qwen3-4B Q4 con el mismo prompt y guarda un reporte JSON en `docs/bench/`.
+
+**T0.5 Baselines.** Medir llama.cpp y MLX-LM en las dos Macs con contextos 2K, 8K y 16K.
+Aceptación: tabla de referencia en `docs/bench/baseline.md`. Este es el número a superar.
+
+**T0.6 Fixtures.** Script en `tools/` que, con un runtime de referencia FP16, guarda tokens y logits de Qwen3-4B para un set fijo de prompts.
+Aceptación: `fixtures/qwen3-4b/` contiene prompts, tokens y logits con hash registrado.
+
+## Fase 1 — Núcleo correcto
+
+**T1.1 Runtime Metal mínimo.** Dispositivo, buffers compartidos, command queue, compilación de MSL desde fuente y cache de pipelines.
+Aceptación: un kernel de suma de vectores corre y se compara con CPU.
+
+**T1.2 Tokenizer y chat template de Qwen3.** BPE y plantilla, incluyendo formato de herramientas.
+Aceptación: tokens idénticos a la referencia en todos los prompts de `fixtures/`.
+
+**T1.3 Formato nativo Q4.** Empaquetado Q4 por grupos de 32, escalas junto al bloque, alineado a página, hash verificable. Conversor en `tools/` desde safetensors.
+Aceptación: desempaquetar y comparar contra los pesos originales dentro de la tolerancia de cuantización documentada.
+
+**T1.4 Kernels básicos con referencia CPU.** RMSNorm, matmul Q4 (GEMV y GEMM simples), RoPE, softmax, activación SwiGLU, embedding.
+Aceptación: cada kernel con test de equivalencia y microbenchmark; sin optimizar todavía.
+
+**T1.5 Atención con GQA y QK-norm.** Versión simple correcta, sin tiling.
+Aceptación: salida de una capa igual a la referencia dentro de tolerancia.
+
+**T1.6 Forward pass completo y KV cache.** Preasignada, contexto fijo por perfil.
+Aceptación: logits finales dentro de tolerancia en todos los fixtures; teacher forcing coincide.
+
+**T1.7 Sampling y `run`.** Greedy, temperatura, top-p, seed.
+Aceptación: `brasa run qwen3-4b-q4` genera texto coherente en la M1 Pro y en la M2 8 GB sin swap creciente.
+
+**T1.8 Planner de memoria v0.** Calcula pesos + KV + workspace + margen y rechaza lo que no entra.
+Aceptación: en la M2 8 GB rechaza un contexto que no cabe con un mensaje claro y acepta uno que sí.
+
+Compuerta de la fase 1: calidad correcta en las dos Macs. Todavía no se exige velocidad.
+
+## Fase 2 — API para agentes
+
+- `serve` con `/v1/chat/completions`, `/v1/responses` y `/v1/messages`, streaming, cancelación y `/v1/models` con contexto real.
+- Tool calling con parseo del template de Qwen3 y JSON válido.
+- Prefix cache de KV entre turnos.
+- `connect <herramienta>` genera la configuración para Codex, Claude Code, Cline y OpenCode.
+- Suite `conformance`.
+- Aceptación: Codex y Claude Code completan una tarea real contra el daemon local; el segundo turno con el mismo prefijo reduce el TTFT de forma medible.
+
+## Fase 3 — Velocidad
+
+GEMV de decode y GEMM de prefill especializados, atención tiled estilo FlashAttention, fusión validada, KV Q8, prefill por chunks.
+Aceptación: igualar o superar los baselines de T0.5 en cada contexto, sin salir de tolerancia de calidad.
+
+## Fase 4 — Autotuning y memoria
+
+Autotuner con fingerprint, base de tuning, perfiles 8 y 16 GB, Model Manager por API (`load`, `idle`, `pause`, `resume`, `stop`).
+Aceptación: quick tune menor a 1 minuto; en la M2 8 GB presión estable con el contexto declarado.
+
+## Fase 5 en adelante
+
+GUI web, segunda familia (Llama 3.2 3B), luego speculative decoding, Qwen3.5 (Gated DeltaNet) y MoE. Cada una entra solo si mejora una medición frente a la ruta base.
+
+## Decisiones abiertas
+
+- ~~Confirmar `config.json` real de Qwen3-4B y recalcular la tabla de KV.~~ Hecho (ver tabla de KV).
+- Verificar los formatos de API de Codex y Claude Code vigentes antes de la fase 2.
+- Licencia del repo: Apache-2.0 propuesta.
+
+
+### Archivo: docs/adr/0001-bindings-metal-y-sistema.md
+
+# ADR 0001 — Bindings de Metal y consultas al sistema
+
+Estado: aceptada (T0.2)
+
+## Contexto
+
+Brasa necesita hablar con Metal (dispositivo, buffers, pipelines, command queues) y consultar el
+sistema (sysctl, IOKit, Mach) desde Rust. Opciones evaluadas:
+
+- `metal` (metal-rs, gfx-rs): mantenimiento detenido; sus propios autores recomiendan migrar a objc2.
+- `objc2-metal` 0.3: generado desde los headers del SDK, cubre Metal 3/4, tipado, mantenido.
+- FFI propio a Objective-C: control total, mucho código repetitivo y sin seguridad de tipos.
+
+## Decisión
+
+- Metal: `objc2` + `objc2-metal` + `objc2-foundation`, encapsulados en `crates/metal`. Ningún otro
+  crate importa objc2 directamente; el resto ve tipos propios de `brasa-metal`.
+- sysctl y estadísticas de VM: `libc` 0.2 (sysctlbyname, host_statistics64, xsw_usage).
+- IOKit (núcleos de GPU): FFI mínima propia (5 funciones) en `crates/tuner`; no justifica una
+  dependencia más.
+- CLI: `clap` (derive). JSON: `serde` + `serde_json`.
+
+## Consecuencias
+
+- Las llamadas a objc2 son `unsafe` en varios puntos; se concentran en `brasa-metal` con comentarios
+  `SAFETY`.
+- Si objc2-metal cambia de API entre versiones menores (0.x), el impacto queda acotado a un crate.
+- Nada de esto agrega dependencias de runtime fuera de los frameworks del sistema.
+
+
+### Archivo: docs/adr/0002-metodologia-de-benchmark.md
+
+# ADR 0002 — Metodología de benchmark y baselines
+
+Estado: aceptada (T0.4)
+
+## Contexto
+
+T0.4 y T0.5 fijan el número a superar. Para que la comparación sea justa hay que fijar
+cuantización, prompt, definición de cada métrica y forma de medir la memoria, y que todo sea igual
+para llama.cpp, MLX-LM y Brasa.
+
+## Decisión
+
+**Cuantización comparable.** Brasa usa Q4 por grupos de 32 con escala por bloque. Equivalentes:
+
+- llama.cpp: `Q4_0` (bloques de 32, escala FP16). Se genera desde los safetensors oficiales con
+  `convert_hf_to_gguf.py` + `llama-quantize`, porque el repo GGUF oficial de Qwen solo trae
+  `Q4_K_M`. `Q4_K_M` se puede medir como referencia extra, marcada como tal.
+- MLX-LM: `mlx_lm.convert -q --q-bits 4 --q-group-size 32` (el default de MLX es 64).
+
+**Mismo prompt.** `tools/make_bench_prompts.py` genera, con el tokenizer oficial, un texto de
+exactamente `ctx - gen` tokens para cada contexto (2K, 8K, 16K). Es texto plano sin chat
+template, para que todos los engines procesen la misma secuencia. `gen` = 128.
+
+**Métricas.**
+
+- Prefill tok/s = tokens del prompt / tiempo de procesar el prompt.
+- Decode tok/s = (tokens generados − 1) / tiempo de generarlos, sin el primero.
+- TTFT = tiempo desde el prompt ya tokenizado hasta el primer token generado. No incluye carga del
+  modelo.
+- Pico de memoria = "peak memory footprint" del proceso según `/usr/bin/time -l` (máximo de
+  `phys_footprint` en la vida del proceso, incluye memoria de GPU). Igual para todos los engines.
+  MLX además reporta su pico de GPU (`mx.get_peak_memory`).
+- Durante cada corrida se muestrea la memoria del sistema (`MemorySampler`): crecimiento de swap y
+  peor nivel de presión. Una corrida con swap creciente se marca como no válida.
+
+**Ejecución.** Decodificación greedy, EOS ignorado (para generar siempre `gen` tokens),
+1 corrida de calentamiento descartada + 3 medidas; se reporta la mediana y el rango.
+llama.cpp con todas las capas en GPU (`-ngl 99`), flash attention `auto` y KV FP16 por defecto;
+las variantes (KV Q8) se reportan como filas aparte.
+
+**Reporte.** JSON en `docs/bench/<chip>-<ram>/`, con chip, RAM, macOS, commit de Brasa, engine y
+versión, commit de pesos (HF), sha256 del archivo de pesos, cuantización, contexto y métricas.
+
+## Consecuencias
+
+- Las cifras de baseline dependen del estado de la máquina; el reporte guarda la presión inicial y
+  el swap, y el harness avisa si el sistema arranca bajo presión.
+- La comparación es por proceso completo (incluye runtime de Python en MLX), documentado en el
+  reporte.
+
+
+### Archivo: crates/bench/Cargo.toml
+
+[package]
+name = "brasa-bench"
+description = "Harness de benchmark y reportes comparables."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-runtime.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/bench/src/lib.rs
+
+//! Harness de benchmark y reportes comparables.
+
+
+### Archivo: crates/catalog/Cargo.toml
+
+[package]
+name = "brasa-catalog"
+description = "Manifiestos de modelos, descarga y verificación por hash."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-quant.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/catalog/src/lib.rs
+
+//! Manifiestos de modelos, descarga y verificación por hash.
+
+
+### Archivo: crates/cli/Cargo.toml
+
+[package]
+name = "brasa-cli"
+description = "Binario brasa."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "brasa"
+path = "src/main.rs"
+
+[dependencies]
+brasa-core.workspace = true
+brasa-memory.workspace = true
+brasa-tuner.workspace = true
+brasa-runtime.workspace = true
+brasa-daemon.workspace = true
+brasa-catalog.workspace = true
+brasa-bench.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/cli/src/doctor.rs
+
+//! `brasa doctor`: diagnóstico del hardware y del estado de memoria.
+
+use brasa_memory::system::{PressureLevel, SystemMemory, system_memory};
+use brasa_tuner::hardware::{HardwareInfo, hardware_info};
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+struct Report {
+    brasa_version: &'static str,
+    hardware: HardwareInfo,
+    memory: SystemMemory,
+}
+
+pub fn run(json: bool) {
+    let report = Report {
+        brasa_version: env!("CARGO_PKG_VERSION"),
+        hardware: hardware_info(),
+        memory: system_memory(),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("reporte serializable")
+        );
+    } else {
+        print_text(&report);
+    }
+}
+
+fn gib(bytes: u64) -> String {
+    format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
+}
+
+fn print_text(r: &Report) {
+    let hw = &r.hardware;
+    let mem = &r.memory;
+    println!("brasa {}", r.brasa_version);
+    println!();
+    println!("Hardware");
+    println!("  chip            {}", hw.chip);
+    println!("  modelo          {}", hw.model);
+    println!(
+        "  CPU             {} núcleos ({} rendimiento + {} eficiencia)",
+        hw.cpu_performance_cores + hw.cpu_efficiency_cores,
+        hw.cpu_performance_cores,
+        hw.cpu_efficiency_cores
+    );
+    match hw.gpu_cores {
+        Some(n) => println!("  GPU             {n} núcleos"),
+        None => println!("  GPU             núcleos desconocidos"),
+    }
+    println!("  RAM             {}", gib(hw.memory_bytes));
+    println!(
+        "  macOS           {} ({})",
+        hw.macos_version, hw.macos_build
+    );
+    println!("  arquitectura    {}", hw.arch);
+    println!();
+    println!("Metal");
+    match &hw.metal {
+        Some(m) => {
+            println!("  dispositivo     {}", m.name);
+            println!(
+                "  familia         {}{}{}",
+                m.apple_family.as_deref().unwrap_or("desconocida"),
+                if m.metal3 { ", metal3" } else { "" },
+                if m.metal4 { ", metal4" } else { "" }
+            );
+            println!(
+                "  memoria unif.   {}",
+                if m.unified_memory { "sí" } else { "no" }
+            );
+            println!("  working set rec {}", gib(m.recommended_max_working_set));
+            println!("  buffer máximo   {}", gib(m.max_buffer_length));
+            println!("  threadgroup mem {} KiB", m.max_threadgroup_memory / 1024);
+        }
+        None => println!("  no se encontró un dispositivo Metal"),
+    }
+    println!();
+    println!("Memoria del sistema");
+    let pressure = match mem.pressure {
+        PressureLevel::Normal => "normal",
+        PressureLevel::Warning => "advertencia",
+        PressureLevel::Critical => "crítica",
+        PressureLevel::Unknown => "desconocida",
+    };
+    println!("  presión         {pressure}");
+    if let Some(p) = mem.available_percent {
+        println!("  disponible      {p}% (según el kernel)");
+    }
+    println!("  libre           {}", gib(mem.free));
+    println!("  activa          {}", gib(mem.active));
+    println!("  inactiva        {}", gib(mem.inactive));
+    println!("  wired           {}", gib(mem.wired));
+    println!("  comprimida      {}", gib(mem.compressed));
+    println!(
+        "  swap            {} usados de {}",
+        gib(mem.swap_used),
+        gib(mem.swap_total)
+    );
+    if mem.pressure != PressureLevel::Normal || mem.swap_used > 1 << 30 {
+        println!();
+        println!(
+            "Aviso: el sistema ya está bajo presión de memoria o usando swap. Los benchmarks no \
+             son representativos en este estado; cerrá aplicaciones antes de medir."
+        );
+    }
+}
+
+
+### Archivo: crates/cli/src/main.rs
+
+//! Binario `brasa`.
+
+mod doctor;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "brasa",
+    version,
+    about = "Engine de inferencia local para Apple Silicon"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Muestra chip, núcleos, RAM, macOS, familia Metal y presión de memoria.
+    Doctor {
+        /// Salida en JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn main() {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Doctor { json } => doctor::run(json),
+    }
+}
+
+
+### Archivo: crates/cli/tests/doctor.rs
+
+use std::process::Command;
+
+fn brasa(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_brasa"))
+        .args(args)
+        .output()
+        .expect("no se pudo ejecutar brasa");
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn doctor_json_tiene_los_campos() {
+    let v: serde_json::Value = serde_json::from_str(&brasa(&["doctor", "--json"])).unwrap();
+    let hw = &v["hardware"];
+    assert!(hw["chip"].as_str().unwrap().starts_with("Apple M"));
+    assert!(hw["gpu_cores"].as_u64().unwrap() >= 7);
+    assert!(hw["memory_bytes"].as_u64().unwrap() >= 8 << 30);
+    assert!(hw["metal"]["apple_family"].is_string());
+    assert!(v["memory"]["pressure"].is_string());
+}
+
+#[test]
+fn doctor_texto() {
+    let s = brasa(&["doctor"]);
+    assert!(s.contains("chip") && s.contains("Metal") && s.contains("presión"));
+}
+
+/// Compara `brasa doctor --json` con fuentes independientes (`system_profiler`, `sw_vers`).
+/// Es el criterio de T0.2: corre igual en la M1 Pro 16 GB y en la M2 8 GB.
+#[test]
+fn doctor_coincide_con_system_profiler() {
+    let v: serde_json::Value = serde_json::from_str(&brasa(&["doctor", "--json"])).unwrap();
+    let hw = &v["hardware"];
+
+    let out = Command::new("system_profiler")
+        .args(["-json", "SPHardwareDataType", "SPDisplaysDataType"])
+        .output()
+        .expect("system_profiler");
+    let sp: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let hwsp = &sp["SPHardwareDataType"][0];
+    let gpu = &sp["SPDisplaysDataType"][0];
+
+    assert_eq!(hw["chip"], hwsp["chip_type"]);
+    assert_eq!(hw["model"], hwsp["machine_model"]);
+
+    // "16 GB"
+    let ram_gb: u64 = hwsp["physical_memory"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches(" GB")
+        .parse()
+        .unwrap();
+    assert_eq!(hw["memory_bytes"].as_u64().unwrap(), ram_gb << 30);
+
+    // "proc 10:8:2" o "proc 10:0:8:2": total, [otros niveles], rendimiento, eficiencia.
+    let procs: Vec<u64> = hwsp["number_processors"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("proc ")
+        .split(':')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let n = procs.len();
+    assert_eq!(hw["cpu_performance_cores"].as_u64().unwrap(), procs[n - 2]);
+    assert_eq!(hw["cpu_efficiency_cores"].as_u64().unwrap(), procs[n - 1]);
+
+    let gpu_cores: u64 = gpu["sppci_cores"].as_str().unwrap().parse().unwrap();
+    assert_eq!(hw["gpu_cores"].as_u64().unwrap(), gpu_cores);
+    assert_eq!(hw["metal"]["name"], gpu["sppci_model"]);
+
+    let sw = |flag: &str| {
+        let o = Command::new("sw_vers").arg(flag).output().unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
+    };
+    assert_eq!(hw["macos_version"].as_str().unwrap(), sw("-productVersion"));
+    assert_eq!(hw["macos_build"].as_str().unwrap(), sw("-buildVersion"));
+}
+
+
+### Archivo: crates/cli/tests/version.rs
+
+use std::process::Command;
+
+#[test]
+fn imprime_version() {
+    let out = Command::new(env!("CARGO_BIN_EXE_brasa"))
+        .arg("--version")
+        .output()
+        .expect("no se pudo ejecutar brasa");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout.trim(),
+        format!("brasa {}", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+
+### Archivo: crates/core/Cargo.toml
+
+[package]
+name = "brasa-core"
+description = "Tipos comunes de Brasa: DType, Shape, errores y configuración."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/core/src/lib.rs
+
+//! Tipos comunes de Brasa: DType, Shape, errores y configuración.
+
+pub mod sys;
+
+
+### Archivo: crates/core/src/sys.rs
+
+//! Lectura de `sysctl` por nombre. Base para fingerprint de hardware y telemetría de memoria.
+
+use std::ffi::CString;
+use std::mem::size_of;
+
+/// Lee un sysctl de tamaño fijo (`T` debe ser un tipo plano, sin punteros).
+///
+/// Devuelve `None` si el nombre no existe o el tamaño no coincide.
+pub fn sysctl_value<T: Copy + Default>(name: &str) -> Option<T> {
+    let cname = CString::new(name).ok()?;
+    let mut value = T::default();
+    let mut len = size_of::<T>();
+    // SAFETY: `value` es un `T` válido de `len` bytes; sysctlbyname escribe como mucho `len`
+    // bytes y actualiza `len` con lo escrito.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            cname.as_ptr(),
+            (&raw mut value).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0 && len == size_of::<T>()).then_some(value)
+}
+
+/// Lee un sysctl entero (acepta 4 u 8 bytes).
+pub fn sysctl_u64(name: &str) -> Option<u64> {
+    let bytes = sysctl_bytes(name)?;
+    match bytes.len() {
+        4 => Some(u32::from_ne_bytes(bytes.try_into().ok()?) as u64),
+        8 => Some(u64::from_ne_bytes(bytes.try_into().ok()?)),
+        _ => None,
+    }
+}
+
+/// Lee un sysctl de texto, sin el terminador nulo.
+pub fn sysctl_string(name: &str) -> Option<String> {
+    let mut bytes = sysctl_bytes(name)?;
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn sysctl_bytes(name: &str) -> Option<Vec<u8>> {
+    let cname = CString::new(name).ok()?;
+    let mut len = 0usize;
+    // SAFETY: consulta de tamaño con buffer nulo.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            cname.as_ptr(),
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    // SAFETY: `buf` tiene `len` bytes.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            cname.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(len);
+    Some(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_known_sysctls() {
+        assert!(sysctl_u64("hw.memsize").unwrap() >= 8 << 30);
+        assert!(sysctl_string("kern.osproductversion").is_some());
+        assert_eq!(sysctl_u64("hw.pagesize"), Some(16384));
+        assert!(sysctl_u64("no.existe.esto").is_none());
+    }
+}
+
+
+### Archivo: crates/daemon/Cargo.toml
+
+[package]
+name = "brasa-daemon"
+description = "API HTTP local, scheduler y Model Manager."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-runtime.workspace = true
+brasa-catalog.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/daemon/src/lib.rs
+
+//! API HTTP local, scheduler y Model Manager.
+
+
+### Archivo: crates/kernels/Cargo.toml
+
+[package]
+name = "brasa-kernels"
+description = "Fuentes .metal y registro de variantes por chip."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-metal.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/kernels/src/lib.rs
+
+//! Fuentes .metal y registro de variantes por chip.
+
+
+### Archivo: crates/memory/Cargo.toml
+
+[package]
+name = "brasa-memory"
+description = "Planner de memoria, KV cache y presupuesto por perfil."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+libc.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/memory/src/lib.rs
+
+//! Planner de memoria, KV cache y presupuesto por perfil.
+
+pub mod process;
+pub mod system;
+pub mod telemetry;
+
+
+### Archivo: crates/memory/src/process.rs
+
+//! Memoria del proceso actual según el kernel (`proc_pid_rusage`).
+//!
+//! La métrica principal es `phys_footprint`: es la que usa macOS para presión y jetsam e
+//! incluye páginas comprimidas y memoria de GPU asignada por el proceso. `resident` sola
+//! subestima cuando el sistema comprime.
+
+use serde::Serialize;
+
+/// Foto de memoria del proceso. Tamaños en bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProcessMemory {
+    /// Huella física (`ri_phys_footprint`).
+    pub footprint: u64,
+    /// Memoria residente (`ri_resident_size`).
+    pub resident: u64,
+    /// Pico de huella física en toda la vida del proceso.
+    pub lifetime_peak_footprint: u64,
+    /// Páginas leídas desde disco (incluye swap-in y mapeos de archivos).
+    pub pageins: u64,
+}
+
+/// Lee la memoria del proceso actual. `None` solo si el kernel rechaza la consulta.
+pub fn process_memory() -> Option<ProcessMemory> {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
+    // SAFETY: `info` tiene el tamaño de rusage_info_v4, que es lo que pide RUSAGE_INFO_V4.
+    let rc = unsafe {
+        libc::proc_pid_rusage(
+            libc::getpid(),
+            libc::RUSAGE_INFO_V4,
+            info.as_mut_ptr().cast(),
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: el kernel completó la estructura (rc == 0); además partió de ceros.
+    let info = unsafe { info.assume_init() };
+    Some(ProcessMemory {
+        footprint: info.ri_phys_footprint,
+        resident: info.ri_resident_size,
+        lifetime_peak_footprint: info.ri_lifetime_max_phys_footprint,
+        pageins: info.ri_pageins,
+    })
+}
+
+
+### Archivo: crates/memory/src/system.rs
+
+//! Estado de memoria del sistema: uso de páginas, swap y nivel de presión del kernel.
+
+use brasa_core::sys::{sysctl_u64, sysctl_value};
+use serde::Serialize;
+
+/// Nivel de presión de memoria según `kern.memorystatus_vm_pressure_level`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PressureLevel {
+    Normal,
+    Warning,
+    Critical,
+    Unknown,
+}
+
+impl PressureLevel {
+    fn from_kernel(level: u64) -> Self {
+        // Valores de <sys/kern_memorystatus.h>: 1 normal, 2 warn, 4 critical.
+        match level {
+            1 => Self::Normal,
+            2 => Self::Warning,
+            4 => Self::Critical,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Foto de la memoria del sistema. Todos los tamaños en bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SystemMemory {
+    pub total: u64,
+    pub free: u64,
+    pub active: u64,
+    pub inactive: u64,
+    pub speculative: u64,
+    pub wired: u64,
+    /// Memoria ocupada por el compresor (páginas físicas que usa, no lo que representa).
+    pub compressed: u64,
+    pub swap_total: u64,
+    pub swap_used: u64,
+    pub pressure: PressureLevel,
+    /// Porcentaje de memoria disponible según el kernel (`kern.memorystatus_level`).
+    pub available_percent: Option<u8>,
+}
+
+/// Lee el estado actual de la memoria del sistema.
+pub fn system_memory() -> SystemMemory {
+    let page = sysctl_u64("hw.pagesize").unwrap_or(16384);
+    let vm = vm_statistics().unwrap_or_default();
+    let swap = sysctl_value::<libc::xsw_usage>("vm.swapusage");
+    SystemMemory {
+        total: sysctl_u64("hw.memsize").unwrap_or(0),
+        free: vm.free_count as u64 * page,
+        active: vm.active_count as u64 * page,
+        inactive: vm.inactive_count as u64 * page,
+        speculative: vm.speculative_count as u64 * page,
+        wired: vm.wire_count as u64 * page,
+        compressed: vm.compressor_page_count as u64 * page,
+        swap_total: swap.map_or(0, |s| s.xsu_total),
+        swap_used: swap.map_or(0, |s| s.xsu_used),
+        pressure: sysctl_u64("kern.memorystatus_vm_pressure_level")
+            .map_or(PressureLevel::Unknown, PressureLevel::from_kernel),
+        available_percent: sysctl_u64("kern.memorystatus_level").map(|v| v.min(100) as u8),
+    }
+}
+
+unsafe extern "C" {
+    // libc la marca deprecada en favor de `mach2`; es una función estable de libSystem.
+    fn mach_host_self() -> libc::mach_port_t;
+}
+
+fn vm_statistics() -> Option<libc::vm_statistics64> {
+    let mut stats = libc::vm_statistics64::default();
+    let mut count = libc::HOST_VM_INFO64_COUNT;
+    // SAFETY: `stats` tiene exactamente HOST_VM_INFO64_COUNT enteros; el kernel escribe como
+    // mucho `count` enteros.
+    let rc = unsafe {
+        libc::host_statistics64(
+            mach_host_self(),
+            libc::HOST_VM_INFO64,
+            (&raw mut stats).cast(),
+            &mut count,
+        )
+    };
+    (rc == libc::KERN_SUCCESS).then_some(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_is_consistent() {
+        let m = system_memory();
+        assert!(m.total >= 8 << 30);
+        let counted = m.free + m.active + m.inactive + m.speculative + m.wired + m.compressed;
+        assert!(counted > 0 && counted <= m.total, "{m:?}");
+        assert!(m.swap_used <= m.swap_total);
+        assert_ne!(m.pressure, PressureLevel::Unknown);
+    }
+}
+
+
+### Archivo: crates/memory/src/telemetry.rs
+
+//! Muestreo de memoria durante una ejecución: huella del proceso y presión del sistema.
+//!
+//! Corre en un hilo aparte; no toca el loop de decode.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+
+use crate::process::{ProcessMemory, process_memory};
+use crate::system::{PressureLevel, SystemMemory, system_memory};
+
+/// Resumen de memoria de una ejecución. Tamaños en bytes.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MemoryReport {
+    pub duration_ms: u64,
+    pub samples: usize,
+    pub start_footprint: u64,
+    pub end_footprint: u64,
+    /// Máximo muestreado de la huella del proceso durante la ejecución.
+    pub peak_footprint: u64,
+    pub start_swap_used: u64,
+    pub peak_swap_used: u64,
+    /// Peor nivel de presión observado.
+    pub worst_pressure: PressureLevel,
+    pub min_available_percent: Option<u8>,
+    /// Páginas leídas desde disco por el proceso durante la ejecución.
+    pub pageins: u64,
+}
+
+impl MemoryReport {
+    /// Crecimiento del swap del sistema durante la ejecución. Un valor que crece entre
+    /// ejecuciones indica que el perfil no entra en memoria.
+    pub fn swap_growth(&self) -> u64 {
+        self.peak_swap_used.saturating_sub(self.start_swap_used)
+    }
+}
+
+/// Muestreador en segundo plano. `start` arranca, `finish` detiene y devuelve el reporte.
+#[derive(Debug)]
+pub struct MemorySampler {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<Acc>,
+    started: Instant,
+    start_proc: ProcessMemory,
+    start_sys: SystemMemory,
+}
+
+#[derive(Debug)]
+struct Acc {
+    samples: usize,
+    peak_footprint: u64,
+    peak_swap_used: u64,
+    worst_pressure: PressureLevel,
+    min_available_percent: Option<u8>,
+}
+
+fn severity(p: PressureLevel) -> u8 {
+    match p {
+        PressureLevel::Unknown => 0,
+        PressureLevel::Normal => 1,
+        PressureLevel::Warning => 2,
+        PressureLevel::Critical => 3,
+    }
+}
+
+impl Acc {
+    fn add(&mut self, proc_mem: Option<ProcessMemory>, sys: &SystemMemory) {
+        self.samples += 1;
+        if let Some(p) = proc_mem {
+            self.peak_footprint = self.peak_footprint.max(p.footprint);
+        }
+        self.peak_swap_used = self.peak_swap_used.max(sys.swap_used);
+        if severity(sys.pressure) > severity(self.worst_pressure) {
+            self.worst_pressure = sys.pressure;
+        }
+        self.min_available_percent = match (self.min_available_percent, sys.available_percent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+}
+
+impl MemorySampler {
+    /// Arranca el muestreo con el intervalo dado (10–100 ms es razonable).
+    pub fn start(interval: Duration) -> Self {
+        let start_proc = process_memory().expect("proc_pid_rusage");
+        let start_sys = system_memory();
+        let mut acc = Acc {
+            samples: 0,
+            peak_footprint: 0,
+            peak_swap_used: 0,
+            worst_pressure: PressureLevel::Unknown,
+            min_available_percent: None,
+        };
+        acc.add(Some(start_proc), &start_sys);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("brasa-mem-sampler".into())
+            .spawn(move || {
+                while !stop_thread.load(Ordering::Relaxed) {
+                    std::thread::sleep(interval);
+                    acc.add(process_memory(), &system_memory());
+                }
+                acc
+            })
+            .expect("hilo de muestreo");
+        Self {
+            stop,
+            handle,
+            started: Instant::now(),
+            start_proc,
+            start_sys,
+        }
+    }
+
+    /// Detiene el muestreo, toma una última muestra y devuelve el reporte.
+    pub fn finish(self) -> MemoryReport {
+        self.stop.store(true, Ordering::Relaxed);
+        let mut acc = self.handle.join().expect("hilo de muestreo");
+        let end_proc = process_memory().expect("proc_pid_rusage");
+        acc.add(Some(end_proc), &system_memory());
+        MemoryReport {
+            duration_ms: self.started.elapsed().as_millis() as u64,
+            samples: acc.samples,
+            start_footprint: self.start_proc.footprint,
+            end_footprint: end_proc.footprint,
+            peak_footprint: acc.peak_footprint,
+            start_swap_used: self.start_sys.swap_used,
+            peak_swap_used: acc.peak_swap_used,
+            worst_pressure: acc.worst_pressure,
+            min_available_percent: acc.min_available_percent,
+            pageins: end_proc.pageins.saturating_sub(self.start_proc.pageins),
+        }
+    }
+}
+
+
+### Archivo: crates/memory/tests/telemetry.rs
+
+//! Criterio de T0.3: un buffer de tamaño conocido se refleja en el reporte dentro de un margen.
+//!
+//! Un único test en este binario: los tests de un mismo binario corren en hilos del mismo
+//! proceso y sus asignaciones contaminarían la medición.
+
+use std::time::Duration;
+
+use brasa_memory::process::process_memory;
+use brasa_memory::telemetry::MemorySampler;
+
+const MIB: u64 = 1 << 20;
+const SIZE: u64 = 256 * MIB;
+/// Margen: el runtime de tests puede mover algunos MiB. 8 MiB por debajo o 16 MiB por encima del
+/// tamaño pedido.
+const BELOW: u64 = 8 * MIB;
+const ABOVE: u64 = 16 * MIB;
+
+/// Buffer anónimo con `mmap`/`munmap` directos: tamaño exacto y sin el cache de regiones
+/// grandes de libmalloc, que retiene memoria liberada y la reutiliza.
+struct Buffer {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl Buffer {
+    fn new_touched(len: usize) -> Self {
+        // SAFETY: mapeo anónimo privado, sin archivo.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(ptr, libc::MAP_FAILED);
+        let ptr = ptr.cast::<u8>();
+        // Escribir una vez por página fuerza a que cada página quede residente.
+        for i in (0..len).step_by(4096) {
+            // SAFETY: `i < len`, dentro del mapeo.
+            unsafe { std::ptr::write_volatile(ptr.add(i), 1) };
+        }
+        Self { ptr, len }
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        // SAFETY: `ptr`/`len` vienen de un mmap exitoso que no se liberó antes.
+        unsafe { libc::munmap(self.ptr.cast(), self.len) };
+    }
+}
+
+fn assert_within(label: &str, delta: u64) {
+    assert!(
+        delta + BELOW >= SIZE && delta <= SIZE + ABOVE,
+        "{label}: delta {} MiB, esperado {} MiB (-{} / +{})",
+        delta / MIB,
+        SIZE / MIB,
+        BELOW / MIB,
+        ABOVE / MIB
+    );
+}
+
+#[test]
+fn buffer_conocido_se_refleja_en_el_reporte() {
+    // 1) Foto directa antes y después de asignar.
+    let before = process_memory().unwrap().footprint;
+    let buf = Buffer::new_touched(SIZE as usize);
+    let after = process_memory().unwrap().footprint;
+    assert_within("process_memory", after.saturating_sub(before));
+    drop(buf);
+
+    // 2) Muestreador durante una "ejecución" que asigna, sostiene y libera.
+    let sampler = MemorySampler::start(Duration::from_millis(10));
+    std::thread::sleep(Duration::from_millis(30));
+    let buf = Buffer::new_touched(SIZE as usize);
+    std::thread::sleep(Duration::from_millis(100));
+    drop(buf);
+    std::thread::sleep(Duration::from_millis(30));
+    let report = sampler.finish();
+    eprintln!("{report:#?}");
+
+    assert!(report.samples >= 5, "pocas muestras: {}", report.samples);
+    assert_within(
+        "pico del muestreador",
+        report.peak_footprint.saturating_sub(report.start_footprint),
+    );
+    // Al liberar, la huella vuelve cerca del inicio.
+    assert!(
+        report.end_footprint < report.start_footprint + ABOVE,
+        "no volvió: inicio {} MiB, fin {} MiB",
+        report.start_footprint / MIB,
+        report.end_footprint / MIB
+    );
+}
+
+
+### Archivo: crates/metal/Cargo.toml
+
+[package]
+name = "brasa-metal"
+description = "Dispositivo Metal, buffers, command queues y cache de pipelines."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-metal.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/metal/src/lib.rs
+
+//! Dispositivo Metal, buffers, command queues y cache de pipelines.
+
+use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily};
+use serde::Serialize;
+
+/// Propiedades del dispositivo Metal por defecto relevantes para planificar memoria y kernels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceInfo {
+    /// Nombre que reporta Metal, por ejemplo "Apple M1 Pro".
+    pub name: String,
+    /// Familia Apple más alta soportada, por ejemplo "apple7" (M1) o "apple8" (M2).
+    pub apple_family: Option<String>,
+    /// Soporta la familia Metal 3.
+    pub metal3: bool,
+    /// Soporta la familia Metal 4.
+    pub metal4: bool,
+    /// Memoria unificada CPU/GPU.
+    pub unified_memory: bool,
+    /// Tamaño de working set que Metal recomienda no superar, en bytes.
+    pub recommended_max_working_set: u64,
+    /// Tamaño máximo de un `MTLBuffer`, en bytes.
+    pub max_buffer_length: u64,
+    /// Memoria threadgroup máxima por grupo, en bytes.
+    pub max_threadgroup_memory: u64,
+}
+
+/// Familias Apple de mayor a menor; la primera soportada es la que se reporta.
+const APPLE_FAMILIES: [(MTLGPUFamily, &str); 10] = [
+    (MTLGPUFamily::Apple10, "apple10"),
+    (MTLGPUFamily::Apple9, "apple9"),
+    (MTLGPUFamily::Apple8, "apple8"),
+    (MTLGPUFamily::Apple7, "apple7"),
+    (MTLGPUFamily::Apple6, "apple6"),
+    (MTLGPUFamily::Apple5, "apple5"),
+    (MTLGPUFamily::Apple4, "apple4"),
+    (MTLGPUFamily::Apple3, "apple3"),
+    (MTLGPUFamily::Apple2, "apple2"),
+    (MTLGPUFamily::Apple1, "apple1"),
+];
+
+/// Consulta el dispositivo Metal por defecto. `None` si el sistema no tiene GPU Metal.
+pub fn device_info() -> Option<DeviceInfo> {
+    let device = MTLCreateSystemDefaultDevice()?;
+    let apple_family = APPLE_FAMILIES
+        .iter()
+        .find(|(family, _)| device.supportsFamily(*family))
+        .map(|(_, name)| (*name).to_string());
+    Some(DeviceInfo {
+        name: device.name().to_string(),
+        apple_family,
+        metal3: device.supportsFamily(MTLGPUFamily::Metal3),
+        metal4: device.supportsFamily(MTLGPUFamily::Metal4),
+        unified_memory: device.hasUnifiedMemory(),
+        recommended_max_working_set: device.recommendedMaxWorkingSetSize(),
+        max_buffer_length: device.maxBufferLength() as u64,
+        max_threadgroup_memory: device.maxThreadgroupMemoryLength() as u64,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_device_is_apple_silicon() {
+        let info = device_info().expect("se espera una GPU Metal");
+        assert!(info.name.starts_with("Apple"), "nombre: {}", info.name);
+        assert!(info.unified_memory);
+        // Brasa apunta a M1 o posterior: familia Apple7 como mínimo.
+        let family = info.apple_family.expect("familia Apple");
+        let n: u32 = family.trim_start_matches("apple").parse().unwrap();
+        assert!(n >= 7, "familia {family}");
+        assert!(info.recommended_max_working_set > 0);
+    }
+}
+
+
+### Archivo: crates/models/Cargo.toml
+
+[package]
+name = "brasa-models"
+description = "Adaptadores por familia de modelo y grafo de forward."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+brasa-kernels.workspace = true
+brasa-quant.workspace = true
+brasa-tokenizer.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/models/src/lib.rs
+
+//! Adaptadores por familia de modelo y grafo de forward.
+
+
+### Archivo: crates/quant/Cargo.toml
+
+[package]
+name = "brasa-quant"
+description = "Empaquetado Q4/Q8 y formato nativo de pesos."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/quant/src/lib.rs
+
+//! Empaquetado Q4/Q8 y formato nativo de pesos.
+
+
+### Archivo: crates/runtime/Cargo.toml
+
+[package]
+name = "brasa-runtime"
+description = "Sesión de inferencia: prefill, decode, sampling y prefix cache."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+brasa-models.workspace = true
+brasa-memory.workspace = true
+brasa-tuner.workspace = true
+brasa-tokenizer.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/runtime/src/lib.rs
+
+//! Sesión de inferencia: prefill, decode, sampling y prefix cache.
+
+
+### Archivo: crates/tokenizer/Cargo.toml
+
+[package]
+name = "brasa-tokenizer"
+description = "Tokenizer BPE y chat template."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/tokenizer/src/lib.rs
+
+//! Tokenizer BPE y chat template.
+
+
+### Archivo: crates/tuner/Cargo.toml
+
+[package]
+name = "brasa-tuner"
+description = "Autotuner, fingerprint de hardware y base de tuning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+brasa-core.workspace = true
+brasa-metal.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
+
+
+### Archivo: crates/tuner/src/hardware.rs
+
+//! Detección del hardware: chip, núcleos, RAM, macOS y propiedades Metal.
+//!
+//! No se leen número de serie, UUID de plataforma ni ningún identificador personal: solo datos
+//! que comparten todas las unidades del mismo modelo.
+
+use brasa_core::sys::{sysctl_string, sysctl_u64};
+use brasa_metal::DeviceInfo;
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HardwareInfo {
+    /// Nombre comercial del chip, por ejemplo "Apple M1 Pro".
+    pub chip: String,
+    /// Identificador de modelo de Mac, por ejemplo "MacBookPro18,1" (no identifica la unidad).
+    pub model: String,
+    pub cpu_performance_cores: u32,
+    pub cpu_efficiency_cores: u32,
+    /// Núcleos de GPU según IOKit (`gpu-core-count`). `None` si no se pudo leer.
+    pub gpu_cores: Option<u32>,
+    /// RAM física en bytes.
+    pub memory_bytes: u64,
+    pub macos_version: String,
+    pub macos_build: String,
+    pub arch: String,
+    /// `None` si no hay GPU Metal.
+    pub metal: Option<DeviceInfo>,
+}
+
+/// Detecta el hardware de la máquina actual.
+pub fn hardware_info() -> HardwareInfo {
+    // En Apple Silicon perflevel0 es el cluster de rendimiento y perflevel1 el de eficiencia.
+    let perf = sysctl_u64("hw.perflevel0.physicalcpu");
+    let eff = sysctl_u64("hw.perflevel1.physicalcpu");
+    let (perf, eff) = match (perf, eff) {
+        (Some(p), e) => (p, e.unwrap_or(0)),
+        (None, _) => (sysctl_u64("hw.physicalcpu").unwrap_or(0), 0),
+    };
+    HardwareInfo {
+        chip: sysctl_string("machdep.cpu.brand_string").unwrap_or_default(),
+        model: sysctl_string("hw.model").unwrap_or_default(),
+        cpu_performance_cores: perf as u32,
+        cpu_efficiency_cores: eff as u32,
+        gpu_cores: crate::iokit::gpu_core_count(),
+        memory_bytes: sysctl_u64("hw.memsize").unwrap_or(0),
+        macos_version: sysctl_string("kern.osproductversion").unwrap_or_default(),
+        macos_build: sysctl_string("kern.osversion").unwrap_or_default(),
+        arch: std::env::consts::ARCH.to_string(),
+        metal: brasa_metal::device_info(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_apple_silicon() {
+        let hw = hardware_info();
+        assert!(hw.chip.starts_with("Apple M"), "{hw:?}");
+        assert_eq!(hw.arch, "aarch64");
+        assert!(hw.cpu_performance_cores > 0);
+        assert!(hw.gpu_cores.is_some_and(|n| n >= 7), "{hw:?}");
+        assert!(hw.memory_bytes >= 8 << 30);
+        assert!(!hw.macos_version.is_empty());
+        let metal = hw.metal.expect("metal");
+        assert_eq!(metal.name, hw.chip);
+    }
+}
+
+
+### Archivo: crates/tuner/src/iokit.rs
+
+//! FFI mínima a IOKit/CoreFoundation para leer `gpu-core-count` del acelerador AGX.
+
+use std::ffi::{c_char, c_void};
+
+type CFTypeRef = *const c_void;
+type CFStringRef = *const c_void;
+type CFAllocatorRef = *const c_void;
+type IoObject = u32;
+
+const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+const K_CF_NUMBER_SINT64_TYPE: i32 = 4;
+const K_IO_REGISTRY_ITERATE_RECURSIVELY: u32 = 1;
+const K_IO_MAIN_PORT_DEFAULT: u32 = 0;
+
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOServiceMatching(name: *const c_char) -> *mut c_void;
+    fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> IoObject;
+    fn IORegistryEntrySearchCFProperty(
+        entry: IoObject,
+        plane: *const c_char,
+        key: CFStringRef,
+        allocator: CFAllocatorRef,
+        options: u32,
+    ) -> CFTypeRef;
+    fn IOObjectRelease(object: IoObject) -> i32;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringCreateWithCString(
+        alloc: CFAllocatorRef,
+        c_str: *const c_char,
+        encoding: u32,
+    ) -> CFStringRef;
+    fn CFNumberGetValue(number: CFTypeRef, the_type: i32, value_ptr: *mut c_void) -> bool;
+    fn CFGetTypeID(cf: CFTypeRef) -> usize;
+    fn CFNumberGetTypeID() -> usize;
+    fn CFRelease(cf: CFTypeRef);
+}
+
+/// Núcleos de GPU del acelerador AGX (Apple Silicon). `None` si no se encuentra.
+pub(crate) fn gpu_core_count() -> Option<u32> {
+    // SAFETY: llamadas IOKit/CF estándar; cada objeto creado o copiado se libera una sola vez.
+    unsafe {
+        // IOServiceGetMatchingService consume la referencia del diccionario.
+        let matching = IOServiceMatching(c"AGXAccelerator".as_ptr());
+        if matching.is_null() {
+            return None;
+        }
+        let service = IOServiceGetMatchingService(K_IO_MAIN_PORT_DEFAULT, matching);
+        if service == 0 {
+            return None;
+        }
+        let key = CFStringCreateWithCString(
+            std::ptr::null(),
+            c"gpu-core-count".as_ptr(),
+            K_CF_STRING_ENCODING_UTF8,
+        );
+        let value = IORegistryEntrySearchCFProperty(
+            service,
+            c"IOService".as_ptr(),
+            key,
+            std::ptr::null(),
+            K_IO_REGISTRY_ITERATE_RECURSIVELY,
+        );
+        CFRelease(key);
+        IOObjectRelease(service);
+        if value.is_null() {
+            return None;
+        }
+        let mut n: i64 = 0;
+        let ok = CFGetTypeID(value) == CFNumberGetTypeID()
+            && CFNumberGetValue(value, K_CF_NUMBER_SINT64_TYPE, (&raw mut n).cast());
+        CFRelease(value);
+        (ok && n > 0).then_some(n as u32)
+    }
+}
+
+
+### Archivo: crates/tuner/src/lib.rs
+
+//! Autotuner, fingerprint de hardware y base de tuning.
+
+pub mod hardware;
+mod iokit;
+
+
+### Archivo: scripts/ci.sh
+
+#!/usr/bin/env bash
+# CI local: formato, lints y tests del workspace. Sale con error ante cualquier falla.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+echo "==> cargo fmt --check"
+cargo fmt --all --check
+
+echo "==> cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "==> cargo test --workspace"
+cargo test --workspace
+
+echo "CI local OK"
+
+
+### Archivo: scripts/validate-8gb.sh
+
+#!/usr/bin/env bash
+# Validación en la Mac M2 8 GB. Corre los criterios de aceptación que requieren esa máquina y
+# deja la evidencia en docs/bench/m2-8gb/. Uso: ./scripts/validate-8gb.sh
+# Cada tarea que necesite validación en 8 GB agrega su paso acá.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+out="docs/bench/m2-8gb"
+mkdir -p "$out"
+commit="$(git rev-parse --short HEAD)"
+mem=$(sysctl -n hw.memsize)
+if [[ "$mem" != "8589934592" ]]; then
+    echo "Aviso: esta máquina tiene $((mem >> 30)) GiB, no 8 GiB. Se sigue igual." >&2
+fi
+
+echo "==> build release ($commit)"
+cargo build --release -p brasa-cli
+
+echo "==> T0.2 brasa doctor"
+./target/release/brasa doctor | tee "$out/doctor.txt"
+./target/release/brasa doctor --json > "$out/doctor.json"
+cargo test -p brasa-cli --test doctor 2>&1 | tee "$out/doctor-test.log"
+grep -q "test result: ok" "$out/doctor-test.log"
+
+{
+    echo "commit: $commit"
+    echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sw_vers
+} > "$out/meta.txt"
+
+echo
+echo "Validación 8 GB OK. Evidencia en $out/ (commitear esa carpeta o pegar su contenido)."
+
+
+### Archivo: LICENSE
+
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted

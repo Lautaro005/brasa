@@ -5,8 +5,28 @@ Estado: fases 0 y 1 desglosadas; el resto está a nivel de objetivo. Cada tarea 
 ## Qué cambia por usar agentes con herramientas
 
 - **Prefix cache y tool calling suben de prioridad:** pasan de la fase 3 a la fase 2, porque sin ellos Codex y Claude Code no son usables.
-- **Contexto:** el perfil de agente apunta a 16K con KV Q8 (en Qwen3-4B, cerca de 1,2 GB de KV); 2K queda solo para tests. A confirmar con mediciones.
+- **Contexto:** el perfil de agente apunta a 16K con KV Q8 (en Qwen3-4B, 1,20 GiB de KV; ver tabla); 2K queda solo para tests. A confirmar con mediciones.
 - **Calidad de herramientas:** Qwen3-4B es chico para agentes complejos. Sirve para validar el engine; el valor se mide en latencia, memoria y estabilidad, no en que reemplace a un modelo grande.
+
+## KV cache de Qwen3-4B
+
+Calculado desde el `config.json` real (`Qwen/Qwen3-4B` @ `1cfa9a72`): 36 capas, 8 cabezas KV,
+`head_dim` 128, 32 cabezas de query (GQA 4:1). Por token se guardan K y V:
+2 × 36 × 8 × 128 = 73 728 elementos.
+
+- FP16: 147 456 B/token (144 KiB).
+- Q8 por bloques de 32 con escala FP16 (34 B cada 32 elementos): 78 336 B/token (76,5 KiB).
+
+| Contexto | KV FP16 | KV Q8 (g32) |
+|---:|---:|---:|
+| 2 048 | 288 MiB | 153 MiB |
+| 8 192 | 1,13 GiB | 612 MiB |
+| 16 384 | 2,25 GiB | 1,20 GiB |
+| 32 768 | 4,50 GiB | 2,39 GiB |
+| 40 960 (máx. nativo) | 5,63 GiB | 2,99 GiB |
+
+Cálculo, no medición: no incluye workspace de atención ni padding de alineación. El planner (T1.8)
+usa estas cifras como piso.
 
 ## Fase 0 — Base y contrato
 
@@ -81,6 +101,6 @@ GUI web, segunda familia (Llama 3.2 3B), luego speculative decoding, Qwen3.5 (Ga
 
 ## Decisiones abiertas
 
-- Confirmar `config.json` real de Qwen3-4B (capas, cabezas KV, dimensión) y recalcular la tabla de KV.
+- ~~Confirmar `config.json` real de Qwen3-4B y recalcular la tabla de KV.~~ Hecho (ver tabla de KV).
 - Verificar los formatos de API de Codex y Claude Code vigentes antes de la fase 2.
 - Licencia del repo: Apache-2.0 propuesta.
