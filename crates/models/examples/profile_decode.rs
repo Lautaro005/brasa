@@ -1,5 +1,5 @@
 //! Perfil del decode: tiempo de pared vs tiempo de GPU por token, en una posición dada.
-//!   cargo run --release -p brasa-models --example profile_decode -- [posición]
+//!   cargo run --release -p brasa-models --example profile_decode -- [posición] [contexto] [f16|q8_0|f32]
 
 use std::path::Path;
 use std::time::Instant;
@@ -17,7 +17,9 @@ fn main() {
         ctx: ctx_len,
         max_tokens: 512,
         max_logit_rows: 1,
-        kv: KvType::F16,
+        kv: std::env::args().nth(3).map_or(KvType::F16, |s| {
+            KvType::parse(&s).expect("--kv f32|f16|q8_0")
+        }),
     };
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/qwen3-4b-q4/model.brasa");
     let mut m = Qwen3::load(&ctx, &path, limits).unwrap();

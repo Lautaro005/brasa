@@ -80,23 +80,28 @@ pub fn max_rel(got: &[f32], expected: &[f32], floor: f32) -> f32 {
         .fold(0.0, f32::max)
 }
 
-/// K y V de una caché de prueba en el tipo `kv`, y sus valores tal como los ve la GPU (en f16,
-/// redondeados), para pasarle a la referencia CPU.
+/// K y V de una caché de prueba en el tipo `kv`, y sus valores tal como los ve la GPU (en f16 o
+/// Q8, redondeados), para pasarle a la referencia CPU.
 #[derive(Debug)]
 pub struct KvPair {
-    f32s: Option<(brasa_metal::Buffer<f32>, brasa_metal::Buffer<f32>)>,
-    f16s: Option<(brasa_metal::Buffer<u16>, brasa_metal::Buffer<u16>)>,
+    bufs: KvBufs,
     pub k: Vec<f32>,
     pub v: Vec<f32>,
 }
 
+#[derive(Debug)]
+enum KvBufs {
+    F32(brasa_metal::Buffer<f32>, brasa_metal::Buffer<f32>),
+    F16(brasa_metal::Buffer<u16>, brasa_metal::Buffer<u16>),
+    Q8(brasa_metal::Buffer<u8>, brasa_metal::Buffer<u8>),
+}
+
 impl KvPair {
     pub fn new(ctx: &brasa_metal::Context, kv: crate::KvType, k: Vec<f32>, v: Vec<f32>) -> Self {
-        use brasa_quant::{f16_to_f32, f32_to_f16};
+        use brasa_quant::{dequantize_kv_q8, f16_to_f32, f32_to_f16, quantize_kv_q8};
         match kv {
             crate::KvType::F32 => Self {
-                f32s: Some((ctx.buffer_from(&k).unwrap(), ctx.buffer_from(&v).unwrap())),
-                f16s: None,
+                bufs: KvBufs::F32(ctx.buffer_from(&k).unwrap(), ctx.buffer_from(&v).unwrap()),
                 k,
                 v,
             },
@@ -107,8 +112,22 @@ impl KvPair {
                 Self {
                     k: back(&kh),
                     v: back(&vh),
-                    f16s: Some((ctx.buffer_from(&kh).unwrap(), ctx.buffer_from(&vh).unwrap())),
-                    f32s: None,
+                    bufs: KvBufs::F16(ctx.buffer_from(&kh).unwrap(), ctx.buffer_from(&vh).unwrap()),
+                }
+            }
+            crate::KvType::Q8_0 => {
+                let q = |x: &[f32]| {
+                    let mut b = vec![0u8; kv.bytes(x.len())];
+                    quantize_kv_q8(x, &mut b);
+                    let mut back = vec![0f32; x.len()];
+                    dequantize_kv_q8(&b, &mut back);
+                    (b, back)
+                };
+                let ((kq, kb), (vq, vb)) = (q(&k), q(&v));
+                Self {
+                    k: kb,
+                    v: vb,
+                    bufs: KvBufs::Q8(ctx.buffer_from(&kq).unwrap(), ctx.buffer_from(&vq).unwrap()),
                 }
             }
         }
@@ -116,10 +135,10 @@ impl KvPair {
 
     pub fn args(&self) -> (brasa_metal::Arg<'_>, brasa_metal::Arg<'_>) {
         use brasa_metal::Arg;
-        match (&self.f32s, &self.f16s) {
-            (Some((k, v)), _) => (Arg::buf(k), Arg::buf(v)),
-            (_, Some((k, v))) => (Arg::buf(k), Arg::buf(v)),
-            _ => unreachable!(),
+        match &self.bufs {
+            KvBufs::F32(k, v) => (Arg::buf(k), Arg::buf(v)),
+            KvBufs::F16(k, v) => (Arg::buf(k), Arg::buf(v)),
+            KvBufs::Q8(k, v) => (Arg::buf(k), Arg::buf(v)),
         }
     }
 }

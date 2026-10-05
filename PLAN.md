@@ -118,6 +118,8 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   activaciones a f16 es decisión del usuario.
 - **T3.4 KV Q8** (perfil de agente 16K). Aceptación: fixtures `kvq8`, T1.6 con su referencia,
   pérdida de top-1 medida y documentada, KV de 16K ≤ 1,25 GiB.
+  Estado (2026-10-05): hecha en M1 Pro (ADR 0009). T1.6 pasa con tolerancia 2e-2 según el piso
+  medido; pérdida de top-1 98,38 %; KV de 16K 1,195 GiB. Falta medirla en la M2 8 GB.
 - **T3.5 Decode.** Fusiones y GEMV según perfil (`profile_decode`). Aceptación: decode a 2K ≥ 50,8 tok/s
   (llama.cpp).
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de

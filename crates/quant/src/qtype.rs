@@ -73,6 +73,58 @@ pub fn f32_to_f16(f: f32) -> u16 {
     sign | (h + up as u32) as u16
 }
 
+/// Valores por fila de la KV cache Q8 (una cabeza KV de un token, head_dim de Qwen3).
+pub const KV_Q8_DIM: usize = 128;
+/// Bytes por fila de la KV cache Q8: 128 `int8` y 4 escalas f16 (ADR 0009).
+pub const KV_Q8_ROW: usize = 136;
+
+/// Cuantiza filas de [`KV_Q8_DIM`] valores al formato de la KV cache Q8 (ADR 0009). Es la
+/// especificación que siguen `store_kv_q8` y la referencia Python: por bloque de 32,
+/// `d = f16(amax / 127)` y `q = clamp(rint(x / d), -127, 127)` (0 si d = 0), con divisiones IEEE y
+/// redondeo al par.
+pub fn quantize_kv_q8(x: &[f32], out: &mut [u8]) {
+    assert_eq!(x.len() % KV_Q8_DIM, 0, "filas de {KV_Q8_DIM} valores");
+    assert_eq!(out.len(), x.len() / KV_Q8_DIM * KV_Q8_ROW);
+    for (row, o) in x
+        .chunks_exact(KV_Q8_DIM)
+        .zip(out.chunks_exact_mut(KV_Q8_ROW))
+    {
+        for (b, blk) in row.chunks_exact(BLOCK).enumerate() {
+            let amax = blk.iter().fold(0f32, |m, v| m.max(v.abs()));
+            let dh = f32_to_f16(amax / 127.0);
+            let d = f16_to_f32(dh);
+            for (j, &v) in blk.iter().enumerate() {
+                let q = if d == 0.0 {
+                    0.0
+                } else {
+                    (v / d).round_ties_even().clamp(-127.0, 127.0)
+                };
+                o[b * BLOCK + j] = q as i8 as u8;
+            }
+            o[KV_Q8_DIM + 2 * b..KV_Q8_DIM + 2 * b + 2].copy_from_slice(&dh.to_le_bytes());
+        }
+    }
+}
+
+/// Decuantiza filas de la KV cache Q8 (inversa de [`quantize_kv_q8`]; `d · q` es exacto en f32).
+pub fn dequantize_kv_q8(data: &[u8], out: &mut [f32]) {
+    assert_eq!(data.len() % KV_Q8_ROW, 0);
+    assert_eq!(out.len(), data.len() / KV_Q8_ROW * KV_Q8_DIM);
+    for (r, o) in data
+        .chunks_exact(KV_Q8_ROW)
+        .zip(out.chunks_exact_mut(KV_Q8_DIM))
+    {
+        for (i, v) in o.iter_mut().enumerate() {
+            let b = i / BLOCK;
+            let d = f16_to_f32(u16::from_le_bytes([
+                r[KV_Q8_DIM + 2 * b],
+                r[KV_Q8_DIM + 2 * b + 1],
+            ]));
+            *v = d * (r[i] as i8) as f32;
+        }
+    }
+}
+
 /// Decuantiza `data` (tipo `q`) a f32. `out.len()` es la cantidad de elementos.
 pub fn dequantize(q: QType, data: &[u8], out: &mut [f32]) {
     assert_eq!(
@@ -110,6 +162,40 @@ pub fn dequantize(q: QType, data: &[u8], out: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kv_q8_ida_y_vuelta() {
+        // Una fila con un bloque nulo, uno con amax exacto y valores en el medio de dos pasos.
+        let mut x: Vec<f32> = (0..KV_Q8_DIM)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.173)
+            .collect();
+        x[32..64].fill(0.0);
+        let mut q = vec![0u8; KV_Q8_ROW];
+        quantize_kv_q8(&x, &mut q);
+        let mut y = vec![0f32; KV_Q8_DIM];
+        dequantize_kv_q8(&q, &mut y);
+        for b in 0..4 {
+            let blk = &x[b * 32..(b + 1) * 32];
+            let amax = blk.iter().fold(0f32, |m, v| m.max(v.abs()));
+            for j in 0..32 {
+                let (a, r) = (blk[j], y[b * 32 + j]);
+                // Medio paso de cuantización más el error relativo de la escala f16.
+                assert!(
+                    (a - r).abs() <= amax / 127.0 * 0.5 * (1.0 + 1e-3) + 1e-12,
+                    "{a} {r}"
+                );
+            }
+            // El máximo se representa con |q| = 127.
+            if amax > 0.0 {
+                assert!(
+                    q[b * 32..(b + 1) * 32]
+                        .iter()
+                        .any(|&v| (v as i8).unsigned_abs() == 127)
+                );
+            }
+        }
+        assert!(y[32..64].iter().all(|&v| v == 0.0));
+    }
 
     #[test]
     fn f16_conocidos() {

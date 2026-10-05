@@ -6,14 +6,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Tipo de la KV cache: el host antepone `#define KV_F16 1` para la variante f16 (ADR 0009).
-#ifdef KV_F16
-typedef half  KV_T;
-typedef half4 KV_T4;
-#else
-typedef float  KV_T;
-typedef float4 KV_T4;
-#endif
+// KV_T, kv_row y kv4 vienen de kv_access.metal (lo antepone el host, ADR 0009).
 
 constant uint D = 128;
 constant uint CHUNK = 128;
@@ -34,19 +27,18 @@ kernel void attn_decode_partial(device const float* q      [[buffer(0)]],  // [h
     uint split = tg.x, h = tg.y;
     uint splits = (lk + CHUNK - 1) / CHUNK;
     uint kh = h / (hq / hkv);
-    uint kvstride = hkv * D;
     float4 qv = ((device const float4*)(q + h * D))[lane] * scale;
 
     float m = -INFINITY, l = 0.0f;
     float4 acc = 0.0f;
     uint j1 = min(lk, (split + 1) * CHUNK);
     for (uint j = split * CHUNK + sg; j < j1; j += 4) {
-        float4 kv = float4(((device const KV_T4*)(k + j * kvstride + kh * D))[lane]);
+        float4 kv = kv4(kv_row(k, j * hkv + kh), lane);
         float s = simd_sum(dot(qv, kv));
         float m_new = max(m, s);
         float alpha = precise::exp(m - m_new);
         float p = precise::exp(s - m_new);
-        float4 vv = float4(((device const KV_T4*)(v + j * kvstride + kh * D))[lane]);
+        float4 vv = kv4(kv_row(v, j * hkv + kh), lane);
         acc = acc * alpha + p * vv;
         l = l * alpha + p;
         m = m_new;
@@ -130,7 +122,6 @@ kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq,
     uint split = tg.x * SG_PER_TG + sg;
     if (split >= splits) return;
 
-    uint kvstride = hkv * D;
     float m[G], l[G];
     float4 acc[G];
     for (uint h = 0; h < G; ++h) { m[h] = -INFINITY; l[h] = 0.0f; acc[h] = 0.0f; }
@@ -142,11 +133,26 @@ kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq,
         float s[G];
         for (uint h = 0; h < G; ++h) s[h] = 0.0f;
         if (ok) {
-            device const KV_T4* kr = (device const KV_T4*)(k + j * kvstride + kh * D);
+            device const KV_T* kr = kv_row(k, j * hkv + kh);
+#if defined(KV_Q8)
+            // Q8: producto con los int8 de cada bloque de 32 y una sola escala por bloque.
+            device const char4* kq = (device const char4*)kr;
+            for (uint b = 0; b < D / 32; ++b) {
+                float sb[G];
+                for (uint h = 0; h < G; ++h) sb[h] = 0.0f;
+                for (uint i = 0; i < 8; ++i) {
+                    float4 kv = float4(kq[b * 8 + i]);
+                    for (uint h = 0; h < G; ++h) sb[h] += dot(Qs[h * (D / 4) + b * 8 + i], kv);
+                }
+                float sc = kv_scale(kr, b);
+                for (uint h = 0; h < G; ++h) s[h] += sb[h] * sc;
+            }
+#else
             for (uint d4 = 0; d4 < D / 4; ++d4) {
-                float4 kv = float4(kr[d4]);
+                float4 kv = kv4(kr, d4);
                 for (uint h = 0; h < G; ++h) s[h] += dot(Qs[h * (D / 4) + d4], kv);
             }
+#endif
         }
         float p[G];
         for (uint h = 0; h < G; ++h) {
@@ -160,7 +166,7 @@ kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq,
         }
         uint n = min(32u, j1 - j0);
         for (uint jj = 0; jj < n; ++jj) {
-            float4 vv = float4(((device const KV_T4*)(v + (j0 + jj) * kvstride + kh * D))[lane]);
+            float4 vv = kv4(kv_row(v, (j0 + jj) * hkv + kh), lane);
             for (uint h = 0; h < G; ++h) acc[h] += simd_shuffle(p[h], ushort(jj)) * vv;
         }
     }

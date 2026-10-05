@@ -184,8 +184,19 @@ struct Workspace {
 /// (f16 se guarda como bits en `u16`).
 #[derive(Debug)]
 enum KvCache {
-    F32 { k: Buffer<f32>, v: Buffer<f32> },
-    F16 { k: Buffer<u16>, v: Buffer<u16> },
+    F32 {
+        k: Buffer<f32>,
+        v: Buffer<f32>,
+    },
+    F16 {
+        k: Buffer<u16>,
+        v: Buffer<u16>,
+    },
+    /// Bytes: filas de 128 int8 + 4 escalas f16 (ADR 0009).
+    Q8 {
+        k: Buffer<u8>,
+        v: Buffer<u8>,
+    },
 }
 
 impl KvCache {
@@ -199,14 +210,22 @@ impl KvCache {
                 k: ctx.buffer(len)?,
                 v: ctx.buffer(len)?,
             },
+            KvType::Q8_0 => KvCache::Q8 {
+                k: ctx.buffer(kv.bytes(len))?,
+                v: ctx.buffer(kv.bytes(len))?,
+            },
         })
     }
 
-    /// K y V a partir del elemento `off`.
+    /// K y V a partir del elemento `off` (en Q8, múltiplo de 128: el byte de esa fila).
     fn args(&self, off: usize) -> (Arg<'_>, Arg<'_>) {
         match self {
             KvCache::F32 { k, v } => (Arg::buf_at(k, off), Arg::buf_at(v, off)),
             KvCache::F16 { k, v } => (Arg::buf_at(k, off), Arg::buf_at(v, off)),
+            KvCache::Q8 { k, v } => {
+                let b = KvType::Q8_0.bytes(off);
+                (Arg::buf_at(k, b), Arg::buf_at(v, b))
+            }
         }
     }
 
@@ -216,6 +235,9 @@ impl KvCache {
                 buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
             }
             KvCache::F16 { k, v } => {
+                buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
+            }
+            KvCache::Q8 { k, v } => {
                 buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
             }
         }

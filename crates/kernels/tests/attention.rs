@@ -1,13 +1,13 @@
 //! Equivalencia GPU vs CPU de la atención causal con GQA (tolerancia en `brasa_kernels`).
-//! Formas de Qwen3-4B: 32 cabezas de query, 8 de KV, head_dim 128. Cada kernel con KV f32 y f16
-//! (ADR 0009: en f16 la referencia recibe K y V ya redondeados).
+//! Formas de Qwen3-4B: 32 cabezas de query, 8 de KV, head_dim 128. Cada kernel con KV f32, f16 y
+//! Q8 (ADR 0009: la referencia recibe K y V ya redondeados al tipo de la caché).
 
 use brasa_kernels::testutil::{KvPair, Rng};
 use brasa_kernels::{AttnShape, Kernels, KvType, reference};
 use brasa_metal::{Arg, Context};
-use brasa_quant::{f16_to_f32, f32_to_f16};
+use brasa_quant::{f16_to_f32, f32_to_f16, quantize_kv_q8};
 
-const KVS: [KvType; 2] = [KvType::F32, KvType::F16];
+const KVS: [KvType; 3] = [KvType::F32, KvType::F16, KvType::Q8_0];
 
 /// Error máximo `|gpu - ref| / max|v|` entre la salida de la GPU y la referencia.
 fn worst(got: &[f32], expected: &[f32], vmax: &[f32]) -> f32 {
@@ -215,6 +215,37 @@ fn store_kv_convierte() {
     assert_eq!(d32.as_mut_slice(), &x[..]);
     let want: Vec<u16> = x.iter().map(|&f| f32_to_f16(f)).collect();
     assert_eq!(d16.as_mut_slice(), &want[..]);
+}
+
+#[test]
+fn store_kv_q8_igual_a_la_especificacion() {
+    // Bit a bit contra brasa_quant::quantize_kv_q8 (ADR 0009), con bloques nulos, empates en
+    // x / d (múltiplos impares de d / 2) y valores grandes.
+    let ctx = Context::new().unwrap();
+    let k = Kernels::new(&ctx).unwrap();
+    let mut rng = Rng::new(26);
+    let mut x = rng.vec(128 * 64, 20.0);
+    x[32..64].fill(0.0);
+    let d = f16_to_f32(f32_to_f16(1.0 / 127.0));
+    for j in 0..32 {
+        x[128 + j] = (j as f32 - 15.5) * d; // empates exactos (x / d = n + 0,5)
+    }
+    x[128 + 31] = 1.0; // amax = 1 → d = f16(1 / 127)
+    x[256..288].fill(3000.0);
+    let src = ctx.buffer_from(&x).unwrap();
+    let mut dst = ctx.buffer::<u8>(KvType::Q8_0.bytes(x.len())).unwrap();
+    let mut cmd = ctx.command().unwrap();
+    k.store_kv(
+        &mut cmd,
+        KvType::Q8_0,
+        Arg::buf(&src),
+        Arg::buf(&dst),
+        x.len(),
+    );
+    cmd.commit_and_wait().unwrap();
+    let mut want = vec![0u8; KvType::Q8_0.bytes(x.len())];
+    quantize_kv_q8(&x, &mut want);
+    assert_eq!(dst.as_mut_slice(), &want[..]);
 }
 
 #[test]

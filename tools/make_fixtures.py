@@ -10,8 +10,9 @@ Dos fases en procesos separados (para no tener los dos modelos en memoria a la v
               (ADR 0006) -> fixtures/qwen3-4b-q4/, más los estados ocultos de algunas capas.
   q4-kvf16    igual que q4 pero con K y V redondeados a f16 al entrar en la caché, como el engine
               con `--kv f16` (ADR 0009) -> fixtures/qwen3-4b-q4-kvf16/.
+  q4-kvq8     ídem con K y V cuantizados a Q8 (`--kv q8_0`) -> fixtures/qwen3-4b-q4-kvq8/.
 
-Uso: .venv/bin/python tools/make_fixtures.py [all|reference|crosscheck|q4|q4-kvf16]  (ver ADR 0003)
+Uso: .venv/bin/python tools/make_fixtures.py [all|reference|crosscheck|q4|q4-kvf16|q4-kvq8]  (ver ADR 0003)
 """
 
 import hashlib
@@ -32,6 +33,7 @@ TMP = ROOT / "models/.tmp/ref_logits"
 BRASA = ROOT / "models/qwen3-4b-q4/model.brasa"
 OUT_Q4 = ROOT / "fixtures/qwen3-4b-q4"
 OUT_Q4_KVF16 = ROOT / "fixtures/qwen3-4b-q4-kvf16"
+OUT_Q4_KVQ8 = ROOT / "fixtures/qwen3-4b-q4-kvq8"
 # Estados ocultos que se guardan en las fixtures q4 (criterio de T1.5): entrada a la capa 0 y salida
 # de la primera y la última capa, para prompts cortos.
 CAPTURE_PROMPTS = ["en-plain", "code-rust", "chat-system"]
@@ -76,7 +78,7 @@ def reference(out: pathlib.Path = OUT, brasa: pathlib.Path | None = None, kv: st
     ids = [tok.encode(t, add_special_tokens=False) for t in texts]
 
     t0 = time.time()
-    model = Qwen3Ref(MODEL_DIR, brasa=brasa, kv_dtype={"f16": torch.float16}.get(kv))
+    model = Qwen3Ref(MODEL_DIR, brasa=brasa, kv_dtype={"f16": torch.float16, "q8_0": "q8_0"}.get(kv))
     caches = [model.new_cache() for _ in spec]
     # Estados ocultos solo en las fixtures q4 con KV f32 (criterio de T1.5).
     capture = {} if brasa and kv is None else None
@@ -201,6 +203,8 @@ def main() -> None:
         reference(OUT_Q4, BRASA)
     elif phase == "q4-kvf16":
         reference(OUT_Q4_KVF16, BRASA, kv="f16")
+    elif phase == "q4-kvq8":
+        reference(OUT_Q4_KVQ8, BRASA, kv="q8_0")
     elif phase == "all":
         for ph in ("reference", "crosscheck"):
             subprocess.run([sys.executable, __file__, ph], check=True)

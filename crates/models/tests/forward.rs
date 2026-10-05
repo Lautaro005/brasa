@@ -12,13 +12,17 @@
 //! 2. Calidad de la cuantización, contra la referencia FP32 sin cuantizar (fixtures/qwen3-4b):
 //!    coincidencia de top-1 en teacher forcing (informativo; mínimo `MIN_Q4_AGREE`).
 //!
-//! Se corre con cada tipo de KV cache (ADR 0009): f32 contra fixtures/qwen3-4b-q4 y f16 contra
-//! fixtures/qwen3-4b-q4-kvf16 (referencia con K y V redondeados a f16). El teacher forcing se exige
-//! igual en los dos. La tolerancia de logits con KV f16 es `LOGIT_TOL_KV16`: al redondear, una
-//! diferencia ínfima con la referencia cambia algunos elementos en un ULP de f16, y la propia
-//! referencia perturbada en 1e-7 ya se mueve hasta 7e-4 (tools/kv_rounding_sensitivity.py).
-//! Para f16 se mide además la pérdida por redondear la KV: coincidencia de top-1 contra la
-//! referencia con KV sin redondear (mínimo `MIN_KV_AGREE`).
+//! Se corre con cada tipo de KV cache (ADR 0009): f32 contra fixtures/qwen3-4b-q4, f16 contra
+//! fixtures/qwen3-4b-q4-kvf16 y q8_0 contra fixtures/qwen3-4b-q4-kvq8 (referencias con K y V
+//! redondeados al tipo de la caché). El teacher forcing se exige igual en los tres. Con KV
+//! redondeada, una diferencia ínfima con la referencia cambia algunos elementos en un paso del
+//! tipo, así que la tolerancia de logits sale del piso medido con la propia referencia perturbada
+//! en 1e-7 (tools/kv_rounding_sensitivity.py): hasta 7e-4 en f16 (`LOGIT_TOL_KV16`) y hasta
+//! 8,8e-3 en Q8 (`LOGIT_TOL_KVQ8`). En Q8 ese piso también cambia el top-1 en posiciones casi
+//! empatadas: la referencia perturbada en 1e-6 cambia 13 de 1920 en long-context, con brecha
+//! top-1/top-2 de hasta 8,9e-3 · |top-1|. Por eso, con KV Q8 cuenta como empate una brecha menor
+//! que `TIE_REL_KVQ8` · |top-1|. Se mide además la pérdida por redondear la KV: coincidencia de
+//! top-1 contra la referencia con KV sin redondear (mínimo `MIN_KV_AGREE`).
 //!
 //! Necesita models/qwen3-4b-q4/model.brasa:
 //!   cargo test --release -p brasa-models --test forward -- --ignored --nocapture
@@ -31,7 +35,9 @@ use serde_json::Value;
 
 const LOGIT_TOL: f32 = 1e-4;
 const LOGIT_TOL_KV16: f32 = 1e-3;
+const LOGIT_TOL_KVQ8: f32 = 2e-2;
 const TIE: f32 = 1e-3;
+const TIE_REL_KVQ8: f32 = 1e-2;
 const MIN_Q4_AGREE: f64 = 0.80;
 const MIN_KV_AGREE: f64 = 0.98;
 const CHUNK: usize = 64;
@@ -108,6 +114,12 @@ impl TopK {
     fn gap(&self, j: usize) -> f32 {
         self.logits[j * self.k] - self.logits[j * self.k + 1]
     }
+
+    /// Empate según el tipo de KV (ver la documentación del módulo).
+    fn tie(&self, j: usize, kv: KvType) -> bool {
+        let g = self.gap(j);
+        g < TIE || (kv == KvType::Q8_0 && g < TIE_REL_KVQ8 * self.logits[j * self.k].abs())
+    }
 }
 
 /// Coincidencia de top-1 del engine sobre las secuencias de las fixtures en `dir`, para `id`.
@@ -142,14 +154,20 @@ fn forward_kv_f16_igual_a_la_referencia() {
     forward_igual_a_la_referencia(KvType::F16, "fixtures/qwen3-4b-q4-kvf16");
 }
 
+#[test]
+#[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
+fn forward_kv_q8_igual_a_la_referencia() {
+    forward_igual_a_la_referencia(KvType::Q8_0, "fixtures/qwen3-4b-q4-kvq8");
+}
+
 fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
     let fx_q4 = root().join(fixtures);
     let fx_fp = root().join("fixtures/qwen3-4b");
     let fx_kv32 = root().join("fixtures/qwen3-4b-q4");
-    let logit_tol = if kv == KvType::F32 {
-        LOGIT_TOL
-    } else {
-        LOGIT_TOL_KV16
+    let logit_tol = match kv {
+        KvType::F32 => LOGIT_TOL,
+        KvType::F16 => LOGIT_TOL_KV16,
+        KvType::Q8_0 => LOGIT_TOL_KVQ8,
     };
     let m_q4 = manifest(&fx_q4);
     let (greedy, k) = (
@@ -203,7 +221,7 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
         let (mut bad, mut ties) = (0, 0);
         for j in 0..seq.len() {
             if argmax(&logits[j * vocab..(j + 1) * vocab]) != refk.top1(j) {
-                if refk.gap(j) < TIE {
+                if refk.tie(j, kv) {
                     ties += 1;
                 } else {
                     bad += 1;
@@ -222,7 +240,7 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
         let mut dbad = 0;
         for (step, tok) in g[..greedy - 1].iter().enumerate() {
             let j = prompt.len() - 1 + step; // fila de la referencia que predice g[step]
-            if argmax(&tail) != refk.top1(j) && refk.gap(j) >= TIE {
+            if argmax(&tail) != refk.top1(j) && !refk.tie(j, kv) {
                 dbad += 1;
             }
             model

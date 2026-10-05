@@ -9,28 +9,7 @@
 #include <metal_simdgroup_matrix>
 using namespace metal;
 
-// Tipo de la KV cache: el host antepone `#define KV_F16 1` para la variante f16 (ADR 0009).
-#ifdef KV_F16
-typedef half  KV_T;
-typedef half4 KV_T4;
-#else
-typedef float  KV_T;
-typedef float4 KV_T4;
-#endif
-
-// Carga un bloque 8×8 de la caché como matriz f32 (en f16 se carga como half y se convierte).
-inline simdgroup_float8x8 load_kv(device const KV_T* p, ulong stride, bool transpose) {
-    simdgroup_float8x8 f;
-#ifdef KV_F16
-    simdgroup_half8x8 h;
-    simdgroup_load(h, p, stride, ulong2(0, 0), transpose);
-    f.thread_elements()[0] = float(h.thread_elements()[0]);
-    f.thread_elements()[1] = float(h.thread_elements()[1]);
-#else
-    simdgroup_load(f, p, stride, ulong2(0, 0), transpose);
-#endif
-    return f;
-}
+// KV_T, kv_row, kv1 y load_kv vienen de kv_access.metal (lo antepone el host, ADR 0009).
 
 constant uint D = 128;
 constant uint BQ = 32;
@@ -56,7 +35,6 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
     uint t0 = tg.x * BQ;
     uint h = tg.y;
     uint kh = h / (hq / hkv);
-    uint kvstride = hkv * D;
 
     // Q del bloque a memoria threadgroup (filas fuera de rango en 0).
     for (uint e = tid; e < BQ * D; e += 128) {
@@ -80,8 +58,6 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
 
     uint last_t = min(t0 + BQ, tokens) - 1;
     uint kend = pos0 + last_t + 1;                 // claves visibles para el bloque: [0, kend)
-    device const KV_T* kbase = k + kh * D;
-    device const KV_T* vbase = v + kh * D;
 
     for (uint j0 = 0; j0 < kend; j0 += BKEYS) {
         // S = Q · Kᵀ (8 × 32)
@@ -89,7 +65,7 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
         for (uint n = 0; n < BKEYS / 8; ++n) sf[n] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
         for (uint d8 = 0; d8 < D / 8; ++d8) {
             for (uint n = 0; n < BKEYS / 8; ++n) {
-                simdgroup_float8x8 kf = load_kv(kbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride, true);
+                simdgroup_float8x8 kf = load_kv(k, j0 + n * 8, hkv, kh, d8 * 8, true, lane);
                 simdgroup_multiply_accumulate(sf[n], qf[d8], kf, sf[n]);
             }
         }
@@ -131,7 +107,7 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
             simdgroup_float8x8 acc;
             simdgroup_multiply(acc, dg, of[d8]);
             for (uint n = 0; n < BKEYS / 8; ++n) {
-                simdgroup_float8x8 vf = load_kv(vbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride, false);
+                simdgroup_float8x8 vf = load_kv(v, j0 + n * 8, hkv, kh, d8 * 8, false, lane);
                 simdgroup_multiply_accumulate(acc, pf[n], vf, acc);
             }
             of[d8] = acc;
@@ -208,7 +184,6 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
     uint kh = tg.y;
     uint hq = hkv * G;
     uint q0 = tg.x * QR;                       // primera query del threadgroup
-    uint kvstride = hkv * D;
 
     for (uint e = tid; e < R * D; e += NSGF * 32) {
         uint r = e / D, d = e % D;
@@ -231,8 +206,6 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
 
     uint lk = pos0 + tokens;
     uint kend = pos0 + min(q0 + QR, tokens);   // claves visibles para el threadgroup
-    device const KV_T* kbase = k + kh * D;
-    device const KV_T* vbase = v + kh * D;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint j0 = 0; j0 < kend; j0 += BC) {
@@ -243,7 +216,7 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
         for (uint d8 = 0; d8 < D / 8; ++d8) {
             simdgroup_float8x8 kf[KT];
             for (uint c = 0; c < KT; ++c)
-                kf[c] = load_kv(kbase + (j0 + (sg * KT + c) * 8) * kvstride + d8 * 8, kvstride, true);
+                kf[c] = load_kv(k, j0 + (sg * KT + c) * 8, hkv, kh, d8 * 8, true, lane);
             for (uint i = 0; i < R / 8; ++i) {
                 simdgroup_float8x8 qf;
                 simdgroup_load(qf, Qs + (i * 8) * D + d8 * 8, D);
@@ -293,7 +266,7 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
         for (uint n = 0; n < BC / 8; ++n) {
             simdgroup_float8x8 vf[4];
             for (uint j = 0; j < 4; ++j)
-                vf[j] = load_kv(vbase + (j0 + n * 8) * kvstride + sg * 32 + j * 8, kvstride, false);
+                vf[j] = load_kv(v, j0 + n * 8, hkv, kh, sg * 32 + j * 8, false, lane);
             for (uint i = 0; i < R / 8; ++i) {
                 simdgroup_float8x8 pf;
                 simdgroup_load(pf, Ss + (i * 8) * BC + n * 8, BC);

@@ -10,9 +10,9 @@ mod serve;
 
 use clap::{Parser, Subcommand};
 
-/// Tipo de KV cache de la línea de comandos (`--kv f32|f16`, ADR 0009).
+/// Tipo de KV cache de la línea de comandos (`--kv f32|f16|q8_0`, ADR 0009).
 pub fn parse_kv(s: &str) -> Result<brasa_runtime::KvType, String> {
-    brasa_runtime::KvType::parse(s).ok_or_else(|| format!("--kv {s}: se espera f32 o f16"))
+    brasa_runtime::KvType::parse(s).ok_or_else(|| format!("--kv {s}: se espera f32, f16 o q8_0"))
 }
 
 #[derive(Debug, Parser)]

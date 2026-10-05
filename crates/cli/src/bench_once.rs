@@ -19,7 +19,7 @@ pub struct BenchOnceArgs {
     ctx: usize,
     #[arg(long, default_value_t = 128)]
     chunk: usize,
-    /// Tipo de la KV cache: f16 (por defecto) o f32 (ADR 0009).
+    /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
     #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
     kv: brasa_runtime::KvType,
 }

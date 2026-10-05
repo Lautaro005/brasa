@@ -226,7 +226,7 @@ fn main() {
                 flops,
             );
         }
-        for kv in [KvType::F32, KvType::F16] {
+        for kv in [KvType::F32, KvType::F16, KvType::Q8_0] {
             let cache = KvPair::new(&ctx, kv, kv_k.clone(), kv_v.clone());
             let (kc, vc) = cache.args();
             let shape = AttnShape { kv, ..shape };

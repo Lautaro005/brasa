@@ -8,7 +8,10 @@ pub mod safetensors;
 use std::fmt;
 
 pub use brasa_file::{BrasaFile, TensorInfo};
-pub use qtype::{QType, dequantize, f16_to_f32, f32_to_f16};
+pub use qtype::{
+    KV_Q8_DIM, KV_Q8_ROW, QType, dequantize, dequantize_kv_q8, f16_to_f32, f32_to_f16,
+    quantize_kv_q8,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);

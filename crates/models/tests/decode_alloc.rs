@@ -48,32 +48,40 @@ fn root() -> PathBuf {
 #[test]
 #[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
 fn decode_sin_asignaciones() {
-    let ctx = Context::new().unwrap();
-    let limits = Limits {
-        ctx: 512,
-        max_tokens: 64,
-        max_logit_rows: 1,
-        kv: KvType::F16,
-    };
-    let mut model =
-        Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();
-    let mut logits = vec![0f32; model.cfg.vocab];
-    let prompt: Vec<u32> = (0..40).map(|i| 1000 + i).collect();
-    model.forward(&ctx, &prompt, 0, 1, &mut logits).unwrap();
-    // Un paso fuera de la medición, por si hay inicializaciones perezosas del sistema.
-    model
-        .forward(&ctx, &[42], prompt.len(), 1, &mut logits)
-        .unwrap();
-
-    let ids = [7u32];
-    ACTIVE.store(true, Ordering::SeqCst);
-    for step in 0..20 {
+    for kv in [KvType::F16, KvType::Q8_0] {
+        let ctx = Context::new().unwrap();
+        let limits = Limits {
+            ctx: 512,
+            max_tokens: 64,
+            max_logit_rows: 1,
+            kv,
+        };
+        let mut model =
+            Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();
+        let mut logits = vec![0f32; model.cfg.vocab];
+        let prompt: Vec<u32> = (0..40).map(|i| 1000 + i).collect();
+        model.forward(&ctx, &prompt, 0, 1, &mut logits).unwrap();
+        // Un paso fuera de la medición, por si hay inicializaciones perezosas del sistema.
         model
-            .forward(&ctx, &ids, prompt.len() + 1 + step, 1, &mut logits)
+            .forward(&ctx, &[42], prompt.len(), 1, &mut logits)
             .unwrap();
+
+        let ids = [7u32];
+        COUNT.store(0, Ordering::SeqCst);
+        ACTIVE.store(true, Ordering::SeqCst);
+        for step in 0..20 {
+            model
+                .forward(&ctx, &ids, prompt.len() + 1 + step, 1, &mut logits)
+                .unwrap();
+        }
+        ACTIVE.store(false, Ordering::SeqCst);
+        let n = COUNT.load(Ordering::SeqCst);
+        println!("KV {}: asignaciones en 20 pasos de decode: {n}", kv.name());
+        assert_eq!(
+            n,
+            0,
+            "el decode asignó memoria {n} veces (KV {})",
+            kv.name()
+        );
     }
-    ACTIVE.store(false, Ordering::SeqCst);
-    let n = COUNT.load(Ordering::SeqCst);
-    println!("asignaciones en 20 pasos de decode: {n}");
-    assert_eq!(n, 0, "el decode asignó memoria {n} veces");
 }

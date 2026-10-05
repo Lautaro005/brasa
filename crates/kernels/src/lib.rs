@@ -18,6 +18,7 @@
 //! ya redondeados a f16, así que la tolerancia de la atención no cambia.
 
 use brasa_metal::{Arg, Buffer, Command, Context, MetalError, Pipeline};
+use brasa_quant::{KV_Q8_DIM, KV_Q8_ROW};
 
 pub mod reference;
 pub mod testutil;
@@ -35,6 +36,19 @@ pub mod sources {
     pub const FLASH_ATTENTION: &str = include_str!("metal/flash_attention.metal");
     pub const DECODE_ATTENTION: &str = include_str!("metal/decode_attention.metal");
     pub const KV: &str = include_str!("metal/kv.metal");
+    /// Acceso a la KV cache por tipo; [`super::kv_source`] lo antepone a los kernels de atención.
+    pub const KV_ACCESS: &str = include_str!("metal/kv_access.metal");
+}
+
+/// Fuente de un kernel de atención para el tipo de KV `kv`: el `#define` del tipo, el acceso a
+/// la caché (`kv_access.metal`) y `source`.
+pub fn kv_source(kv: KvType, source: &str) -> String {
+    let define = match kv {
+        KvType::F32 => "",
+        KvType::F16 => "#define KV_F16 1\n",
+        KvType::Q8_0 => "#define KV_Q8 1\n",
+    };
+    format!("{define}{}\n{source}", sources::KV_ACCESS)
 }
 
 /// Hilos por threadgroup para kernels elemento a elemento.
@@ -57,14 +71,28 @@ pub enum KvType {
     F32,
     #[default]
     F16,
+    /// Filas de 128 `int8` + 4 escalas f16 (136 bytes; ADR 0009).
+    Q8_0,
 }
 
 impl KvType {
-    /// Bytes por bloque de 32 elementos (unidad del planner; Q8 usará 34).
+    /// Bytes por bloque de 32 elementos (unidad del planner).
     pub fn block_bytes(self) -> usize {
         match self {
             KvType::F32 => 128,
             KvType::F16 => 64,
+            KvType::Q8_0 => 34,
+        }
+    }
+
+    /// Bytes de `n` elementos de la caché (`n` múltiplo de 128 en Q8: filas completas).
+    pub fn bytes(self, n: usize) -> usize {
+        match self {
+            KvType::Q8_0 => {
+                assert_eq!(n % KV_Q8_DIM, 0, "KV Q8: filas de {KV_Q8_DIM} valores");
+                n / KV_Q8_DIM * KV_Q8_ROW
+            }
+            _ => n * self.block_bytes() / 32,
         }
     }
 
@@ -76,6 +104,7 @@ impl KvType {
         match self {
             KvType::F32 => "f32",
             KvType::F16 => "f16",
+            KvType::Q8_0 => "q8_0",
         }
     }
 
@@ -83,6 +112,7 @@ impl KvType {
         match s {
             "f32" => Some(KvType::F32),
             "f16" => Some(KvType::F16),
+            "q8_0" | "q8" => Some(KvType::Q8_0),
             _ => None,
         }
     }
@@ -117,13 +147,13 @@ pub struct Kernels {
     gemm_tiled_q4_0: Pipeline,
     gemm_tiled_q8_0: Pipeline,
     /// Variantes por [`KvType`] (índice `KvType as usize`).
-    flash_attn: [Pipeline; 2],
+    flash_attn: [Pipeline; 3],
     /// `flash_attn_gqa` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
-    flash_attn_gqa: [[Pipeline; 2]; 4],
-    attn_decode_partial: [Pipeline; 2],
+    flash_attn_gqa: [[Pipeline; 3]; 4],
+    attn_decode_partial: [Pipeline; 3],
     /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
-    attn_decode_lanes: [[Pipeline; 2]; 4],
-    store_kv: [Pipeline; 2],
+    attn_decode_lanes: [[Pipeline; 3]; 4],
+    store_kv: [Pipeline; 3],
     attn_decode_reduce: Pipeline,
 }
 
@@ -132,17 +162,15 @@ fn gqa_variants(
     ctx: &Context,
     source: &str,
     function: &str,
-) -> Result<[[Pipeline; 2]; 4], MetalError> {
+) -> Result<[[Pipeline; 3]; 4], MetalError> {
     let v = |g: usize| kv_variants(ctx, &format!("#define GQA_G {g}\n{source}"), function);
     Ok([v(1)?, v(2)?, v(4)?, v(8)?])
 }
 
-/// Compila `function` de `source` para cada tipo de KV (f16 con `#define KV_F16 1`).
-fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline; 2], MetalError> {
-    Ok([
-        ctx.pipeline(source, function)?,
-        ctx.pipeline(&format!("#define KV_F16 1\n{source}"), function)?,
-    ])
+/// Compila `function` de `source` para cada tipo de KV (ver [`kv_source`]).
+fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline; 3], MetalError> {
+    let v = |kv| ctx.pipeline(&kv_source(kv, source), function);
+    Ok([v(KvType::F32)?, v(KvType::F16)?, v(KvType::Q8_0)?])
 }
 
 fn groups(n: usize, per: usize) -> usize {
@@ -176,8 +204,12 @@ impl Kernels {
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
                 ctx.pipeline(KV, "store_kv_f16")?,
+                ctx.pipeline(KV, "store_kv_q8")?,
             ],
-            attn_decode_reduce: ctx.pipeline(DECODE_ATTENTION, "attn_decode_reduce")?,
+            attn_decode_reduce: ctx.pipeline(
+                &kv_source(KvType::F32, DECODE_ATTENTION),
+                "attn_decode_reduce",
+            )?,
         })
     }
 
@@ -434,6 +466,7 @@ impl Kernels {
     }
 
     /// Copia `n` floats de `src` a la KV cache `dst` (de tipo `kv`), convirtiendo si hace falta.
+    /// En Q8 `n` es múltiplo de 128 (filas completas) y hay un hilo por bloque de 32.
     pub fn store_kv<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -442,10 +475,17 @@ impl Kernels {
         dst: Arg<'a>,
         n: usize,
     ) {
+        let threads = match kv {
+            KvType::Q8_0 => {
+                assert_eq!(n % KV_Q8_DIM, 0, "KV Q8: filas de {KV_Q8_DIM} valores");
+                n / 32
+            }
+            _ => n,
+        };
         cmd.dispatch(
             &self.store_kv[kv.idx()],
             &[src, dst, Arg::u32(n as u32)],
-            [n, 1, 1],
+            [threads, 1, 1],
             [ELEMENTWISE_TG, 1, 1],
         );
     }

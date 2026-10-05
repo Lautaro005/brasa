@@ -78,4 +78,23 @@ fn plan_igual_a_lo_reservado_y_rechazo() {
         after - before <= plan.total,
         "la huella real supera el plan"
     );
+    drop(session);
+
+    // T3.4: perfil de agente, 16K con KV Q8. La KV reservada es la del plan y entra en 1,25 GiB.
+    let agent = Limits {
+        ctx: 16_384,
+        max_tokens: 128,
+        max_logit_rows: 1,
+        kv: KvType::Q8_0,
+    };
+    let (session, plan) = Session::load_with_budget(&dir, agent, &budget).unwrap();
+    let a = session.allocated();
+    println!(
+        "16K KV q8_0: KV {:.3} GiB (plan {:.3}); total plan {:.2} GiB",
+        gib(a.kv),
+        gib(plan.kv),
+        gib(plan.total)
+    );
+    assert_eq!(a.kv, plan.kv, "KV q8_0");
+    assert!(a.kv <= (5 << 30) / 4, "KV de 16K en Q8 mayor que 1,25 GiB");
 }
