@@ -62,6 +62,7 @@ cargo run --release -p brasa-cli -- connect codex|claude-code|cline|opencode  # 
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
+cargo run --release -p brasa-kernels --example mma_peak   # techo de simdgroup MMA del chip (f32/f16)
 cargo run --release -p brasa-models --example profile_decode -- 16000   # decode: ms/token de GPU en una posición
 
 # Baselines (ver docs/adr/0002). Pesos en models/ (gitignored):

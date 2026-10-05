@@ -113,6 +113,9 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   Criterio no cumplido; se sigue con T3.3 y se vuelve con perfilado de GPU.
 - **T3.3 GEMM de prefill.** Aceptación: ≥ 3,5 TFLOPS en las tres formas de Qwen3-4B con T=512 y
   T1.6 sigue pasando.
+  Estado (2026-10-05): 2,82 TFLOPS en f32 (+8–10 %, ADR 0011). El techo del bucle sin cargas es
+  3,58; llama.cpp llega a ~3,5 con pesos y activaciones en f16. Criterio no cumplido: pasar las
+  activaciones a f16 es decisión del usuario.
 - **T3.4 KV Q8** (perfil de agente 16K). Aceptación: fixtures `kvq8`, T1.6 con su referencia,
   pérdida de top-1 medida y documentada, KV de 16K ≤ 1,25 GiB.
 - **T3.5 Decode.** Fusiones y GEMV según perfil (`profile_decode`). Aceptación: decode a 2K ≥ 50,8 tok/s
