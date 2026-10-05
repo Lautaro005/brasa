@@ -53,7 +53,7 @@ grep "swap del sistema" "$out/run.txt" "$out/run-chat.txt"
 
 echo "==> T1.8 planner: un contexto que no entra se rechaza; uno que entra se acepta"
 ./target/release/brasa doctor --json > "$out/doctor-plan.json"
-if ./target/release/brasa run qwen3-4b-q4 --ctx 16384 -p hola > "$out/plan-rechazo.txt" 2>&1; then
+if ./target/release/brasa run qwen3-4b-q4 --ctx 16384 --kv f32 -p hola > "$out/plan-rechazo.txt" 2>&1; then
     echo "ERROR: ctx 16384 debería rechazarse en 8 GB con KV f32" | tee -a "$out/plan-rechazo.txt"
 else
     cat "$out/plan-rechazo.txt"
@@ -61,6 +61,11 @@ fi
 ./target/release/brasa plan qwen3-4b-q4 --ctx 4096 | tee "$out/plan-acepta.txt"
 ./target/release/brasa run qwen3-4b-q4 --ctx 4096 --no-think --max-tokens 50 -p "Decí hola." \
     2>&1 | tee -a "$out/plan-acepta.txt"
+
+echo "==> T3.4 perfil de agente: 16K con KV Q8 (plan y benchmark sin swap creciente)"
+./target/release/brasa plan qwen3-4b-q4 --ctx 16384 --kv q8_0 | tee "$out/plan-16k-q8.txt"
+./target/release/brasa benchmark --ctx 16384 --kv q8_0 --label kv-q8 --out-dir "$out" \
+    2>&1 | tee "$out/bench-16k-q8.log"
 
 {
     echo "commit: $commit"

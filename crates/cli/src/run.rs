@@ -33,6 +33,9 @@ pub struct RunArgs {
     /// Tokens por bloque de prefill.
     #[arg(long, default_value_t = 128)]
     chunk: usize,
+    /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
+    #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
+    kv: brasa_runtime::KvType,
     /// Greedy (temperatura 0); ignora temp/top-k/top-p.
     #[arg(long)]
     greedy: bool,
@@ -99,6 +102,7 @@ pub fn run(args: RunArgs) -> Result<(), String> {
         ctx: args.ctx,
         max_tokens: args.chunk,
         max_logit_rows: 1,
+        kv: args.kv,
     };
     eprintln!("cargando {} (contexto {}) ...", dir.display(), args.ctx);
     let mut session = Session::load(&dir, limits).map_err(|e| e.to_string())?;

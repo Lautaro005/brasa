@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use brasa_runtime::{Limits, Sampler, SamplingParams, Session};
+use brasa_runtime::{KvType, Limits, Sampler, SamplingParams, Session};
 use serde_json::Value;
 
 fn root() -> PathBuf {
@@ -23,6 +23,7 @@ fn greedy_reproduce_la_referencia_y_reutiliza_prefijo() {
         ctx: 1024,
         max_tokens: 16,
         max_logit_rows: 1,
+        kv: KvType::F16,
     };
     let mut s = Session::load(&root().join("models/qwen3-4b-q4"), limits).unwrap();
     let greedy = manifest["greedy_tokens"].as_u64().unwrap() as usize;

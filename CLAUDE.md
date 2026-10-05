@@ -56,12 +56,15 @@ cargo run -p brasa-cli -- doctor --json
 cargo run --release -p brasa-cli -- run qwen3-4b-q4                      # chat interactivo
 cargo run --release -p brasa-cli -- run qwen3-4b-q4 --no-think -p "Hola"  # una respuesta
 cargo run --release -p brasa-cli -- plan qwen3-4b-q4 --ctx 16384 [--perfil 8gb]  # planner, sin cargar
-cargo run --release -p brasa-cli -- serve qwen3-4b-q4 --ctx 16384        # API OpenAI/Anthropic en :8080
+cargo run --release -p brasa-cli -- serve qwen3-4b-q4 --ctx 16384        # API OpenAI/Anthropic en :8080 (--kv f16 por defecto; q8_0 perfil agente; f32 para verificar)
 cargo run --release -p brasa-cli -- connect codex|claude-code|cline|opencode  # config para agentes
 .venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
+cargo run --release -p brasa-kernels --example mma_peak   # techo de simdgroup MMA del chip (f32/f16)
+cargo run --release -p brasa-models --example profile_decode -- 16000 16064 q8_0   # decode: ms/token de GPU en una posición [ctx] [kv]
+cargo run --release -p brasa-kernels --example decode_breakdown -- 2000  # decode: ms/token por kernel (×36 capas)
 
 # Baselines (ver docs/adr/0002). Pesos en models/ (gitignored):
 .venv/bin/hf download Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c --local-dir models/qwen3-4b-hf
@@ -82,8 +85,12 @@ cargo test -p brasa-tokenizer                  # T1.2: template y tokens contra 
 .venv/bin/python tools/convert_brasa.py models/qwen3-4b-hf models/qwen3-4b-q4
 cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   # T1.3
 .venv/bin/python tools/make_fixtures.py q4     # fixtures/qwen3-4b-q4/: referencia con pesos decuantizados
+.venv/bin/python tools/make_fixtures.py q4-kvf16  # fixtures/qwen3-4b-q4-kvf16/: idem con K/V redondeados a f16 (ADR 0009)
+.venv/bin/python tools/make_fixtures.py q4-kvq8   # fixtures/qwen3-4b-q4-kvq8/: idem con K/V en Q8
+.venv/bin/python tools/kv_rounding_sensitivity.py --kv q8_0 --eps 1e-7   # piso de error de logits al redondear la KV
+.venv/bin/python tools/eval_embed_quant.py [--act f16] [--wts f16]  # calidad vs FP32 según la cuantización de la tabla y entradas f16 (ADR 0011, 0012)
 cargo test --release -p brasa-models --test layers -- --ignored --nocapture     # T1.5
-cargo test --release -p brasa-models --test forward -- --ignored --nocapture    # T1.6 (~8 min)
+cargo test --release -p brasa-models --test forward -- --ignored --nocapture --test-threads 1  # T1.6 con KV f32, f16 y q8_0
 cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4
 cargo test --release -p brasa-runtime --test session -- --ignored --nocapture   # T1.7 greedy y prefijo
 cargo test --release -p brasa-runtime --test planner -- --ignored --nocapture   # T1.8 plan vs real

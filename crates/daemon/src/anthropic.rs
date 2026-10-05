@@ -21,6 +21,12 @@ fn error(status: StatusCode, kind: ErrorKind, msg: &str) -> Response {
         ErrorKind::Internal => "api_error",
         _ => "invalid_request_error",
     };
+    // Claude Code reconoce el exceso de contexto por el texto de la API ("prompt is too long") y
+    // solo entonces compacta cuando el modelo no es uno que conozca (ADR 0008).
+    let msg = match kind {
+        ErrorKind::ContextLength => format!("prompt is too long: {msg}"),
+        _ => msg.to_string(),
+    };
     (
         status,
         axum::Json(json!({"type": "error", "error": {"type": typ, "message": msg}})),

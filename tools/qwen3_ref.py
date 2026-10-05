@@ -69,9 +69,33 @@ def rope(x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch.Tensor
     return x * cos + rotated * sin
 
 
+def round_kv_q8(x: torch.Tensor) -> torch.Tensor:
+    """Valores de la KV cache Q8 (ADR 0009, especificación en brasa_quant::quantize_kv_q8): por
+    bloque de 32 a lo largo de head_dim, d = f16(amax / 127) y q = clamp(round(x / d), ±127), 0 si
+    d = 0. División IEEE en f32 y redondeo al par (torch.round). d · q es exacto en f32."""
+    assert x.dtype == torch.float32 and x.shape[-1] % 32 == 0
+    b = x.contiguous().reshape(-1, 32)
+    amax = b.abs().amax(dim=1, keepdim=True)
+    d = (amax / 127.0).to(torch.float16).to(torch.float32)
+    safe = torch.where(d == 0, torch.ones_like(d), d)
+    q = torch.where(d == 0, torch.zeros_like(b), torch.round(b / safe).clamp(-127.0, 127.0))
+    return (q * d).reshape(x.shape)
+
+
 class Qwen3Ref:
-    def __init__(self, model_dir: str | pathlib.Path, brasa: str | pathlib.Path | None = None):
-        """`model_dir`: safetensors originales. Con `brasa`, usa los pesos decuantizados de ese archivo."""
+    def __init__(
+        self,
+        model_dir: str | pathlib.Path,
+        brasa: str | pathlib.Path | None = None,
+        kv_dtype: torch.dtype | str | None = None,
+    ):
+        """`model_dir`: safetensors originales. Con `brasa`, usa los pesos decuantizados de ese archivo.
+        Con `kv_dtype` (torch.float16 o "q8_0"), K y V se redondean a ese tipo al entrar en la
+        caché, después de QK-norm y RoPE, como hace el engine (ADR 0009); el resto sigue en FP32."""
+        self.kv_dtype = kv_dtype
+        # Solo para evaluar (tools/eval_embed_quant.py --act f16): redondea la entrada de cada
+        # proyección lineal, como haría un GEMM con activaciones en f16. None = FP32 (fixtures).
+        self.act_dtype: torch.dtype | None = None
         model_dir = pathlib.Path(model_dir)
         self.cfg = json.loads((model_dir / "config.json").read_text())
         c = self.cfg
@@ -85,6 +109,20 @@ class Qwen3Ref:
         self.w = BrasaWeights(pathlib.Path(brasa)) if brasa else Weights(model_dir)
         self.embed = self.w.get("model.embed_tokens.weight")  # [V, H], también lm_head
         self.final_norm = self.w.get("model.norm.weight")
+
+    def round_kv(self, x: torch.Tensor) -> torch.Tensor:
+        """K o V tal como quedan en la caché (redondeados a `kv_dtype` si hay)."""
+        if self.kv_dtype is None:
+            return x
+        if self.kv_dtype == "q8_0":
+            return round_kv_q8(x)
+        return x.to(self.kv_dtype).to(torch.float32)
+
+    def act(self, x: torch.Tensor) -> torch.Tensor:
+        """Entrada de una proyección lineal (redondeada a `act_dtype` si hay)."""
+        if self.act_dtype is None:
+            return x
+        return x.to(self.act_dtype).to(torch.float32)
 
     def new_cache(self) -> list:
         return [None] * self.n_layers
@@ -108,11 +146,13 @@ class Qwen3Ref:
                 t = x.shape[0]
                 pos = torch.arange(starts[i], starts[i] + t)
                 h = rms_norm(x, w["input_layernorm.weight"], self.eps)
+                h = self.act(h)
                 q = (h @ w["self_attn.q_proj.weight"].T).view(t, self.n_heads, self.head_dim)
                 k = (h @ w["self_attn.k_proj.weight"].T).view(t, self.n_kv, self.head_dim)
                 v = (h @ w["self_attn.v_proj.weight"].T).view(t, self.n_kv, self.head_dim)
                 q = rope(rms_norm(q, w["self_attn.q_norm.weight"], self.eps), pos, self.theta)
                 k = rope(rms_norm(k, w["self_attn.k_norm.weight"], self.eps), pos, self.theta)
+                k, v = self.round_kv(k), self.round_kv(v)
                 if caches[i][li] is not None:
                     k = torch.cat([caches[i][li][0], k])
                     v = torch.cat([caches[i][li][1], v])
@@ -124,10 +164,11 @@ class Qwen3Ref:
                 scores = scores.masked_fill(key_pos[None, None, :] > pos[None, :, None], float("-inf"))
                 p = torch.softmax(scores, dim=-1)
                 o = torch.einsum("hts,shd->thd", p, vv).reshape(t, self.n_heads * self.head_dim)
-                x = x + o @ w["self_attn.o_proj.weight"].T
+                x = x + self.act(o) @ w["self_attn.o_proj.weight"].T
                 h = rms_norm(x, w["post_attention_layernorm.weight"], self.eps)
+                h = self.act(h)
                 gate = torch.nn.functional.silu(h @ w["mlp.gate_proj.weight"].T)
-                x = x + (gate * (h @ w["mlp.up_proj.weight"].T)) @ w["mlp.down_proj.weight"].T
+                x = x + self.act(gate * (h @ w["mlp.up_proj.weight"].T)) @ w["mlp.down_proj.weight"].T
                 xs[i] = x
             if capture is not None:
                 capture[li] = [x.clone() for x in xs]

@@ -2,8 +2,9 @@
 //! banda o GFLOP/s efectivos. Uso: cargo bench -p brasa-kernels
 //! Las cifras son de kernels sin optimizar (fase 1); sirven de línea base para la fase 3.
 
+use brasa_kernels::testutil::KvPair;
 use brasa_kernels::testutil::{Rng, median};
-use brasa_kernels::{AttnShape, Kernels, QMatrix, RopeTable, WeightType};
+use brasa_kernels::{AttnShape, Kernels, KvType, QMatrix, RopeTable, WeightType};
 use brasa_metal::{Arg, Command, Context};
 
 const REPS: usize = 20;
@@ -34,9 +35,12 @@ fn report(name: &str, t: f64, bytes: f64, flops: f64) {
 
 fn main() {
     let ctx = Context::new().expect("contexto Metal");
+    let t0 = std::time::Instant::now();
     let k = Kernels::new(&ctx).expect("kernels");
+    let compile_ms = t0.elapsed().as_secs_f64() * 1e3;
     let mut rng = Rng::new(1);
     println!("dispositivo: {}", ctx.device_name());
+    println!("Kernels::new (compilar todos los pipelines): {compile_ms:.0} ms");
 
     let (h, ffn, heads, hd) = (2560usize, 9728usize, 32usize, 128usize);
     let big = 512 * ffn;
@@ -173,8 +177,23 @@ fn main() {
         (vocab * h) as f64 * 34.0 / 32.0,
         2.0 * (vocab * h) as f64,
     );
+    let emb6 = ctx.buffer_from(&rng.q6_0(vocab, h)).unwrap();
+    let head6 = QMatrix {
+        data: &emb6,
+        qtype: WeightType::Q6_0,
+        rows: vocab,
+        cols: h,
+    };
+    let t = time(&ctx, |c| k.gemv(c, head6, Arg::buf(&x), Arg::buf(&out), 1));
+    report(
+        "gemv_q6_0 lm_head 151936×2560 T=1",
+        t,
+        (vocab * h) as f64 * 26.0 / 32.0,
+        2.0 * (vocab * h) as f64,
+    );
 
-    // Atención simple (sin tiling): decode con distintos largos de contexto y un prefill corto.
+    // Atención: la simple (sin tiling, solo KV f32) y las de la ruta caliente con KV f32 y f16.
+    // FLOPs de la parte causal exacta: cada query i ve pos0 + i + 1 claves.
     let (hq, hkv) = (32usize, 8usize);
     for (tokens, pos0) in [
         (1usize, 2047usize),
@@ -182,13 +201,14 @@ fn main() {
         (1, 16383),
         (64, 448),
         (128, 1920),
+        (512, 15872),
     ] {
         let lk = pos0 + tokens;
+        let keys_seen = (tokens * pos0 + tokens * (tokens + 1) / 2) as f64;
+        let flops = 4.0 * (hq * hd) as f64 * keys_seen;
         let q = ctx.buffer_from(&rng.vec(tokens * hq * hd, 1.0)).unwrap();
-        let cap = lk.next_multiple_of(32);
-        let kc = ctx.buffer_from(&rng.vec(cap * hkv * hd, 1.0)).unwrap();
-        let vc = ctx.buffer_from(&rng.vec(cap * hkv * hd, 1.0)).unwrap();
-        let scores = ctx.buffer::<f32>(tokens * hq * lk).unwrap();
+        let cap = lk.next_multiple_of(brasa_kernels::KV_ALIGN);
+        let (kv_k, kv_v) = (rng.vec(cap * hkv * hd, 1.0), rng.vec(cap * hkv * hd, 1.0));
         let o = ctx.buffer::<f32>(tokens * hq * hd).unwrap();
         let shape = AttnShape {
             tokens,
@@ -196,78 +216,68 @@ fn main() {
             hkv,
             dim: hd,
             pos0,
+            kv: KvType::F32,
         };
-        let t = time(&ctx, |c| {
-            k.attention(
-                c,
-                Arg::buf(&q),
-                Arg::buf(&kc),
-                Arg::buf(&vc),
-                &scores,
-                Arg::buf(&o),
-                shape,
-            )
-        });
-        report(
-            &format!("attention_simple T={tokens} ctx={lk}"),
-            t,
-            2.0 * 4.0 * (lk * hkv * hd) as f64,
-            4.0 * (tokens * hq * lk * hd) as f64,
-        );
-        let t = time(&ctx, |c| {
-            k.flash_attention(
-                c,
-                Arg::buf(&q),
-                Arg::buf(&kc),
-                Arg::buf(&vc),
-                Arg::buf(&o),
-                shape,
-            )
-        });
-        if tokens == 1 {
-            let part = ctx
-                .buffer::<f32>(brasa_kernels::decode_partials_len(hq, lk))
-                .unwrap();
+        if tokens <= 128 {
+            let kc = ctx.buffer_from(&kv_k).unwrap();
+            let vc = ctx.buffer_from(&kv_v).unwrap();
+            let scores = ctx.buffer::<f32>(tokens * hq * lk).unwrap();
             let t = time(&ctx, |c| {
-                k.decode_attention(
+                k.attention(
                     c,
                     Arg::buf(&q),
                     Arg::buf(&kc),
                     Arg::buf(&vc),
-                    &part,
+                    &scores,
                     Arg::buf(&o),
                     shape,
                 )
             });
             report(
-                &format!("decode_attention T=1 ctx={lk}"),
+                &format!("attention_simple T={tokens} ctx={lk}"),
                 t,
                 2.0 * 4.0 * (lk * hkv * hd) as f64,
-                4.0 * (hq * lk * hd) as f64,
-            );
-            let t = time(&ctx, |c| {
-                k.decode_attention_gqa(
-                    c,
-                    Arg::buf(&q),
-                    Arg::buf(&kc),
-                    Arg::buf(&vc),
-                    &part,
-                    Arg::buf(&o),
-                    shape,
-                )
-            });
-            report(
-                &format!("decode_attention_gqa T=1 ctx={lk}"),
-                t,
-                2.0 * 4.0 * (lk * hkv * hd) as f64,
-                4.0 * (hq * lk * hd) as f64,
+                flops,
             );
         }
-        report(
-            &format!("flash_attention T={tokens} ctx={lk}"),
-            t,
-            2.0 * 4.0 * (lk * hkv * hd) as f64,
-            4.0 * (tokens * hq * lk * hd) as f64,
-        );
+        for kv in [KvType::F32, KvType::F16, KvType::Q8_0] {
+            let cache = KvPair::new(&ctx, kv, kv_k.clone(), kv_v.clone());
+            let (kc, vc) = cache.args();
+            let shape = AttnShape { kv, ..shape };
+            let kv_bytes = 2.0 * (kv.block_bytes() as f64 / 32.0) * (lk * hkv * hd) as f64;
+            let kvn = kv.name();
+            let t = time(&ctx, |c| {
+                k.flash_attention(c, Arg::buf(&q), kc, vc, Arg::buf(&o), shape)
+            });
+            report(
+                &format!("flash_attention kv={kvn} T={tokens} ctx={lk}"),
+                t,
+                kv_bytes,
+                flops,
+            );
+            if tokens == 1 {
+                let part = ctx
+                    .buffer::<f32>(brasa_kernels::decode_partials_len(hq, lk))
+                    .unwrap();
+                let t = time(&ctx, |c| {
+                    k.decode_attention(c, Arg::buf(&q), kc, vc, &part, Arg::buf(&o), shape)
+                });
+                report(
+                    &format!("decode_attention kv={kvn} T=1 ctx={lk}"),
+                    t,
+                    kv_bytes,
+                    flops,
+                );
+                let t = time(&ctx, |c| {
+                    k.decode_attention_lanes(c, Arg::buf(&q), kc, vc, &part, Arg::buf(&o), shape)
+                });
+                report(
+                    &format!("decode_attention_lanes kv={kvn} T=1 ctx={lk}"),
+                    t,
+                    kv_bytes,
+                    flops,
+                );
+            }
+        }
     }
 }

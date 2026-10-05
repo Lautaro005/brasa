@@ -58,9 +58,12 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL={model}
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS={ctx}
 # Claude Code reserva la salida máxima dentro de la ventana: sin esto rechaza el prompt.
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS={out}
+# Para un modelo que no conoce, Claude Code compacta con un margen fijo que en una ventana chica
+# lo hace compactar en cada turno. Con esto compacta solo cuando brasa rechaza por contexto.
+export CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
 # Con todas las herramientas el prompt ronda los 30K tokens; limitarlas, p. ej.:
 #   claude --model {model} --tools Bash,Read,Edit,Write,Glob,Grep",
-            out = (ctx / 4).min(4096)
+            out = (ctx / 8).min(2048)
         ),
         Tool::Cline | Tool::Opencode => println!(
             "# Proveedor compatible con OpenAI:

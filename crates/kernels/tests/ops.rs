@@ -95,6 +95,30 @@ fn rope_neox() {
 }
 
 #[test]
+fn embed_q6_0_exacto() {
+    let (ctx, k) = setup();
+    let mut rng = Rng::new(15);
+    let (vocab, h) = (1000, 2560);
+    let table = rng.q6_0(vocab, h);
+    let ids: Vec<u32> = vec![0, 999, 17, 17, 500];
+    let mut expected = vec![0.0; ids.len() * h];
+    reference::embed(QType::Q6_0, &table, h, &ids, &mut expected);
+    let gt = ctx.buffer_from(&table).unwrap();
+    let gids = ctx.buffer_from(&ids).unwrap();
+    let mut out = ctx.buffer::<f32>(ids.len() * h).unwrap();
+    let w = QMatrix {
+        data: &gt,
+        qtype: WeightType::Q6_0,
+        rows: vocab,
+        cols: h,
+    };
+    let mut cmd = ctx.command().unwrap();
+    k.embed(&mut cmd, w, &gids, Arg::buf(&out), ids.len());
+    cmd.commit_and_wait().unwrap();
+    assert_eq!(out.as_mut_slice(), expected.as_slice());
+}
+
+#[test]
 fn embed_q8_0_exacto() {
     let (ctx, k) = setup();
     let mut rng = Rng::new(14);
@@ -132,6 +156,7 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
     let (w, q) = match qtype {
         WeightType::Q4_0 => (rng.q4_0(rows, cols), QType::Q4_0),
         WeightType::Q8_0 => (rng.q8_0(rows, cols), QType::Q8_0),
+        WeightType::Q6_0 => (rng.q6_0(rows, cols), QType::Q6_0),
     };
     let x = rng.vec(tokens * cols, 4.0);
     let mut expected = vec![0.0; tokens * rows];
@@ -175,6 +200,14 @@ fn matmul_q4_0_y_q8_0() {
     for (rows, cols) in [(8192, 2560), (6, 32)] {
         for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
             worst = worst.max(check_matmul(WeightType::Q8_0, path, rows, cols, 2));
+        }
+    }
+    // Tabla de embeddings q6_0 (ADR 0012): lm_head con 1 y 2 filas de logits, y una forma chica.
+    for (rows, cols) in [(8192, 2560), (6, 32)] {
+        for tokens in [1, 2] {
+            for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
+                worst = worst.max(check_matmul(WeightType::Q6_0, path, rows, cols, tokens));
+            }
         }
     }
     eprintln!("matmul: error máximo / Σ|w·x| {worst:.2e}");

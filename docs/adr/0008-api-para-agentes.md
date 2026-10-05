@@ -53,7 +53,9 @@ equivalente se omiten y se registran.
 
 **Contexto real.** `GET /v1/models` (formato OpenAI, o Anthropic si llega `anthropic-version`)
 informa el contexto del planner de memoria, no el nominal. Un pedido que no entra se rechaza con
-error del cliente (`context_length_exceeded` / `invalid_request_error`) en vez de truncar.
+error del cliente (`context_length_exceeded` / `invalid_request_error`) en vez de truncar. Como en
+vLLM, si el cliente fija `max_tokens`, prompt + `max_tokens` tiene que entrar. En Messages el
+mensaje empieza con `prompt is too long: N tokens > M maximum`, el texto de la API de Anthropic.
 
 **Endpoints.** `/v1/chat/completions`, `/v1/responses`, `/v1/messages`,
 `/v1/messages/count_tokens`, `/v1/models`, `HEAD|GET /` y `/api/hello` (salud). Con y sin
@@ -62,7 +64,12 @@ streaming. Errores en el formato de cada API.
 **Integración.** `brasa connect <codex|claude-code|cline|opencode>` imprime la configuración
 (no la escribe en archivos del usuario sin `--escribir`). Para Claude Code el prompt completo
 supera el contexto de este modelo: la configuración sugerida limita las herramientas
-(`--tools`) y fija `CLAUDE_CODE_MAX_CONTEXT_TOKENS` al contexto real.
+(`--tools`) y fija `CLAUDE_CODE_MAX_CONTEXT_TOKENS` al contexto real. Para un ID de modelo que no
+conoce, Claude Code compacta con un margen fijo: medido el 2026-10-05 con 16K de contexto, compactaba
+después de cada turno con ~3,6K tokens de prompt. El resumen, escrito por el mismo modelo de 4B,
+inventaba bugs que el modelo después "arreglaba". Por eso `connect` sugiere
+`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` (documentada, code.claude.com/docs/en/model-config).
+Así compacta solo cuando brasa rechaza con el texto de arriba.
 
 **Conformance.** `tools/conformance/` (Python offline, SDKs oficiales) contra el daemon local:
 texto, streaming, herramientas, resultados de herramientas, errores y cancelación, en las tres

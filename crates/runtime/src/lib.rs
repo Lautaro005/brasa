@@ -7,7 +7,7 @@ pub mod session;
 
 use std::fmt;
 
-pub use brasa_models::qwen3::Limits;
+pub use brasa_models::qwen3::{KvType, Limits};
 pub use sampler::{Sampler, SamplingParams};
 pub use session::{GenStats, Session, StopReason};
 

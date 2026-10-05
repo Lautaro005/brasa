@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use brasa_metal::Context;
-use brasa_models::qwen3::{Limits, Qwen3};
+use brasa_models::qwen3::{KvType, Limits, Qwen3};
 use serde_json::Value;
 
 fn root() -> PathBuf {
@@ -49,6 +49,7 @@ fn capas_iguales_a_la_referencia() {
         ctx: 256,
         max_tokens: 64,
         max_logit_rows: 1,
+        kv: KvType::F32,
     };
     let mut model =
         Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();

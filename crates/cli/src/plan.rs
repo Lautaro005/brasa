@@ -24,6 +24,9 @@ pub struct PlanArgs {
     /// Tokens por bloque de prefill.
     #[arg(long, default_value_t = 128)]
     chunk: usize,
+    /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
+    #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
+    kv: brasa_runtime::KvType,
     /// Simular el presupuesto de otra Mac en lugar de medir esta.
     #[arg(long, value_enum)]
     perfil: Option<Perfil>,
@@ -41,6 +44,7 @@ pub fn run(args: PlanArgs) -> Result<bool, String> {
         ctx: args.ctx,
         max_tokens: args.chunk,
         max_logit_rows: 1,
+        kv: args.kv,
     };
     let (fit, model_max) = Session::plan(&dir, limits, &budget).map_err(|e| e.to_string())?;
     println!(

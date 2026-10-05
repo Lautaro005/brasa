@@ -41,7 +41,7 @@
           "shape": [
             151936
           ],
-          "sha256": "dd6a897c4ade7680b7ecf2391c90385e7ef7240148cdd4db645fcfe896e96d6f"
+          "sha256": "76a1b9dadd90a9fd26aca2d72e50129cfe72e33975c2b41994e4d45128885cc9"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -50,7 +50,7 @@
             36,
             20
           ],
-          "sha256": "ff3177b0eff1a589174b1546800baf67a04fb2324d9c9d21d7d2569efa486b3f"
+          "sha256": "069594c94e148728548a7287ee2f785d6f1113bd52bc133e8532361706d59210"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -59,7 +59,7 @@
             36,
             20
           ],
-          "sha256": "4a6a15797ac4f50903ae58ead11e48b6f894a873c1f0191746f60e055f2e5557"
+          "sha256": "46d87c6f5294e56c9c169322c0d7dac306f5d74f884a51d3b6f2ed593bb64ee2"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -67,7 +67,7 @@
           "shape": [
             36
           ],
-          "sha256": "eb25ea67b86df957d05ada6dea2d12521922e60397c8ddb310b2ab87eb058b39"
+          "sha256": "f8066b5fdd42e8e8c2b0fac887ca6d643c74f9bfd5ea54a90b8301b2a14cad80"
         },
         "embed": {
           "file": "embed.f32",
@@ -76,7 +76,7 @@
             5,
             2560
           ],
-          "sha256": "1e2daeb3ab0ca99e788d4cf35a4e237e15d61ca373dcd85707c2150a057bb548"
+          "sha256": "d615d5dbc84d18965b546a87438326ff93ce6e5724345222583b0f69cd9bf849"
         },
         "layer_00": {
           "file": "layer_00.f32",
@@ -85,7 +85,7 @@
             5,
             2560
           ],
-          "sha256": "4c3c29ee3f36f478f2ca8269c598d8ef6e484bbea0a06f3a06d0d3e43e392c8c"
+          "sha256": "ec2dcf891df44cb1e8a1e392a2ea3293f2701272e423a565bc2781402f6dc81d"
         },
         "layer_35": {
           "file": "layer_35.f32",
@@ -94,7 +94,7 @@
             5,
             2560
           ],
-          "sha256": "1649bcc9d2d741dfd570cf45f26a409dc4b56b082568cae7bb668fa7b6db1426"
+          "sha256": "0f06d40cad68fda24683d919f0d34b673223d113663841eab5af3fcb8700b9bf"
         }
       }
     },
@@ -102,7 +102,7 @@
       "id": "es-plain",
       "kind": "text",
       "prompt_tokens": 19,
-      "greedy_text": " vivía solo en una cabaña de madera. Un día, un hombre llegó a su puerta y le dijo: \"Quiero un cuch",
+      "greedy_text": " vivía solo en una cabaña de madera. Un día, un hombre llegó a su puerta y le dijo: \"Quiero un hacha",
       "files": {
         "prompt": {
           "file": "prompt.txt",
@@ -122,7 +122,7 @@
           "shape": [
             32
           ],
-          "sha256": "e1bb49480353bdf2d65c01d65ac38df9691d64febade147ffb92f80b2f28b1fd"
+          "sha256": "c5d51442d164664adc2e2aec6187a7adae4944cc8e34b00c9b5026d667959ad7"
         },
         "last_logits": {
           "file": "last_logits.f32",
@@ -130,7 +130,7 @@
           "shape": [
             151936
           ],
-          "sha256": "435a4929bf8eb8c88c9e81b6316242cdc1fa3175200fd6a5cd7666beb3647d72"
+          "sha256": "a34165876d6f77a854143a47ec95f1a420298c6fc608c68a7d2905859099bf61"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -139,7 +139,7 @@
             50,
             20
           ],
-          "sha256": "de4d5e0a8d5d2cece6f34cc59a89ea6a7f36d6f53b849a2bddee572378e5ada7"
+          "sha256": "e1942df37878ec1e09783ddf85dc02c7eac7c87da88e4e4f17042e4693f03200"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -148,7 +148,7 @@
             50,
             20
           ],
-          "sha256": "756b026d5628c9df758f9bb17b9a923f7a2629f1a8b5930eff00315518b9f34a"
+          "sha256": "79609db9fcfa4d3c31263ea102a3aa398382c6c037422496ce66aa4f7bcdcaa9"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -156,7 +156,7 @@
           "shape": [
             50
           ],
-          "sha256": "8bf5e15e1c1958c85da43e5e747335986fba5b29a7faa3740d53ab0aac2af29e"
+          "sha256": "bc00286007c5005a9c227289fa7164deb3d23c958332a96aa9a6b19f1f3646b5"
         }
       }
     },
@@ -192,7 +192,7 @@
           "shape": [
             151936
           ],
-          "sha256": "3c2d8b6034851e83a105453e5ba201563a9481c4c75845c2db1e1f539a4d6330"
+          "sha256": "0dcb849b7be166d4f7bbf3baeb11c6d24fc4a88afd7c0949c2b2daf0316caf4e"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -201,7 +201,7 @@
             62,
             20
           ],
-          "sha256": "f1bffec6350af2bfac7d601922f4763551a473edf19c60a455314b5b71335e64"
+          "sha256": "23d540043b0711945adc24003566ffb0cd747e125addb4c278d73eb774880995"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -210,7 +210,7 @@
             62,
             20
           ],
-          "sha256": "aae66a66c3fe8e4c0a30fcd8f0da92fa730134076bb871ca905ad0ee67bc410a"
+          "sha256": "62bb764373425d7e02e61e30d1d704442c203aa36375803260487ab49771d615"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -218,7 +218,7 @@
           "shape": [
             62
           ],
-          "sha256": "5cea00aec80c6c573ff4ea755c5faa1af94a6754137b28405ca2eb5992b23c07"
+          "sha256": "7f202dd2df4dcc6622a8848f7c7c683c0a4dd3a7654df6d0c4a9caebb84be3bc"
         },
         "embed": {
           "file": "embed.f32",
@@ -227,7 +227,7 @@
             31,
             2560
           ],
-          "sha256": "58ed4ebe8e226f7a5736ea8add1b9c1dd983e6eec90f7ab32c8c216f63eaf01c"
+          "sha256": "a9650b40f85287a61daf490b5ec36adb38a0234f101c980f68bd7f38ee27ea04"
         },
         "layer_00": {
           "file": "layer_00.f32",
@@ -236,7 +236,7 @@
             31,
             2560
           ],
-          "sha256": "cdfa8c92410bdb1192c5078628f7ae0ac7482302f06f15d3291166a2fc84c3a1"
+          "sha256": "532417ee6979b5b2055f70b4cfe05e0c06ae8ec210b52a33f03c04e3de1bf108"
         },
         "layer_35": {
           "file": "layer_35.f32",
@@ -245,7 +245,7 @@
             31,
             2560
           ],
-          "sha256": "de99ebd853500c7391b00a197800ab1a3a71690c37528a6d3bce0c1fa849913e"
+          "sha256": "e5e004f1988d4f3089c0f2f134ee4837277dd79262fec7b14682111bde215735"
         }
       }
     },
@@ -281,7 +281,7 @@
           "shape": [
             151936
           ],
-          "sha256": "c599f4bfcdc8cd8f465c1dadfbe61fff525f86d1939e148d887c70c4e98e6030"
+          "sha256": "0b04fbcb573039456e2690c388ebbab8ed3b54d8123f0d0e5d320e9214966b1f"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -290,7 +290,7 @@
             66,
             20
           ],
-          "sha256": "7acbc806e7accffc50a7c95d638f67b68ee234b438a78aec1078d74b5d566d2e"
+          "sha256": "3ecf4d4f94b24e23411767c56384e504d8fa961d9a9fa2f708f20fa19295c265"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -299,7 +299,7 @@
             66,
             20
           ],
-          "sha256": "f2bc6c4111e978ade6e42edbb098bc43e57b920aee95c7bf558f3b0fdd0b9086"
+          "sha256": "3a9857029607628ede43f6ff818948421246275e73767fa71bdf6c1fc4014799"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -307,7 +307,7 @@
           "shape": [
             66
           ],
-          "sha256": "b1890c3b894e025ddd0cb572f618ec6aef485275f2a98cccb4af71f434b2384b"
+          "sha256": "86cb5361f6ba58fa816933bc57c6f138f703579c1fcfa66a41cd522230b6086a"
         }
       }
     },
@@ -343,7 +343,7 @@
           "shape": [
             151936
           ],
-          "sha256": "636cdcf4b5085222c6afffa453829bcc2618ba01ef98c5f7f0c4736872326899"
+          "sha256": "5a29df41cbcc6e5c5395af097c03dc29f2e04bb0736d9ed1170e31e280dd6aa7"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -352,7 +352,7 @@
             70,
             20
           ],
-          "sha256": "64cb12738c48c065c1004815903717f1d5d0bed6d411bb72e28f6c7b89e95708"
+          "sha256": "7a8e4eb13621692adc2cf6648a2f078a1b5f034f0aeae7af8b5192ee4684ace2"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -361,7 +361,7 @@
             70,
             20
           ],
-          "sha256": "d2c636bd5f006415d8330f13eaa9552f9ad671eb0ea781c18b0fb844b9d5011c"
+          "sha256": "edbeb994509be0ac79011c35258800568bb0ce319598bf6aaf6693980f5bf1ab"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -369,7 +369,7 @@
           "shape": [
             70
           ],
-          "sha256": "3a70cf70ef323ed7515ee67bc6a42891d7c64b96d219cfdfa884f6a8f2d2b76e"
+          "sha256": "0f4ba5469c77851a78f43187245fc1da01e7b395b1425e343a469ea0a17d3c71"
         },
         "embed": {
           "file": "embed.f32",
@@ -378,7 +378,7 @@
             39,
             2560
           ],
-          "sha256": "ee79c212dfa75a501bd4dd14a2112c56dfd4277bb99abcfb4df171a6952d4062"
+          "sha256": "5445eddf3190d8002fafff395365d427ec755952359c947df6df128d24fff9af"
         },
         "layer_00": {
           "file": "layer_00.f32",
@@ -387,7 +387,7 @@
             39,
             2560
           ],
-          "sha256": "52b2619606aec9565d1e7ef6f6a768db5f9e056fdd2cf1ab0dde01a1c54fdeb0"
+          "sha256": "1f43a64d8953220cce5bfcadeec50b2716bb32d24aec1c877c325143f336af76"
         },
         "layer_35": {
           "file": "layer_35.f32",
@@ -396,7 +396,7 @@
             39,
             2560
           ],
-          "sha256": "b558ea03e9a051594f55878a80a95dbdbde76e491e1525d07f34d18b32639125"
+          "sha256": "e54b689e50b3100c31971b69e0d28687cdf72b8be109692722fc1ff239eb4977"
         }
       }
     },
@@ -432,7 +432,7 @@
           "shape": [
             151936
           ],
-          "sha256": "84748bdc3beb58fd91add6aaf08b2c56aaaec3be3e7310e9f7b1d2fdf08b3cee"
+          "sha256": "e81485a1d2c9bbf2a6e9e944c48193d8658a0b0bb6162f390359a6b0a5b9b362"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -441,7 +441,7 @@
             51,
             20
           ],
-          "sha256": "36bfcddeec7adbfe10c9d8de649952d604b2b1f83ad9b46eee92b8e118edcdfa"
+          "sha256": "a0912a40bbe22b0a6146df560800149266b9ef63b4e03835f618846c55d976d2"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -450,7 +450,7 @@
             51,
             20
           ],
-          "sha256": "1c3b6d215673af9a111e4b1430b9883d611ce35447eeb8207e48e05018037a34"
+          "sha256": "6446e14cc2a7cca74f09853d3231435c8a449ac614bf9a41dca0e8b56e30e8c6"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -458,7 +458,7 @@
           "shape": [
             51
           ],
-          "sha256": "5b31ca59dc1a0273bb9a309155a38c2da7aca12ea140d2c99089e0862c25a2fc"
+          "sha256": "87eeb5102b4a582699d185dea62a055e065079e573553d9b6b56c98376277bc2"
         }
       }
     },
@@ -494,7 +494,7 @@
           "shape": [
             151936
           ],
-          "sha256": "0005fa0a686af905aaac9e3bd0f3b5ae8fe99566c509516c2936ca6f7d3d1f8c"
+          "sha256": "dccc7d2291fc7196ffa73d45a91eb92017266b73288130b2a887be0195efa7bc"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -503,7 +503,7 @@
             69,
             20
           ],
-          "sha256": "a213249ac3a92a0bc5d69f0f46418a05a9bf4d7ad9b6fa11458b6e0227751610"
+          "sha256": "5bd5eab3e4ac3ab2f7138e2c0f75b8089a237851dd909e571780c552c92a726d"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -512,7 +512,7 @@
             69,
             20
           ],
-          "sha256": "9040ed7ea2bb36d0604f7e208cc517c887e4baed2109f2e36b0af3077708f757"
+          "sha256": "574ef3866cd6c35b3605769d3a2f89cf87d9f3f95951a23ff4a274949b27523f"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -520,7 +520,7 @@
           "shape": [
             69
           ],
-          "sha256": "d208f8ed8bfd7c5ad6942f14ca885e9f998f06df74a67c63f3f0b202be3835bf"
+          "sha256": "5267e12395c5336a39e687c14284deaf0236195de2505a9460cd232d3ab34a66"
         }
       }
     },
@@ -556,7 +556,7 @@
           "shape": [
             151936
           ],
-          "sha256": "38f402a5f3b3cacb9e93f38cce1c78556c4c1d45bd90333f5a4185238d715868"
+          "sha256": "ba00cdca29285c175192b72a6a358e1b0bc2bab646d0d850323510a82d105c72"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -565,7 +565,7 @@
             270,
             20
           ],
-          "sha256": "5aa7253590968034595166688f9549821d0aea35aafb37e38064432298ff62cf"
+          "sha256": "641b2518e3ef6fac52f78d30ae1945754adf3822743c66581df9227c1cebc3c2"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -574,7 +574,7 @@
             270,
             20
           ],
-          "sha256": "6bcecd7b34a6ae2655756fa1adee993568607b60789f2526f66323193d954978"
+          "sha256": "b733ae79660525b4cfd94ec35043f4c2ad185eff725fbd21158b8f94f6933a8f"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -582,7 +582,7 @@
           "shape": [
             270
           ],
-          "sha256": "d08e196c0ee491c04f7cde8e933bc8e4b3fc96212f6fac551f5e4f372609f62f"
+          "sha256": "cf8a1bf11a395d0f2278706ace704fd7e450d8744af1fb0a55a34b6da592a1b6"
         }
       }
     },
@@ -618,7 +618,7 @@
           "shape": [
             151936
           ],
-          "sha256": "182dd6a82f389d34ca629d641a233ed67a861d587bdaf7ee51ed315450f4b4e9"
+          "sha256": "b9dbafd39b973e8f1c5d85aabd078b127b3202f453bec802662393fc4e74df92"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -627,7 +627,7 @@
             273,
             20
           ],
-          "sha256": "54d5c9611034d0f1d5e7254c08685c2d58b5df16d022418b9d34c8a744eb9435"
+          "sha256": "756e6ecda73097038cfb2f33dd81260dd31ece61f98b44306bf7c17586d05af5"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -636,7 +636,7 @@
             273,
             20
           ],
-          "sha256": "0de7fb2ac242d8db39fb3009a511d5e251436d68389e97365d023aa91cc08c76"
+          "sha256": "69a7237a44714d80071c44a029aa2bf6b58cf9f77e8934b268642cace1be5003"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -644,7 +644,7 @@
           "shape": [
             273
           ],
-          "sha256": "b4fa8005d21536b2a876411fae524c2f7961ce1d2d377da94289b9a0202bf2b6"
+          "sha256": "17d2cfbbee077c28220aac4ab6cce21b652fd85740756db02a4e10f43b6905c9"
         }
       }
     },
@@ -680,7 +680,7 @@
           "shape": [
             151936
           ],
-          "sha256": "5613911e6c61cd2abbb43dd3df349006fb44d0c11ae2684ff8c8a7979e4876cf"
+          "sha256": "3f47cdfb17752c2f61794b1d32ecd7b79d3dac9d0420fe0df5e6161ba46998c3"
         },
         "topk_ids": {
           "file": "topk_ids.i32",
@@ -689,7 +689,7 @@
             1951,
             20
           ],
-          "sha256": "be03fcaf4e284fb5bf595373ee35cbb7b88e8d1f716f90cc7c1855c2e29b7f2d"
+          "sha256": "bd56d6c758f7b16ecf41c057ccec0c4a09079763bbe39dc67c7aa9ece955e630"
         },
         "topk_logits": {
           "file": "topk_logits.f32",
@@ -698,7 +698,7 @@
             1951,
             20
           ],
-          "sha256": "af3bb9fdb38ef7b6d61f8f3ccca05452a0ca841d3f5a2382816bd12a5e1a6cfc"
+          "sha256": "d071f479507494c186c9b478c01aebcbbde30caf33f28292e49986859af574f5"
         },
         "logsumexp": {
           "file": "logsumexp.f32",
@@ -706,14 +706,14 @@
           "shape": [
             1951
           ],
-          "sha256": "a96663e02cdf5bba85315d67681aaf03dfa46923d7f7941f193ed88f1f302991"
+          "sha256": "399ed84ba52c6355783e40b049808909bf26e0d6c28880415717b9e6e14dc9bf"
         }
       }
     }
   ],
   "weights": {
     "file": "models/qwen3-4b-q4/model.brasa",
-    "data_sha256": "a0750ba715bcd6839c5a6a5386c0539c50d7808fb5a60afa2b03f4caa7c6c89c"
+    "data_sha256": "7cc8685971149e7672a773a9c5c4d3c7df5b6cd94095e9e8371ec0a308f7b8dc"
   },
-  "fixtures_sha256": "60cc00187dd5929373f575b2b20fa00e36c245a736cab4b6e56f0e0558372bcb"
+  "fixtures_sha256": "e1f0959b6176b65ef205e210e21d0a8f31a1d5037bb6896a1a35c80683de9f8e"
 }

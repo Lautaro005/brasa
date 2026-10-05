@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use brasa_runtime::{Limits, Sampler, SamplingParams, Session};
+use brasa_runtime::{KvType, Limits, Sampler, SamplingParams, Session};
 
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -16,6 +16,7 @@ fn main() {
         ctx,
         max_tokens: 512,
         max_logit_rows: 1,
+        kv: KvType::F16,
     };
     let mut s = Session::load(&root.join("models/qwen3-4b-q4"), limits).unwrap();
     s.ignore_stop = true;

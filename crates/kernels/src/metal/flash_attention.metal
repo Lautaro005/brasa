@@ -9,13 +9,15 @@
 #include <metal_simdgroup_matrix>
 using namespace metal;
 
+// KV_T, kv_row, kv1 y load_kv vienen de kv_access.metal (lo antepone el host, ADR 0009).
+
 constant uint D = 128;
 constant uint BQ = 32;
 constant uint BKEYS = 32;
 
 kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, D]
-                           device const float* k    [[buffer(1)]],   // [cap, hkv, D]
-                           device const float* v    [[buffer(2)]],   // [cap, hkv, D]
+                           device const KV_T*  k    [[buffer(1)]],   // [cap, hkv, D]
+                           device const KV_T*  v    [[buffer(2)]],   // [cap, hkv, D]
                            device float*       o    [[buffer(3)]],   // [T, hq, D]
                            constant uint& tokens [[buffer(4)]],
                            constant uint& hq     [[buffer(5)]],
@@ -33,7 +35,6 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
     uint t0 = tg.x * BQ;
     uint h = tg.y;
     uint kh = h / (hq / hkv);
-    uint kvstride = hkv * D;
 
     // Q del bloque a memoria threadgroup (filas fuera de rango en 0).
     for (uint e = tid; e < BQ * D; e += 128) {
@@ -57,8 +58,6 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
 
     uint last_t = min(t0 + BQ, tokens) - 1;
     uint kend = pos0 + last_t + 1;                 // claves visibles para el bloque: [0, kend)
-    device const float* kbase = k + kh * D;
-    device const float* vbase = v + kh * D;
 
     for (uint j0 = 0; j0 < kend; j0 += BKEYS) {
         // S = Q · Kᵀ (8 × 32)
@@ -66,8 +65,7 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
         for (uint n = 0; n < BKEYS / 8; ++n) sf[n] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
         for (uint d8 = 0; d8 < D / 8; ++d8) {
             for (uint n = 0; n < BKEYS / 8; ++n) {
-                simdgroup_float8x8 kf;
-                simdgroup_load(kf, kbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride, ulong2(0, 0), true);
+                simdgroup_float8x8 kf = load_kv(k, j0 + n * 8, hkv, kh, d8 * 8, true, lane);
                 simdgroup_multiply_accumulate(sf[n], qf[d8], kf, sf[n]);
             }
         }
@@ -109,8 +107,7 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
             simdgroup_float8x8 acc;
             simdgroup_multiply(acc, dg, of[d8]);
             for (uint n = 0; n < BKEYS / 8; ++n) {
-                simdgroup_float8x8 vf;
-                simdgroup_load(vf, vbase + (j0 + n * 8) * kvstride + d8 * 8, kvstride);
+                simdgroup_float8x8 vf = load_kv(v, j0 + n * 8, hkv, kh, d8 * 8, false, lane);
                 simdgroup_multiply_accumulate(acc, pf[n], vf, acc);
             }
             of[d8] = acc;
@@ -130,5 +127,170 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
             uint d = quarter * (D / 4) + i;
             o[(t * hq + h) * D + d] = Os[row * D + d] * inv;
         }
+    }
+}
+
+// Variante GQA (la de la ruta caliente). Threadgroup = (bloque de queries, cabeza KV) con
+// R = 32 filas: QR = 32 / GQA_G queries de cada una de las GQA_G cabezas de query del grupo
+// (fila r: cabeza r / QR, query r % QR). 4 simdgroups. El trabajo se reparte entre simdgroups
+// por claves en S = Q·Kᵀ y por dimensiones en O = P·V (como el kernel de llama.cpp), así que
+// cada tile de K y de V se lee de memoria del dispositivo una sola vez por threadgroup y cada
+// simdgroup guarda en registros solo su cuarto de O. Por cada bloque de BC = 64 claves:
+//   1. simdgroup s: S[:, 16s..16s+16) = Q·Kᵀ para las R filas (Q en memoria threadgroup); dos
+//      tiles de claves por simdgroup dan 2·R/8 acumuladores independientes;
+//   2. softmax online por fila con TPR hilos por fila, máscara causal; P queda en memoria
+//      threadgroup y α de cada fila también. Reescalado perezoso (como FlashAttention-3): el
+//      máximo de referencia m de una fila solo se actualiza si el máximo nuevo lo supera en más
+//      de RESCALE (en log natural); si no, α = 1 y p = exp(s − m) ≤ e^RESCALE. El resultado es el
+//      mismo algebraicamente y en f32 no hay riesgo de desborde;
+//   3. simdgroup s: O[:, 32s..32s+32) = α·O + P·V; el reescalado de O se saltea cuando todas
+//      las filas del simdgroup tienen α = 1 (lo más común después de los primeros bloques).
+// Toda la aritmética en f32 (Q no se redondea; K y V f16 se convierten al cargar). La caché debe
+// poder leerse hasta el múltiplo de 64 siguiente con valores finitos (KV_ALIGN; las posiciones
+// fuera de rango se enmascaran). R = 16 filas deja ~14 KiB de memoria threadgroup: con más filas
+// entran menos threadgroups por núcleo y el kernel queda limitado por ocupación (medido en M1 Pro:
+// R = 32 rinde ~40 % menos).
+#ifndef GQA_G
+#define GQA_G 4
+#endif
+#ifndef FA_ROWS
+#define FA_ROWS 16
+#endif
+constant uint R = FA_ROWS; // filas por threadgroup (16 o 32)
+constant uint BC = 64;     // claves por bloque
+constant uint NSGF = 4;    // simdgroups
+constant float RESCALE = 8.0f;
+constant uint KT = BC / 8 / NSGF;   // tiles de claves por simdgroup en S = Q·Kᵀ
+
+[[max_total_threads_per_threadgroup(128)]]
+kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, D]
+                           device const KV_T*  k    [[buffer(1)]],   // [cap, hkv, D]
+                           device const KV_T*  v    [[buffer(2)]],   // [cap, hkv, D]
+                           device float*       o    [[buffer(3)]],   // [T, hq, D]
+                           constant uint& tokens [[buffer(4)]],
+                           constant uint& hkv    [[buffer(5)]],
+                           constant uint& pos0   [[buffer(6)]],
+                           constant float& scale [[buffer(7)]],
+                           uint2 tg   [[threadgroup_position_in_grid]],
+                           uint  tid  [[thread_index_in_threadgroup]],
+                           uint  sg   [[simdgroup_index_in_threadgroup]],
+                           uint  lane [[thread_index_in_simdgroup]]) {
+    constexpr uint G = GQA_G;
+    constexpr uint QR = R / G;                 // queries por threadgroup
+    threadgroup float Qs[R * D];               // Q escalada; al final, la salida
+    threadgroup float Ss[R * BC];              // S y luego P del bloque
+    threadgroup float As[R];                   // α de cada fila en el bloque; al final, 1 / l
+
+    uint kh = tg.y;
+    uint hq = hkv * G;
+    uint q0 = tg.x * QR;                       // primera query del threadgroup
+
+    for (uint e = tid; e < R * D; e += NSGF * 32) {
+        uint r = e / D, d = e % D;
+        uint t = q0 + r % QR, h = kh * G + r / QR;
+        Qs[e] = (t < tokens) ? q[(t * hq + h) * D + d] * scale : 0.0f;
+    }
+
+    // Softmax: TPR hilos consecutivos por fila, KPT claves cada uno.
+    constexpr uint TPR = NSGF * 32 / R, KPT = BC / TPR;
+    uint sr = tid / TPR, sq = tid % TPR;
+    uint spos = pos0 + q0 + sr % QR;           // posición absoluta de la query de la fila sr
+    float m = -INFINITY, l = 0.0f;
+    // Fila y columnas de los 2 elementos de este lane en cada fragmento 8×8 (layout de Apple).
+    uint qid = lane / 4;
+    uint fm = (qid & 4) + ((lane / 2) % 4);
+
+    simdgroup_float8x8 of[R / 8][4];           // O[:, 32·sg .. 32·sg + 32)
+    for (uint i = 0; i < R / 8; ++i)
+        for (uint j = 0; j < 4; ++j) of[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    uint lk = pos0 + tokens;
+    uint kend = pos0 + min(q0 + QR, tokens);   // claves visibles para el threadgroup
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint j0 = 0; j0 < kend; j0 += BC) {
+        // 1. S[:, 8·KT·sg ..) = Q · Kᵀ
+        simdgroup_float8x8 sf[R / 8][KT];
+        for (uint i = 0; i < R / 8; ++i)
+            for (uint c = 0; c < KT; ++c) sf[i][c] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        for (uint d8 = 0; d8 < D / 8; ++d8) {
+            simdgroup_float8x8 kf[KT];
+            for (uint c = 0; c < KT; ++c)
+                kf[c] = load_kv(k, j0 + (sg * KT + c) * 8, hkv, kh, d8 * 8, true, lane);
+            for (uint i = 0; i < R / 8; ++i) {
+                simdgroup_float8x8 qf;
+                simdgroup_load(qf, Qs + (i * 8) * D + d8 * 8, D);
+                for (uint c = 0; c < KT; ++c) simdgroup_multiply_accumulate(sf[i][c], qf, kf[c], sf[i][c]);
+            }
+        }
+        for (uint i = 0; i < R / 8; ++i)
+            for (uint c = 0; c < KT; ++c)
+                simdgroup_store(sf[i][c], Ss + (i * 8) * BC + (sg * KT + c) * 8, BC);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // 2. Softmax online de la fila sr sobre las 8 claves de este hilo.
+        threadgroup float* srow = Ss + sr * BC + sq * KPT;
+        float mx = -INFINITY;
+        float sv[KPT];
+        for (uint i = 0; i < KPT; ++i) {
+            uint j = j0 + sq * KPT + i;
+            sv[i] = (j <= spos && j < lk) ? srow[i] : -INFINITY;
+            mx = max(mx, sv[i]);
+        }
+        for (uint x = 1; x < TPR; x <<= 1) mx = max(mx, simd_shuffle_xor(mx, ushort(x)));
+        // Reescalado perezoso: m solo cambia si el máximo nuevo lo supera en más de RESCALE.
+        float m_new = (mx > m + RESCALE || m == -INFINITY) ? max(m, mx) : m;
+        float alpha = (m_new == m) ? 1.0f : precise::exp(m - m_new);
+        float sum = 0.0f;
+        for (uint i = 0; i < KPT; ++i) {
+            float p = (sv[i] == -INFINITY) ? 0.0f : precise::exp(sv[i] - m_new);
+            srow[i] = p;
+            sum += p;
+        }
+        for (uint x = 1; x < TPR; x <<= 1) sum += simd_shuffle_xor(sum, ushort(x));
+        l = l * alpha + sum;
+        m = m_new;
+        if (sq == 0) As[sr] = alpha;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // 3. O[:, 32·sg ..) = α · O + P · V
+        for (uint i = 0; i < R / 8; ++i) {
+            float a = As[i * 8 + fm];
+            if (simd_any(a != 1.0f)) {
+                for (uint j = 0; j < 4; ++j) {
+                    of[i][j].thread_elements()[0] *= a;
+                    of[i][j].thread_elements()[1] *= a;
+                }
+            }
+        }
+        for (uint n = 0; n < BC / 8; ++n) {
+            simdgroup_float8x8 vf[4];
+            for (uint j = 0; j < 4; ++j)
+                vf[j] = load_kv(v, j0 + n * 8, hkv, kh, sg * 32 + j * 8, false, lane);
+            for (uint i = 0; i < R / 8; ++i) {
+                simdgroup_float8x8 pf;
+                simdgroup_load(pf, Ss + (i * 8) * BC + n * 8, BC);
+                for (uint j = 0; j < 4; ++j) simdgroup_multiply_accumulate(of[i][j], pf, vf[j], of[i][j]);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Salida: O / l por fila, a memoria threadgroup (sobre Qs) y de ahí a o (filas válidas).
+    if (sq == 0) As[sr] = 1.0f / l;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = 0; i < R / 8; ++i) {
+        float inv = As[i * 8 + fm];
+        for (uint j = 0; j < 4; ++j) {
+            of[i][j].thread_elements()[0] *= inv;
+            of[i][j].thread_elements()[1] *= inv;
+            simdgroup_store(of[i][j], Qs + (i * 8) * D + sg * 32 + j * 8, D);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = tid; e < R * D; e += NSGF * 32) {
+        uint r = e / D, d = e % D;
+        uint t = q0 + r % QR, h = kh * G + r / QR;
+        if (t < tokens) o[(t * hq + h) * D + d] = Qs[e];
     }
 }
