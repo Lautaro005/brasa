@@ -1,0 +1,25 @@
+Descarga un modelo de Hugging Face según su manifiesto
+
+Usage: pull [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          Nombre del manifiesto (por ejemplo `qwen3-4b-q4`)
+
+Options:
+      --dir <DIR>
+          Carpeta de destino (por defecto `models/<hf_dir>`)
+
+      --endpoint <ENDPOINT>
+          Endpoint de Hugging Face (se puede apuntar a un espejo o servidor de prueba)
+          
+          [default: https://huggingface.co]
+
+      --dry-run
+          Solo muestra los archivos del manifiesto, sin descargar
+
+      --json
+          Salida en JSON
+
+  -h, --help
+          Print help

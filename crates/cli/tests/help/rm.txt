@@ -1,0 +1,17 @@
+Borra un modelo local (pide confirmación)
+
+Usage: rm [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          
+
+Options:
+      --dir <DIR>
+          Carpeta base de modelos
+
+  -y, --yes
+          No pedir confirmación
+
+  -h, --help
+          Print help

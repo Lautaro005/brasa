@@ -2,6 +2,8 @@
 
 mod bench_once;
 mod benchmark;
+mod completions;
+mod config;
 mod connect;
 mod convert;
 mod doctor;
@@ -58,6 +60,10 @@ enum Command {
     Convert(convert::ConvertArgs),
     /// Borra un modelo local (pide confirmación).
     Rm(rm::RmArgs),
+    /// Configuración del usuario (~/.config/brasa/config.toml).
+    Config(config::ConfigArgs),
+    /// Scripts de autocompletado para zsh, bash o fish.
+    Completions(completions::CompletionsArgs),
     /// Imprime la configuración para Codex, Claude Code, Cline u OpenCode.
     Connect(connect::ConnectArgs),
     /// Una corrida medida para `brasa benchmark` (uso interno).
@@ -105,6 +111,13 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Config(args) => {
+            if let Err(e) = config::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Completions(args) => completions::run(args),
         Command::Connect(args) => connect::run(args),
         Command::BenchOnce(args) => {
             if let Err(e) = bench_once::run(args) {
@@ -131,6 +144,42 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::Cli;
+    use clap::{Command, CommandFactory};
+
+    /// Snapshot del `--help` de la raíz y de cada subcomando contra `tests/help/<nombre>.txt`.
+    /// Para regenerarlos: `BRASA_BLESS=1 cargo test -p brasa-cli --bin brasa help_tests`.
+    #[test]
+    fn snapshot_de_help() {
+        let dir = format!("{}/tests/help", env!("CARGO_MANIFEST_DIR"));
+        let bless = std::env::var_os("BRASA_BLESS").is_some();
+        let check = |name: &str, cmd: Command| {
+            let mut cmd = cmd.term_width(100);
+            let help = cmd.render_long_help().to_string();
+            let path = format!("{dir}/{name}.txt");
+            if bless {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(&path, &help).unwrap();
+            } else {
+                let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+                    panic!("falta el snapshot {path}; regenerá con BRASA_BLESS=1 cargo test")
+                });
+                assert_eq!(help, expected, "el --help de {name} cambió");
+            }
+        };
+        // La raíz incluye la versión con el commit del build; solo se snapshotean los subcomandos.
+        let root = Cli::command();
+        for sub in root.get_subcommands() {
+            if sub.is_hide_set() || sub.get_name() == "help" {
+                continue;
+            }
+            check(sub.get_name(), sub.clone());
         }
     }
 }

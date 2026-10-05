@@ -22,11 +22,14 @@ brasa-daemon.workspace = true
 brasa-catalog.workspace = true
 brasa-bench.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

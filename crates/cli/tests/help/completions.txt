@@ -1,0 +1,13 @@
+Scripts de autocompletado para zsh, bash o fish
+
+Usage: completions <SHELL>
+
+Arguments:
+  <SHELL>
+          Shell para el que se genera el script
+          
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -h, --help
+          Print help

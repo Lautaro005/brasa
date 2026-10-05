@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta.
-    model: String,
+    /// Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta. Sin esto, el
+    /// del archivo de configuración.
+    model: Option<String>,
     /// Mensaje del usuario; sin esto, modo interactivo.
     #[arg(long, short)]
     prompt: Option<String>,
@@ -28,14 +29,14 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 1024)]
     max_tokens: usize,
     /// Contexto (posiciones de la KV cache).
-    #[arg(long, default_value_t = 4096)]
-    ctx: usize,
+    #[arg(long)]
+    ctx: Option<usize>,
     /// Tokens por bloque de prefill.
     #[arg(long, default_value_t = 128)]
     chunk: usize,
     /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
-    #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
-    kv: brasa_runtime::KvType,
+    #[arg(long, value_parser = crate::parse_kv)]
+    kv: Option<brasa_runtime::KvType>,
     /// Greedy (temperatura 0); ignora temp/top-k/top-p.
     #[arg(long)]
     greedy: bool,
@@ -66,7 +67,9 @@ pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
         return Ok(p);
     }
     Err(format!(
-        "no se encontró el modelo {name:?} (buscado en {} y como ruta). Convertilo con tools/convert_brasa.py",
+        "no se encontró el modelo {name:?} (buscado en {} y como ruta).\n\
+         Sugerencia: corré `brasa models` para ver los locales, o `brasa pull {name}` y \
+         `brasa convert models/{name}-hf models/{name}` para bajarlo y convertirlo.",
         p.display()
     ))
 }
@@ -101,15 +104,28 @@ fn sampling(args: &RunArgs) -> SamplingParams {
 }
 
 pub fn run(args: RunArgs) -> Result<(), String> {
-    let dir = resolve_model(&args.model)?;
+    let cfg = crate::config::Config::load()?;
+    let model = crate::config::pick(
+        args.model.clone(),
+        cfg.model.clone(),
+        crate::config::DEFAULT_MODEL.to_string(),
+    );
+    let ctx = crate::config::pick(args.ctx, cfg.ctx, 4096);
+    let cfg_kv = cfg.kv.as_deref().map(crate::parse_kv).transpose()?;
+    let kv = crate::config::pick(
+        args.kv,
+        cfg_kv,
+        brasa_runtime::KvType::parse(crate::config::DEFAULT_KV).expect("kv por defecto"),
+    );
+    let dir = resolve_model(&model.value)?;
     let mem = MemorySampler::start(Duration::from_millis(100));
     let limits = Limits {
-        ctx: args.ctx,
+        ctx: ctx.value,
         max_tokens: args.chunk,
         max_logit_rows: 1,
-        kv: args.kv,
+        kv: kv.value,
     };
-    eprintln!("cargando {} (contexto {}) ...", dir.display(), args.ctx);
+    eprintln!("cargando {} (contexto {}) ...", dir.display(), ctx.value);
     let mut session = Session::load(&dir, limits).map_err(|e| e.to_string())?;
     let params = sampling(&args);
     let mut sampler = Sampler::new(params, session.vocab());

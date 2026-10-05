@@ -1,0 +1,27 @@
+Imprime la configuración para Codex, Claude Code, Cline u OpenCode
+
+Usage: connect [OPTIONS] <TOOL>
+
+Arguments:
+  <TOOL>
+          [possible values: codex, claude-code, cline, opencode]
+
+Options:
+      --host <HOST>
+          [default: 127.0.0.1]
+
+      --port <PORT>
+          [default: 8080]
+
+      --model <MODEL>
+          Id del modelo servido
+          
+          [default: qwen3-4b-q4]
+
+      --ctx <CTX>
+          Contexto real del daemon (`brasa serve --ctx`)
+          
+          [default: 16384]
+
+  -h, --help
+          Print help
