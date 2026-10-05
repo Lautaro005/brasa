@@ -11,6 +11,9 @@ pub enum QType {
     Q4_0,
     /// Escala f16 + 32 × i8 por bloque de 32: `w = d · q`.
     Q8_0,
+    /// Escala f16 + 16 bytes de bits bajos + 8 de bits altos por bloque de 32 (ADR 0012):
+    /// `w = d · (q − 32)`, q de 6 bits.
+    Q6_0,
     F32,
 }
 
@@ -20,6 +23,7 @@ impl QType {
         match self {
             QType::Q4_0 => n / BLOCK * 18,
             QType::Q8_0 => n / BLOCK * 34,
+            QType::Q6_0 => n / BLOCK * 26,
             QType::F32 => n * 4,
         }
     }
@@ -125,6 +129,14 @@ pub fn dequantize_kv_q8(data: &[u8], out: &mut [f32]) {
     }
 }
 
+/// Valor q (0..63) del elemento `i` de un bloque q6_0 de 26 bytes (ADR 0012).
+pub fn q6_value(b: &[u8], i: usize) -> u8 {
+    let ql = b[2 + i % 16];
+    let lo = if i < 16 { ql & 0x0f } else { ql >> 4 };
+    let hi = (b[18 + i % 8] >> (2 * (i / 8))) & 3;
+    lo | (hi << 4)
+}
+
 /// Decuantiza `data` (tipo `q`) a f32. `out.len()` es la cantidad de elementos.
 pub fn dequantize(q: QType, data: &[u8], out: &mut [f32]) {
     assert_eq!(
@@ -145,6 +157,14 @@ pub fn dequantize(q: QType, data: &[u8], out: &mut [f32]) {
                     let byte = b[2 + j];
                     o[j] = d * ((byte & 0x0f) as i32 - 8) as f32;
                     o[j + 16] = d * ((byte >> 4) as i32 - 8) as f32;
+                }
+            }
+        }
+        QType::Q6_0 => {
+            for (o, b) in out.chunks_exact_mut(BLOCK).zip(data.chunks_exact(26)) {
+                let d = f16_to_f32(u16::from_le_bytes([b[0], b[1]]));
+                for (i, v) in o.iter_mut().enumerate() {
+                    *v = d * (q6_value(b, i) as i32 - 32) as f32;
                 }
             }
         }
@@ -251,6 +271,22 @@ mod tests {
         for j in 0..16 {
             assert_eq!(out[j], 0.5 * (j as f32 - 8.0));
             assert_eq!(out[j + 16], 0.5 * (7.0 - j as f32));
+        }
+    }
+
+    #[test]
+    fn q6_0_bloque_a_mano() {
+        // d = 1 y q_j = 2j (0..62): ql y qh armados a mano según ADR 0012.
+        let q: Vec<u8> = (0..32).map(|j| 2 * j as u8).collect();
+        let mut b = vec![0x00, 0x3c];
+        b.extend((0..16).map(|j| (q[j] & 0x0f) | ((q[j + 16] & 0x0f) << 4)));
+        b.extend((0..8).map(|j| {
+            (q[j] >> 4) | ((q[j + 8] >> 4) << 2) | ((q[j + 16] >> 4) << 4) | ((q[j + 24] >> 4) << 6)
+        }));
+        let mut out = [0f32; 32];
+        dequantize(QType::Q6_0, &b, &mut out);
+        for (j, o) in out.iter().enumerate() {
+            assert_eq!(*o, 2.0 * j as f32 - 32.0);
         }
     }
 

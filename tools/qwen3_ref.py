@@ -93,6 +93,9 @@ class Qwen3Ref:
         Con `kv_dtype` (torch.float16 o "q8_0"), K y V se redondean a ese tipo al entrar en la
         caché, después de QK-norm y RoPE, como hace el engine (ADR 0009); el resto sigue en FP32."""
         self.kv_dtype = kv_dtype
+        # Solo para evaluar (tools/eval_embed_quant.py --act f16): redondea la entrada de cada
+        # proyección lineal, como haría un GEMM con activaciones en f16. None = FP32 (fixtures).
+        self.act_dtype: torch.dtype | None = None
         model_dir = pathlib.Path(model_dir)
         self.cfg = json.loads((model_dir / "config.json").read_text())
         c = self.cfg
@@ -114,6 +117,12 @@ class Qwen3Ref:
         if self.kv_dtype == "q8_0":
             return round_kv_q8(x)
         return x.to(self.kv_dtype).to(torch.float32)
+
+    def act(self, x: torch.Tensor) -> torch.Tensor:
+        """Entrada de una proyección lineal (redondeada a `act_dtype` si hay)."""
+        if self.act_dtype is None:
+            return x
+        return x.to(self.act_dtype).to(torch.float32)
 
     def new_cache(self) -> list:
         return [None] * self.n_layers
@@ -137,6 +146,7 @@ class Qwen3Ref:
                 t = x.shape[0]
                 pos = torch.arange(starts[i], starts[i] + t)
                 h = rms_norm(x, w["input_layernorm.weight"], self.eps)
+                h = self.act(h)
                 q = (h @ w["self_attn.q_proj.weight"].T).view(t, self.n_heads, self.head_dim)
                 k = (h @ w["self_attn.k_proj.weight"].T).view(t, self.n_kv, self.head_dim)
                 v = (h @ w["self_attn.v_proj.weight"].T).view(t, self.n_kv, self.head_dim)
@@ -154,10 +164,11 @@ class Qwen3Ref:
                 scores = scores.masked_fill(key_pos[None, None, :] > pos[None, :, None], float("-inf"))
                 p = torch.softmax(scores, dim=-1)
                 o = torch.einsum("hts,shd->thd", p, vv).reshape(t, self.n_heads * self.head_dim)
-                x = x + o @ w["self_attn.o_proj.weight"].T
+                x = x + self.act(o) @ w["self_attn.o_proj.weight"].T
                 h = rms_norm(x, w["post_attention_layernorm.weight"], self.eps)
+                h = self.act(h)
                 gate = torch.nn.functional.silu(h @ w["mlp.gate_proj.weight"].T)
-                x = x + (gate * (h @ w["mlp.up_proj.weight"].T)) @ w["mlp.down_proj.weight"].T
+                x = x + self.act(gate * (h @ w["mlp.up_proj.weight"].T)) @ w["mlp.down_proj.weight"].T
                 xs[i] = x
             if capture is not None:
                 capture[li] = [x.clone() for x in xs]

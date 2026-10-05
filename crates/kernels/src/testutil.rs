@@ -61,6 +61,16 @@ impl Rng {
         out
     }
 
+    /// Matriz q6_0 `[rows, cols]` (ADR 0012) con escalas y bits aleatorios.
+    pub fn q6_0(&mut self, rows: usize, cols: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(rows * cols / 32 * 26);
+        for _ in 0..rows * cols / 32 {
+            out.extend_from_slice(&self.f16_scale());
+            out.extend((0..24).map(|_| self.next_u64() as u8));
+        }
+        out
+    }
+
     /// Matriz q8_0 `[rows, cols]` con escalas y valores aleatorios en [-127, 127].
     pub fn q8_0(&mut self, rows: usize, cols: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(rows * cols / 32 * 34);

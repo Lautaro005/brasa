@@ -64,6 +64,8 @@ const GEMV_ROWS_PER_TG: usize = 4;
 pub enum WeightType {
     Q4_0,
     Q8_0,
+    /// Tabla de embeddings atada (ADR 0012): embedding, GEMV y GEMM simple (sin tiled).
+    Q6_0,
 }
 
 /// Tipo de elemento de la KV cache (ADR 0009).
@@ -137,6 +139,10 @@ pub struct Kernels {
     softmax_f32: Pipeline,
     rope_neox_f32: Pipeline,
     embed_q8_0: Pipeline,
+    embed_q6_0: Pipeline,
+    gemv_q6_0: Pipeline,
+    gemm_q6_0: Pipeline,
+    gemv_fast_q6_0: Pipeline,
     gemv_q4_0: Pipeline,
     gemv_q8_0: Pipeline,
     gemm_q4_0: Pipeline,
@@ -190,6 +196,10 @@ impl Kernels {
             softmax_f32: ctx.pipeline(SOFTMAX, "softmax_f32")?,
             rope_neox_f32: ctx.pipeline(ROPE, "rope_neox_f32")?,
             embed_q8_0: ctx.pipeline(EMBED, "embed_q8_0")?,
+            embed_q6_0: ctx.pipeline(EMBED, "embed_q6_0")?,
+            gemv_q6_0: ctx.pipeline(MATMUL, "gemv_q6_0_f32")?,
+            gemm_q6_0: ctx.pipeline(MATMUL, "gemm_q6_0_f32")?,
+            gemv_fast_q6_0: ctx.pipeline(MATMUL, "gemv_fast_q6_0_f32")?,
             gemv_q4_0: ctx.pipeline(MATMUL, "gemv_q4_0_f32")?,
             gemv_q8_0: ctx.pipeline(MATMUL, "gemv_q8_0_f32")?,
             gemm_q4_0: ctx.pipeline(MATMUL, "gemm_q4_0_f32")?,
@@ -328,7 +338,7 @@ impl Kernels {
         );
     }
 
-    /// Embedding desde una tabla q8_0 `[vocab, h]`: `out[t, :] = tabla[ids[t], :]`.
+    /// Embedding desde una tabla q8_0 o q6_0 `[vocab, h]`: `out[t, :] = tabla[ids[t], :]`.
     pub fn embed<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -337,10 +347,14 @@ impl Kernels {
         out: Arg<'a>,
         tokens: usize,
     ) {
-        assert_eq!(table.qtype, WeightType::Q8_0, "embedding solo en q8_0");
+        let p = match table.qtype {
+            WeightType::Q8_0 => &self.embed_q8_0,
+            WeightType::Q6_0 => &self.embed_q6_0,
+            WeightType::Q4_0 => panic!("embedding en q8_0 o q6_0"),
+        };
         assert!(ids.len() >= tokens);
         cmd.dispatch(
-            &self.embed_q8_0,
+            p,
             &[
                 Arg::buf(table.data),
                 Arg::buf(ids),
@@ -368,6 +382,7 @@ impl Kernels {
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemv_fast_q4_0,
             WeightType::Q8_0 => &self.gemv_fast_q8_0,
+            WeightType::Q6_0 => &self.gemv_fast_q6_0,
         };
         cmd.dispatch_groups(
             p,
@@ -395,6 +410,7 @@ impl Kernels {
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemv_q4_0,
             WeightType::Q8_0 => &self.gemv_q8_0,
+            WeightType::Q6_0 => &self.gemv_q6_0,
         };
         cmd.dispatch_groups(
             p,
@@ -420,12 +436,13 @@ impl Kernels {
         y: Arg<'a>,
         tokens: usize,
     ) {
-        if w.rows % 64 != 0 || w.cols % 32 != 0 {
+        if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
             return self.gemm_naive(cmd, w, x, y, tokens);
         }
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemm_tiled_q4_0,
             WeightType::Q8_0 => &self.gemm_tiled_q8_0,
+            WeightType::Q6_0 => unreachable!(),
         };
         cmd.dispatch_groups(
             p,
@@ -454,6 +471,7 @@ impl Kernels {
         let p = match w.qtype {
             WeightType::Q4_0 => &self.gemm_q4_0,
             WeightType::Q8_0 => &self.gemm_q8_0,
+            WeightType::Q6_0 => &self.gemm_q6_0,
         };
         cmd.dispatch(
             p,

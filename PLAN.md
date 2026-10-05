@@ -148,6 +148,16 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   Probado sin éxito: RMSNorm con los valores en registros (T=1 igual; T=512, 0,059 → 0,142 ms).
   Las cifras absolutas se vuelven a medir con la máquina liviana en T3.6: con la máquina ocupada
   (otros procesos usando la GPU) el decode a 2K oscila entre 40,6 y 43,7 tok/s.
+
+  Tabla de embeddings en q6_0 (ADR 0012), decisión delegada por el usuario y tomada con datos:
+  - top-1 contra FP32: 88,34 % (q8_0: 88,58 %);
+  - lm_head: 2,35 → 1,94 ms;
+  - A/B del modelo, GPU por token a 2K: 21,44–21,91 → 21,13–21,57 ms.
+
+  Se regeneraron las fixtures q4, kvf16 y kvq8, y T1.5, T1.6, T1.7 y T1.8 pasan. Con lo seguro ya
+  hecho, el decode a 2K queda en ~21,1 ms de GPU + ~0,5 ms de CPU (≈ 46 tok/s en la máquina
+  liviana, a confirmar en T3.6). Para 50,8 faltan ~1,9 ms, y no se ve de dónde sacarlos sin otro
+  cambio de formato de los lineales.
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
 

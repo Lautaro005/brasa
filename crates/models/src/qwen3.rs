@@ -289,6 +289,7 @@ fn load_matrix(
     let qtype = match t.dtype {
         QType::Q4_0 => WeightType::Q4_0,
         QType::Q8_0 => WeightType::Q8_0,
+        QType::Q6_0 => WeightType::Q6_0,
         QType::F32 => return Err(Error(format!("{name}: se esperaba un tensor cuantizado"))),
     };
     if t.shape != [rows, cols] {
@@ -338,8 +339,10 @@ impl Qwen3 {
             });
         }
         let embed = load_matrix(ctx, &f, "model.embed_tokens.weight", cfg.vocab, h)?;
-        if embed.qtype != WeightType::Q8_0 {
-            return Err(Error("la tabla de embeddings debe ser q8_0".into()));
+        if !matches!(embed.qtype, WeightType::Q8_0 | WeightType::Q6_0) {
+            return Err(Error(
+                "la tabla de embeddings debe ser q8_0 o q6_0 (ADR 0012)".into(),
+            ));
         }
         let final_norm = load_f32(ctx, &f, "model.norm.weight")?;
         let rope = RopeTable::new(ctx, cfg.rope_theta, cfg.head_dim, limits.ctx)?;
@@ -596,7 +599,7 @@ impl Qwen3 {
             c.hidden,
             c.eps,
         );
-        // lm_head atado a la tabla de embeddings (q8_0).
+        // lm_head atado a la tabla de embeddings (q6_0, ADR 0012; q8_0 en archivos viejos).
         self.kernels.gemv(
             &mut cmd,
             self.embed.q(),
