@@ -1,5 +1,9 @@
 //! Dispositivo Metal, buffers, command queues y cache de pipelines.
 
+pub mod runtime;
+
+pub use runtime::{Arg, Buffer, Command, Context, Element, GpuTiming, MetalError, Pipeline};
+
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily};
 use serde::Serialize;
 

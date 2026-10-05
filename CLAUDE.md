@@ -54,6 +54,8 @@ cargo test --workspace
 cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, macOS, Metal, presión
 cargo run -p brasa-cli -- doctor --json
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
+cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
+cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
 
 # Baselines (ver docs/adr/0002). Pesos en models/ (gitignored):
 .venv/bin/hf download Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c --local-dir models/qwen3-4b-hf
@@ -71,7 +73,6 @@ python3 tools/bench_table.py                   # regenera docs/bench/baseline.md
 Previstos (todavía no existen):
 
 ```bash
-cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica de kernels
 cargo run -p brasa-cli -- benchmark --model qwen3-4b-q4 --ctx 2048     # engine propio, fase 1
 ```
 
