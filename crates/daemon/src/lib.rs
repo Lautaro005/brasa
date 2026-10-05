@@ -1,13 +1,18 @@
 //! API HTTP local compatible con OpenAI (Chat Completions, Responses) y Anthropic (Messages),
-//! sobre los tipos internos de `brasa_core::chat` (ADR 0008). Incluye estado y métricas (U1).
+//! sobre los tipos internos de `brasa_core::chat` (ADR 0008). Incluye estado, métricas (U1) y la
+//! GUI web embebida (U2).
 
 mod anthropic;
+mod bench;
 mod common;
+pub mod connect;
 pub mod engine;
 mod metrics;
 mod openai;
+mod plan;
 mod responses;
 mod status;
+mod ui;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -19,6 +24,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use brasa_memory::planner::Budget;
 use brasa_runtime::Limits;
 use brasa_tokenizer::Tokenizer;
 use serde_json::json;
@@ -47,33 +53,45 @@ pub struct AppState {
     pub model_id: String,
     /// Contexto real del perfil de memoria (no el nominal del modelo).
     pub ctx: usize,
+    /// Carpeta del modelo (para `/api/plan`, que solo lee el encabezado).
+    pub model_dir: PathBuf,
     /// Modelo cargado (plan de memoria, pesos, KV).
     pub model: LoadedModel,
+    /// Presupuesto de memoria de esta máquina (para la barra de la GUI).
+    pub budget: Budget,
+    pub addr: SocketAddr,
     pub metrics: Arc<Metrics>,
     pub started: Instant,
     pub version: String,
     pub commit: String,
 }
 
+/// Datos de configuración del servidor que se fijan al arrancar.
+#[derive(Debug, Clone)]
+pub struct ServerMeta {
+    pub model_id: String,
+    pub model_dir: PathBuf,
+    pub addr: SocketAddr,
+    pub budget: Budget,
+    pub commit: String,
+}
+
 impl AppState {
-    pub fn new(
-        engine: Engine,
-        tok: Tokenizer,
-        model_id: String,
-        model: LoadedModel,
-        commit: String,
-    ) -> Arc<Self> {
+    pub fn new(engine: Engine, tok: Tokenizer, model: LoadedModel, meta: ServerMeta) -> Arc<Self> {
         let ctx = model.ctx;
         Arc::new(Self {
             engine,
             tok,
-            model_id,
+            model_id: meta.model_id,
             ctx,
+            model_dir: meta.model_dir,
             model,
+            budget: meta.budget,
+            addr: meta.addr,
             metrics: Arc::new(Metrics::new()),
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            commit,
+            commit: meta.commit,
         })
     }
 }
@@ -86,6 +104,13 @@ pub fn router(state: Shared) -> Router {
         .route("/api/hello", get(health).head(health))
         .route("/api/status", get(status::status))
         .route("/api/metrics", get(status::metrics))
+        .route("/api/plan", get(plan::plan))
+        .route("/api/bench", get(bench::bench))
+        .route("/api/agents", get(connect::agents))
+        .route("/ui", get(ui::index))
+        .route("/ui/", get(ui::index))
+        .route("/ui/app.css", get(ui::css))
+        .route("/ui/app.js", get(ui::js))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/responses", post(responses::create))
@@ -134,7 +159,15 @@ async fn models(State(s): State<Shared>, headers: HeaderMap) -> Response {
 pub fn serve(cfg: ServeConfig) -> Result<(), String> {
     let tok = Tokenizer::from_dir(&cfg.model_dir).map_err(|e| e.0)?;
     let (engine, model) = Engine::start(cfg.model_dir.clone(), cfg.limits)?;
-    let state = AppState::new(engine, tok, cfg.model_id.clone(), model, cfg.commit.clone());
+    let budget = Budget::this_machine().unwrap_or_else(|| Budget::profile(16));
+    let meta = ServerMeta {
+        model_id: cfg.model_id.clone(),
+        model_dir: cfg.model_dir.clone(),
+        addr: cfg.addr,
+        budget,
+        commit: cfg.commit.clone(),
+    };
+    let state = AppState::new(engine, tok, model, meta);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -147,6 +180,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
             "brasa sirviendo {} en http://{} (contexto {})",
             cfg.model_id, cfg.addr, cfg.limits.ctx
         );
+        eprintln!("GUI: http://{}/ui", cfg.addr);
         axum::serve(listener, router(state))
             .with_graceful_shutdown(async {
                 let _ = tokio::signal::ctrl_c().await;

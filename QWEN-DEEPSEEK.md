@@ -174,7 +174,7 @@ bf16 → f32 → q4), documentá exactamente por qué y no lo des por cerrado.
 | Tarea | Estado | Commit | Notas |
 |---|---|---|---|
 | U1 | hecha | 42c37e2 | Tests del daemon con engine simulado (streaming y no streaming) y `/api/status`. Falta correr `brasa ps` contra un `serve` real a 2K: el usuario pidió no ejecutar `brasa`. |
-| U2 | pendiente | | |
+| U2 | hecha | b9bf512 | GUI embebida en `/ui` con 5 pantallas; endpoints `/api/plan`, `/api/bench`, `/api/agents`. Tests de assets (200, content-type, sin URLs externas) y ADR 0021. Falta la conversación/cancelación con `serve` real y las capturas en `docs/gui/`: no se ejecutó `brasa`. |
 | U3 | pendiente | | |
 | U4 | pendiente | | |
 | U5 | pendiente | | |

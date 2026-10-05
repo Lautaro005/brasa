@@ -30,6 +30,7 @@ pub async fn status(State(s): State<Shared>) -> Response {
         },
         "context": {"ctx": model.ctx, "kv": model.kv, "chunk": model.chunk},
         "plan": serde_json::to_value(model.plan).unwrap_or(Value::Null),
+        "budget": serde_json::to_value(&s.budget).unwrap_or(Value::Null),
         "process": proc,
         "system": sys,
         "queue": q,

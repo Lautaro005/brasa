@@ -1,6 +1,7 @@
 //! U1: tests del daemon con un engine simulado (sin GPU ni pesos). Verifican los contadores de
 //! `/api/metrics` tras un pedido streaming y uno no streaming, y la forma de `/api/status`.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -8,9 +9,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use brasa_core::chat::{ChatEvent, FinishReason, Usage};
-use brasa_daemon::AppState;
 use brasa_daemon::engine::{Engine, LoadedModel};
-use brasa_memory::planner::MemoryPlan;
+use brasa_daemon::{AppState, ServerMeta};
+use brasa_memory::planner::{Budget, MemoryPlan};
 use brasa_tokenizer::Tokenizer;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -55,7 +56,15 @@ fn state() -> Arc<AppState> {
             total: 2_002_500_000,
         },
     };
-    AppState::new(engine, tok, "qwen3-4b-q4".into(), model, "test".into())
+    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let meta = ServerMeta {
+        model_id: "qwen3-4b-q4".into(),
+        model_dir: root().join("models/qwen3-4b-q4"),
+        addr,
+        budget: Budget::profile(16),
+        commit: "test".into(),
+    };
+    AppState::new(engine, tok, model, meta)
 }
 
 async fn json_body(resp: axum::response::Response) -> Value {
@@ -133,6 +142,58 @@ async fn metrics_tras_pedido_streaming() {
     assert_eq!(m["generated_tokens"], 3);
     assert_eq!(m["ttft_ms"]["samples"], 1);
     assert_eq!(m["decode_tok_s"]["samples"], 1);
+}
+
+#[tokio::test]
+async fn gui_assets_se_sirven_con_su_content_type() {
+    let app = brasa_daemon::router(state());
+    let casos = [
+        ("/ui", "text/html"),
+        ("/ui/", "text/html"),
+        ("/ui/app.css", "text/css"),
+        ("/ui/app.js", "application/javascript"),
+    ];
+    for (uri, ct) in casos {
+        let resp = get(app.clone(), uri).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        let got = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(got.starts_with(ct), "{uri}: {got}");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains("http://"), "{uri} referencia http");
+        assert!(!text.contains("https://"), "{uri} referencia https");
+    }
+}
+
+#[tokio::test]
+async fn agents_devuelve_config_por_herramienta() {
+    let app = brasa_daemon::router(state());
+    let v = json_body(get(app, "/api/agents?ctx=4096").await).await;
+    assert_eq!(v["ctx"], 4096);
+    for key in ["codex", "claude-code", "cline", "opencode"] {
+        assert!(
+            v["tools"][key].as_str().unwrap().contains("127.0.0.1:8080"),
+            "{key}"
+        );
+    }
+    assert!(v["tools"]["claude-code"].as_str().unwrap().contains("4096"));
+}
+
+#[tokio::test]
+async fn bench_responde_aunque_no_haya_carpeta() {
+    let app = brasa_daemon::router(state());
+    let resp = get(app, "/api/bench").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = json_body(resp).await;
+    assert!(v["reports"].is_array());
 }
 
 #[tokio::test]
