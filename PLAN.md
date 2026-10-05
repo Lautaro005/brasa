@@ -156,8 +156,14 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
 
   Se regeneraron las fixtures q4, kvf16 y kvq8, y T1.5, T1.6, T1.7 y T1.8 pasan. Con lo seguro ya
   hecho, el decode a 2K queda en ~21,1 ms de GPU + ~0,5 ms de CPU (≈ 46 tok/s en la máquina
-  liviana, a confirmar en T3.6). Para 50,8 faltan ~1,9 ms, y no se ve de dónde sacarlos sin otro
-  cambio de formato de los lineales.
+  liviana, a confirmar en T3.6).
+
+  Después, con los mismos bits salvo donde se indica:
+  - RMSNorm de decode sin dispatch propio (`add_norm_prep` + `gemv_scaled`; numérica f32
+    equivalente, T1.6 igual): GPU 21,15 → 20,79 ms;
+  - q/k/v en un dispatch y gate/up/SwiGLU en otro: 20,97 → 20,48 ms.
+
+  Mejor corrida A/B a 2K: 47,2 tok/s (pared 21,2 ms). Faltan ~1,5 ms para 50,8.
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
 
