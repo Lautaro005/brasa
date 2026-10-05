@@ -20,7 +20,12 @@ use crate::openai::error;
 /// Herramientas de un `namespace` se aplanan como `ns.nombre` (ADR 0008).
 const NS_SEP: char = '.';
 
-fn push_tools(tools: &[Value], prefix: Option<&str>, out: &mut Vec<Tool>) {
+fn push_tools(
+    tools: &[Value],
+    prefix: Option<&str>,
+    out: &mut Vec<Tool>,
+    customs: &mut Vec<String>,
+) {
     for t in tools {
         match t["type"].as_str() {
             Some("function") => {
@@ -36,16 +41,33 @@ fn push_tools(tools: &[Value], prefix: Option<&str>, out: &mut Vec<Tool>) {
             }
             Some("namespace") => {
                 if let Some(inner) = t["tools"].as_array() {
-                    push_tools(inner, t["name"].as_str(), out);
+                    push_tools(inner, t["name"].as_str(), out, customs);
                 }
             }
-            // web_search, custom, mcp, ...: sin equivalente local.
+            // Herramienta de entrada libre (p. ej. `apply_patch` de Codex): se presenta al modelo
+            // como función con un único parámetro `input` de texto.
+            Some("custom") => {
+                let name = t["name"].as_str().unwrap_or_default().to_string();
+                // La gramática formal (`format.definition`, Lark) no se copia: confunde a modelos
+                // chicos, que terminan mezclando sus símbolos en la entrada (medido con Codex y
+                // apply_patch). Las instrucciones del cliente ya explican el formato.
+                let desc = t["description"].as_str().unwrap_or_default().to_string();
+                out.push(Tool {
+                    name: name.clone(),
+                    description: Some(desc),
+                    parameters: json!({"type": "object",
+                        "properties": {"input": {"type": "string", "description": "Raw text input for the tool."}},
+                        "required": ["input"]}),
+                });
+                customs.push(name);
+            }
+            // web_search, mcp, ...: sin equivalente local.
             _ => {}
         }
     }
 }
 
-fn parse_request(b: &Value) -> Result<ChatRequest, String> {
+fn parse_request(b: &Value) -> Result<(ChatRequest, Vec<String>), String> {
     let mut messages: Vec<Message> = Vec::new();
     if let Some(i) = b["instructions"].as_str() {
         messages.push(Message::new(Role::System, i));
@@ -84,7 +106,22 @@ fn parse_request(b: &Value) -> Result<ChatRequest, String> {
                             }
                         }
                     }
-                    "function_call_output" => {
+                    "custom_tool_call" => {
+                        let call = ToolCall {
+                            id: it["call_id"].as_str().unwrap_or_default().to_string(),
+                            name: it["name"].as_str().unwrap_or_default().to_string(),
+                            arguments: json!({"input": it["input"].as_str().unwrap_or_default()}),
+                        };
+                        match messages.last_mut() {
+                            Some(m) if m.role == Some(Role::Assistant) => m.tool_calls.push(call),
+                            _ => {
+                                let mut m = Message::new(Role::Assistant, "");
+                                m.tool_calls.push(call);
+                                messages.push(m);
+                            }
+                        }
+                    }
+                    "function_call_output" | "custom_tool_call_output" => {
                         let mut m = Message::new(Role::Tool, content_text(&it["output"]));
                         m.tool_call_id = it["call_id"].as_str().map(str::to_string);
                         messages.push(m);
@@ -97,8 +134,9 @@ fn parse_request(b: &Value) -> Result<ChatRequest, String> {
         _ => return Err("falta `input`".into()),
     }
     let mut tools = Vec::new();
+    let mut customs = Vec::new();
     if let Some(ts) = b["tools"].as_array() {
-        push_tools(ts, None, &mut tools);
+        push_tools(ts, None, &mut tools, &mut customs);
     }
     let tool_choice = match &b["tool_choice"] {
         Value::String(s) if s == "none" => ToolChoice::None,
@@ -112,17 +150,20 @@ fn parse_request(b: &Value) -> Result<ChatRequest, String> {
     let thinking = b["reasoning"]["effort"]
         .as_str()
         .is_some_and(|e| matches!(e, "low" | "medium" | "high" | "xhigh"));
-    Ok(ChatRequest {
-        messages,
-        tools,
-        tool_choice,
-        max_tokens: opt_usize(b, "max_output_tokens"),
-        temperature: opt_f32(b, "temperature"),
-        top_p: opt_f32(b, "top_p"),
-        top_k: None,
-        seed: None,
-        thinking,
-    })
+    Ok((
+        ChatRequest {
+            messages,
+            tools,
+            tool_choice,
+            max_tokens: opt_usize(b, "max_output_tokens"),
+            temperature: opt_f32(b, "temperature"),
+            top_p: opt_f32(b, "top_p"),
+            top_k: None,
+            seed: None,
+            thinking,
+        },
+        customs,
+    ))
 }
 
 fn call_item(c: &ToolCall, id: &str, status: &str, args: &str) -> Value {
@@ -136,6 +177,20 @@ fn call_item(c: &ToolCall, id: &str, status: &str, args: &str) -> Value {
         v["namespace"] = json!(ns);
     }
     v
+}
+
+/// Texto de entrada de una llamada a herramienta `custom`.
+fn custom_input(c: &ToolCall) -> String {
+    match &c.arguments {
+        Value::String(s) => s.clone(),
+        v => v["input"]
+            .as_str()
+            .map_or_else(|| v.to_string(), str::to_string),
+    }
+}
+
+fn custom_item(c: &ToolCall, id: &str, input: &str) -> Value {
+    json!({"type": "custom_tool_call", "id": id, "call_id": c.id, "name": c.name, "input": input})
 }
 
 fn usage_json(u: &Usage) -> Value {
@@ -209,7 +264,7 @@ pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Respons
             "previous_response_id no está soportado (brasa no guarda respuestas); mandar el historial completo",
         );
     }
-    let req = match parse_request(&b) {
+    let (req, customs) = match parse_request(&b) {
         Ok(r) => r,
         Err(e) => return error(StatusCode::BAD_REQUEST, ErrorKind::InvalidRequest, &e),
     };
@@ -244,6 +299,7 @@ pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Respons
                 seq: 0,
                 output: Vec::new(),
                 open: None,
+                customs,
             },
         )
         .into_response();
@@ -300,6 +356,8 @@ struct RespEncoder {
     seq: u64,
     output: Vec<Value>,
     open: Option<Open>,
+    /// Herramientas `custom` del pedido (sus llamadas se emiten como `custom_tool_call`).
+    customs: Vec<String>,
 }
 
 impl RespEncoder {
@@ -400,6 +458,31 @@ impl SseEncoder for RespEncoder {
         match e {
             ChatEvent::Text(t) => self.delta(OpenKind::Message, t),
             ChatEvent::Reasoning(t) => self.delta(OpenKind::Reasoning, t),
+            ChatEvent::ToolCall(c) if self.customs.contains(&c.name) => {
+                let mut out = self.close();
+                let index = self.output.len();
+                let id = new_id("ctc_");
+                let input = custom_input(&c);
+                out.push(self.ev(
+                    "response.output_item.added",
+                    json!({"output_index": index, "item": custom_item(&c, &id, "")}),
+                ));
+                out.push(self.ev(
+                    "response.custom_tool_call_input.delta",
+                    json!({"item_id": id, "output_index": index, "delta": input}),
+                ));
+                out.push(self.ev(
+                    "response.custom_tool_call_input.done",
+                    json!({"item_id": id, "output_index": index, "input": input}),
+                ));
+                let item = custom_item(&c, &id, &input);
+                out.push(self.ev(
+                    "response.output_item.done",
+                    json!({"output_index": index, "item": item.clone()}),
+                ));
+                self.output.push(item);
+                out
+            }
             ChatEvent::ToolCall(c) => {
                 let mut out = self.close();
                 let index = self.output.len();

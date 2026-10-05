@@ -33,18 +33,21 @@ pub fn run(a: ConnectArgs) {
     let compact = ctx * 3 / 4;
     match a.tool {
         Tool::Codex => println!(
-            "# Agregar a ~/.codex/config.toml y usar `codex --profile brasa`.
-# Codex habla la API Responses (wire_api = \"responses\").
+            "# Codex (>= 0.15x) habla la API Responses. Dos archivos en ~/.codex/:
+#
+# 1) Agregar a ~/.codex/config.toml:
 [model_providers.brasa]
 name = \"Brasa (local)\"
 base_url = \"{base}/v1\"
 wire_api = \"responses\"
 
-[profiles.brasa]
+# 2) Crear ~/.codex/brasa.config.toml (perfil) con:
 model_provider = \"brasa\"
 model = \"{model}\"
 model_context_window = {ctx}
-model_auto_compact_token_limit = {compact}"
+model_auto_compact_token_limit = {compact}
+
+# 3) Usar: codex --profile brasa"
         ),
         Tool::ClaudeCode => println!(
             "# Variables de entorno para Claude Code contra brasa (API Messages).
@@ -53,8 +56,11 @@ export ANTHROPIC_AUTH_TOKEN=brasa-local
 export ANTHROPIC_MODEL={model}
 export ANTHROPIC_DEFAULT_HAIKU_MODEL={model}
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS={ctx}
-# El prompt completo de Claude Code (~30K tokens) no entra en {ctx}: limitar herramientas, p. ej.
-#   claude --tools Bash,Read,Edit,Write,Glob,Grep"
+# Claude Code reserva la salida máxima dentro de la ventana: sin esto rechaza el prompt.
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS={out}
+# Con todas las herramientas el prompt ronda los 30K tokens; limitarlas, p. ej.:
+#   claude --model {model} --tools Bash,Read,Edit,Write,Glob,Grep",
+            out = (ctx / 4).min(4096)
         ),
         Tool::Cline | Tool::Opencode => println!(
             "# Proveedor compatible con OpenAI:

@@ -14,6 +14,16 @@ pub struct Job {
     pub events: UnboundedSender<ChatEvent>,
 }
 
+/// Registro de depuración (`BRASA_DEBUG=1`): llamadas a herramientas, texto y fin, a stderr.
+fn log_event(e: &ChatEvent) {
+    match e {
+        ChatEvent::ToolCall(c) => eprintln!("[brasa] llamada {} {}", c.name, c.arguments),
+        ChatEvent::Done { reason, usage } => eprintln!("[brasa] fin {reason:?} {usage:?}"),
+        ChatEvent::Error(k, m) => eprintln!("[brasa] error {k:?}: {m}"),
+        ChatEvent::Text(t) | ChatEvent::Reasoning(t) => eprint!("{t}"),
+    }
+}
+
 /// Manejador para mandar trabajos al hilo del modelo.
 #[derive(Clone, Debug)]
 pub struct Engine {
@@ -39,12 +49,18 @@ impl Engine {
                         return;
                     }
                 };
+                let debug = std::env::var_os("BRASA_DEBUG").is_some();
                 for job in rx {
                     // Si el cliente se fue antes de empezar, no se genera nada.
                     if job.events.is_closed() {
                         continue;
                     }
-                    session.chat(&job.req, |e| job.events.send(e).is_ok());
+                    session.chat(&job.req, |e| {
+                        if debug {
+                            log_event(&e);
+                        }
+                        job.events.send(e).is_ok()
+                    });
                 }
             })
             .map_err(|e| e.to_string())?;
