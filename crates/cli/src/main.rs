@@ -5,8 +5,11 @@ mod benchmark;
 mod connect;
 mod doctor;
 mod http;
+mod models;
 mod plan;
 mod ps;
+mod pull;
+mod rm;
 mod run;
 mod serve;
 
@@ -46,6 +49,12 @@ enum Command {
     Serve(serve::ServeArgs),
     /// Estado y métricas de un `serve` corriendo (endpoints /api/status y /api/metrics).
     Ps(ps::PsArgs),
+    /// Lista los modelos locales y verifica sus hashes.
+    Models(models::ModelsArgs),
+    /// Descarga un modelo de Hugging Face según su manifiesto.
+    Pull(pull::PullArgs),
+    /// Borra un modelo local (pide confirmación).
+    Rm(rm::RmArgs),
     /// Imprime la configuración para Codex, Claude Code, Cline u OpenCode.
     Connect(connect::ConnectArgs),
     /// Una corrida medida para `brasa benchmark` (uso interno).
@@ -65,6 +74,24 @@ fn main() {
         }
         Command::Ps(args) => {
             if let Err(e) = ps::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Models(args) => {
+            if let Err(e) = models::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Pull(args) => {
+            if let Err(e) = pull::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Rm(args) => {
+            if let Err(e) = rm::run(args) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

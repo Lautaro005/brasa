@@ -50,13 +50,18 @@ pub struct RunArgs {
     seed: Option<u64>,
 }
 
+/// Carpeta base de modelos: `$BRASA_MODELS` o `./models`.
+pub fn models_dir() -> PathBuf {
+    PathBuf::from(std::env::var("BRASA_MODELS").unwrap_or_else(|_| "models".into()))
+}
+
 pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
     let direct = Path::new(name);
     if direct.join("model.brasa").exists() {
         return Ok(direct.to_path_buf());
     }
-    let base = std::env::var("BRASA_MODELS").unwrap_or_else(|_| "models".into());
-    let p = Path::new(&base).join(name);
+    let base = models_dir();
+    let p = base.join(name);
     if p.join("model.brasa").exists() {
         return Ok(p);
     }
