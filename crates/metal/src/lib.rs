@@ -2,7 +2,9 @@
 
 pub mod runtime;
 
-pub use runtime::{Arg, Buffer, Command, Context, Element, GpuTiming, MetalError, Pipeline};
+pub use runtime::{
+    Arg, Buffer, Command, Context, Element, GpuTiming, MetalError, Pending, Pipeline,
+};
 
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily};
 use serde::Serialize;

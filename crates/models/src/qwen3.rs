@@ -244,6 +244,9 @@ impl KvCache {
     }
 }
 
+/// Capas que van en el primer command buffer de cada forward (ver `Qwen3::forward`).
+const FIRST_COMMAND_LAYERS: usize = 2;
+
 /// Modelo cargado en GPU con su KV cache y workspace.
 #[derive(Debug)]
 pub struct Qwen3 {
@@ -593,15 +596,23 @@ impl Qwen3 {
         let (c, vocab) = (&self.cfg, self.cfg.vocab);
         assert_eq!(logits.len(), logit_rows * vocab, "buffer de logits");
         self.ws.ids.as_mut_slice()[..tokens].copy_from_slice(ids);
-        let mut cmd = ctx.command()?;
+        // Las primeras capas van en un comando aparte que se envía enseguida: la GPU arranca
+        // mientras la CPU codifica el resto (T3.5; en decode, codificar todo tomaba ~0,5 ms).
+        let mut head = ctx.command()?;
         self.kernels.embed(
-            &mut cmd,
+            &mut head,
             self.embed.q(),
             &self.ws.ids,
             Arg::buf(&self.ws.x),
             tokens,
         );
-        for li in 0..c.layers {
+        let split = FIRST_COMMAND_LAYERS.min(c.layers);
+        for li in 0..split {
+            self.encode_layer(&mut head, li, tokens, pos0);
+        }
+        let head = head.commit();
+        let mut cmd = ctx.command()?;
+        for li in split..c.layers {
             self.encode_layer(&mut cmd, li, tokens, pos0);
         }
         let first = tokens - logit_rows;
@@ -622,9 +633,12 @@ impl Qwen3 {
             Arg::buf(&self.ws.logits),
             logit_rows,
         );
-        let timing = cmd.commit_and_wait()?;
+        let tail = cmd.commit_and_wait()?;
+        let first_part = head.wait()?;
         logits.copy_from_slice(&self.ws.logits.as_slice()[..logit_rows * vocab]);
-        Ok(timing)
+        Ok(brasa_metal::GpuTiming {
+            gpu_seconds: first_part.gpu_seconds + tail.gpu_seconds,
+        })
     }
 }
 

@@ -377,8 +377,38 @@ impl<'a> Command<'a> {
 
     /// Cierra el encoder, envía el comando y espera a que la GPU termine.
     pub fn commit_and_wait(self) -> Result<GpuTiming> {
+        self.commit().wait()
+    }
+
+    /// Cierra el encoder y envía el comando sin esperar. Los comandos de una misma cola corren
+    /// en orden, así que la CPU puede ir codificando el siguiente mientras la GPU ejecuta este.
+    /// Los buffers siguen prestados hasta [`Pending::wait`].
+    pub fn commit(self) -> Pending<'a> {
         self.encoder.endEncoding();
         self.cb.commit();
+        Pending {
+            cb: self.cb,
+            _borrows: PhantomData,
+        }
+    }
+}
+
+/// Comando enviado a la GPU, todavía sin esperar ([`Command::commit`]).
+#[must_use = "hay que esperar el comando (wait) antes de leer sus resultados"]
+pub struct Pending<'a> {
+    cb: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    _borrows: PhantomData<&'a ()>,
+}
+
+impl fmt::Debug for Pending<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pending").finish_non_exhaustive()
+    }
+}
+
+impl Pending<'_> {
+    /// Espera a que la GPU termine este comando.
+    pub fn wait(self) -> Result<GpuTiming> {
         self.cb.waitUntilCompleted();
         if self.cb.status() != MTLCommandBufferStatus::Completed {
             let detail = self
