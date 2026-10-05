@@ -1,6 +1,7 @@
 //! Empaquetado Q4/Q8 y formato nativo de pesos (ADR 0006).
 
 pub mod brasa_file;
+pub mod convert;
 pub mod mmap;
 pub mod qtype;
 pub mod safetensors;

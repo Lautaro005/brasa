@@ -3,6 +3,7 @@
 mod bench_once;
 mod benchmark;
 mod connect;
+mod convert;
 mod doctor;
 mod http;
 mod models;
@@ -53,6 +54,8 @@ enum Command {
     Models(models::ModelsArgs),
     /// Descarga un modelo de Hugging Face según su manifiesto.
     Pull(pull::PullArgs),
+    /// Convierte safetensors de Hugging Face al formato nativo `.brasa` (sin Python).
+    Convert(convert::ConvertArgs),
     /// Borra un modelo local (pide confirmación).
     Rm(rm::RmArgs),
     /// Imprime la configuración para Codex, Claude Code, Cline u OpenCode.
@@ -86,6 +89,12 @@ fn main() {
         }
         Command::Pull(args) => {
             if let Err(e) = pull::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Convert(args) => {
+            if let Err(e) = convert::run(args) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

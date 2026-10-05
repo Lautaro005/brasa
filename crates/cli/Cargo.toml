@@ -17,6 +17,7 @@ brasa-memory.workspace = true
 brasa-tuner.workspace = true
 brasa-runtime.workspace = true
 brasa-tokenizer.workspace = true
+brasa-quant.workspace = true
 brasa-daemon.workspace = true
 brasa-catalog.workspace = true
 brasa-bench.workspace = true
