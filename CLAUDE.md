@@ -70,6 +70,10 @@ python3 tools/bench_table.py                   # regenera docs/bench/baseline.md
 .venv/bin/python tools/make_fixtures.py all    # fixtures/qwen3-4b/ (~10 min en M1 Pro)
 .venv/bin/python tools/make_tokenizer_cases.py # casos borde del tokenizer contra HF tokenizers
 cargo test -p brasa-tokenizer                  # T1.2: template y tokens contra las fixtures
+
+# Formato nativo (ADR 0006)
+.venv/bin/python tools/convert_brasa.py models/qwen3-4b-hf models/qwen3-4b-q4
+cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   # T1.3
 ```
 
 Previstos (todavía no existen):

@@ -198,6 +198,10 @@ name = "brasa-quant"
 version = "0.0.1"
 dependencies = [
  "brasa-core",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
