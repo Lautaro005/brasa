@@ -185,7 +185,7 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 | V1 | hecha | 4d8887c |
 | V2 | hecha | 284a138 |
 | V3 | hecha | 692ae89 |
-| V4 | pendiente | |
+| V4 | hecha | 6c902c5 |
 | V5 | pendiente | |
 | V6 | pendiente | |
 
@@ -204,6 +204,9 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
   Dependabot se activen (no hago push). Hasta que no estén en la rama por defecto, no corren.
 - **V3:** las plantillas de issues, su `config.yml` y la plantilla de PR también tienen que estar
   en la rama por defecto para que GitHub las muestre.
+- **V4:** publicar la landing (GitHub Pages u otro). No se hizo. Cómo: subir `site/` a la rama por
+  defecto y en **Settings → Pages** elegir esa rama y la carpeta `site/` (o mover los archivos a
+  `docs/` y elegir esa carpeta). Está documentado en `site/README.md`.
 
 ## Pedidos a Claude
 
