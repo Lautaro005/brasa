@@ -1,8 +1,10 @@
 //! Sesión de inferencia: prefill por bloques, decode con sampling y streaming de texto, y
 //! reutilización del prefijo común con la secuencia que ya está en la KV cache.
 
-use std::path::Path;
-use std::time::Instant;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime};
 
 use brasa_memory::planner::{self, Budget, Fit, MemoryPlan};
 use brasa_metal::Context;
@@ -49,11 +51,40 @@ impl GenStats {
     }
 }
 
+/// Tamaño y fecha de modificación de los archivos del tokenizer: si cambian, se vuelve a leer.
+type Stamp = [Option<(u64, SystemTime)>; 2];
+
+fn stamp(dir: &Path) -> Stamp {
+    ["tokenizer.json", "tokenizer_config.json"].map(|name| {
+        let m = std::fs::metadata(dir.join(name)).ok()?;
+        Some((m.len(), m.modified().ok()?))
+    })
+}
+
+/// Tokenizer de `dir`, leído una sola vez por proceso (ADR 0027). Parsear `tokenizer.json`
+/// (~11 MB de JSON) en cada carga hace crecer la huella del proceso ~27 MB por ciclo
+/// `load` → `idle`: el allocator de macOS no devuelve esas regiones grandes liberadas. Se guarda
+/// una entrada por carpeta; si los archivos cambian, se reemplaza.
+fn shared_tokenizer(dir: &Path) -> Result<Arc<Tokenizer>> {
+    type Cache = HashMap<PathBuf, (Stamp, Arc<Tokenizer>)>;
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let st = stamp(&key);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((_, tok)) = cache.get(&key).filter(|(s, _)| *s == st) {
+        return Ok(tok.clone());
+    }
+    let tok = Arc::new(Tokenizer::from_dir(&key)?);
+    cache.insert(key, (st, tok.clone()));
+    Ok(tok)
+}
+
 #[derive(Debug)]
 pub struct Session {
     ctx: Context,
     model: Qwen3,
-    tok: Tokenizer,
+    tok: Arc<Tokenizer>,
     logits: Vec<f32>,
     /// Tokens cuyo KV está en la caché, en orden de posición.
     cached: Vec<u32>,
@@ -93,7 +124,7 @@ impl Session {
             }
         };
         let ctx = Context::new()?;
-        let tok = Tokenizer::from_dir(model_dir)?;
+        let tok = shared_tokenizer(model_dir)?;
         let model = Qwen3::load(&ctx, &model_dir.join("model.brasa"), limits)?;
         let vocab = model.cfg.vocab;
         let session = Self {
@@ -216,5 +247,18 @@ impl Session {
             decode_ms: t1.elapsed().as_secs_f64() * 1e3 - (ttft_ms - prefill_ms),
             stop,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenizer_se_lee_una_vez() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/qwen3-4b/tokenizer");
+        let a = shared_tokenizer(&dir).unwrap();
+        let b = shared_tokenizer(&dir.join("../tokenizer")).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "el tokenizer se volvió a leer");
     }
 }
