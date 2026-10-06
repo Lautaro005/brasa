@@ -172,7 +172,22 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
   - por capa, f16: 2K 148 → 103 µs, 16K 777 → 564 µs; q8_0: 2K 165 → 110 µs, 16K 783 → 590 µs;
   - A/B del modelo, 4 rondas alternadas: a 2K (f16) 47,1 → 50,5 tok/s (pared 21,24 → 19,82 ms);
     a 16K (q8_0) 22,9 → 26,1 tok/s.
-  Quedan ~0,1 ms para 50,8 a 2K; la cifra final se mide en T3.6 con la máquina liviana.
+  Con `profile_decode` (posición 2000, máquina liviana) queda en 50,5–50,7 tok/s.
+
+  En el harness (`brasa benchmark --ctx 2048`, 9c64fb3, todavía sin el argmax nuevo) dio 49,7 tok/s: la
+  sesión suma ~0,4 ms de CPU por token. De eso, ~0,18 ms eran el argmax greedy sobre 151 936
+  logits (210 → 30 µs, vectorizable, mismo resultado). Falta repetir el benchmark con la máquina
+  liviana: la corrida siguiente se descartó porque el escritorio usaba la GPU (WindowServer,
+  22 % de GPU; el prefill también cayó de 302 a 280 tok/s).
+
+  Probado sin éxito en esta tanda (revertido):
+  - tramos de 64 claves con las lecturas agrupadas: −7 µs por capa a 2K, peor desde 3K;
+  - grupos de V de 8 o 16 filas (presión de registros) y P en memoria threadgroup en vez de
+    `simd_shuffle`;
+  - `add_norm_prep` dentro del epílogo de los GEMV de o y down (un dispatch menos por bloque):
+    +0,07–0,1 ms, porque cada GEMV siguiente suma 320 parciales en lugar de 10;
+  - esperar el comando con espera activa en lugar de `waitUntilCompleted`: sin diferencia
+    medible y ocupa un núcleo.
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
 
