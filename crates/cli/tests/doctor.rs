@@ -18,6 +18,9 @@ fn doctor_json_tiene_los_campos() {
     assert!(hw["memory_bytes"].as_u64().unwrap() >= 8 << 30);
     assert!(hw["metal"]["apple_family"].is_string());
     assert!(v["memory"]["pressure"].is_string());
+    let t = &v["tuning"];
+    assert_eq!(t["fingerprint_id"].as_str().unwrap().len(), 16);
+    assert_eq!(t["fingerprint"]["chip"], hw["chip"]);
 }
 
 #[test]

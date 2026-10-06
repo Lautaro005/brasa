@@ -329,8 +329,11 @@ name = "brasa-tuner"
 version = "0.0.1"
 dependencies = [
  "brasa-core",
+ "brasa-kernels",
  "brasa-metal",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
