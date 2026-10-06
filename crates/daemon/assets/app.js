@@ -372,7 +372,6 @@ let messages = [];
 try { messages = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]'); } catch (_) { messages = []; }
 let controller = null;
 let streaming = false;
-let streamStart = 0;
 
 function saveChat() {
   // localStorage puede no estar disponible (modo privado, cuota): no romper la UI.
@@ -519,7 +518,6 @@ async function send() {
   messages.push(acc);
   controller = new AbortController();
   streaming = true;
-  streamStart = performance.now();
   setComposer(true);
   renderChat();
   saveChat();
@@ -556,7 +554,6 @@ async function send() {
           if (handleDelta(payload, acc)) renderChat();
         }
       }
-      $('#composer-state').textContent = 'Generando… ' + ((performance.now() - streamStart) / 1000).toFixed(1) + ' s';
       if (acc.error) throw new Error(acc.error);
     }
   } catch (e) {

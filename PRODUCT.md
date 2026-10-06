@@ -10,6 +10,7 @@ web
 
 Static HTML/CSS with minimal JS in `site/`, self-contained (pinned by the V4 brief): openable by
 double click, no build step, no CDN, no remote fonts.
+Embedded GUI in `crates/daemon/assets/` (HTML/CSS/JS compiled into the daemon, served at `/ui`, no build step).
 
 ## Users
 
