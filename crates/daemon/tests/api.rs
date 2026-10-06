@@ -21,7 +21,7 @@ fn root() -> PathBuf {
 }
 
 fn state() -> Arc<AppState> {
-    let engine = Engine::simulated(|req, emit| {
+    state_with(Engine::simulated(|req, emit| {
         if !emit(ChatEvent::Text("hola ".into())) {
             return;
         }
@@ -36,7 +36,10 @@ fn state() -> Arc<AppState> {
                 cached_tokens: 2,
             },
         });
-    });
+    }))
+}
+
+fn state_with(engine: Engine) -> Arc<AppState> {
     let tok = Tokenizer::from_dir(&root().join("fixtures/qwen3-4b/tokenizer")).unwrap();
     let model = LoadedModel {
         path: "/tmp/falso/model.brasa".into(),
@@ -250,4 +253,51 @@ async fn status_informa_modelo_plan_y_cola() {
     assert_eq!(s["queue"], json!({"pending": 0, "running": 0}));
     assert!(s["uptime_s"].as_f64().unwrap() >= 0.0);
     assert_eq!(s["commit"], "test");
+}
+
+#[tokio::test]
+async fn metrics_cuentan_un_stream_cancelado() {
+    // El engine genera hasta que el envío falla (el cliente se fue) y entonces manda el Done
+    // con el uso real, que ya no llega al handler: tiene que sumarse igual.
+    let s = state_with(Engine::simulated(|_, emit| {
+        let mut n = 0;
+        while n < 100_000 && emit(ChatEvent::Text("x".into())) {
+            n += 1;
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        emit(ChatEvent::Done {
+            reason: FinishReason::Cancelled,
+            usage: Usage {
+                input_tokens: 5,
+                output_tokens: n,
+                cached_tokens: 0,
+            },
+        });
+    }));
+    let app = brasa_daemon::router(s.clone());
+    let resp = post(
+        app.clone(),
+        "/v1/chat/completions",
+        json!({"messages": [{"role": "user", "content": "hola"}], "stream": true}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    use tokio_stream::StreamExt;
+    let mut body = resp.into_body().into_data_stream();
+    let first = body.next().await.unwrap().unwrap();
+    assert!(!first.is_empty());
+    drop(body);
+
+    let mut m = Value::Null;
+    for _ in 0..200 {
+        m = json_body(get(app.clone(), "/api/metrics").await).await;
+        if m["cancelled"] == 1 && m["generated_tokens"].as_u64() > Some(0) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(m["cancelled"], 1, "{m}");
+    assert_eq!(m["prompt_tokens"], 5, "{m}");
+    assert!(m["generated_tokens"].as_u64().unwrap() > 0, "{m}");
+    assert!(m["errors"].as_object().unwrap().is_empty(), "{m}");
 }

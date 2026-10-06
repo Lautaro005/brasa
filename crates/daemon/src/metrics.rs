@@ -17,6 +17,7 @@ struct Inner {
     prompt_tokens: u64,
     generated_tokens: u64,
     cached_tokens: u64,
+    cancelled: u64,
     errors: BTreeMap<&'static str, u64>,
     last_ttft_ms: Option<f64>,
     last_decode_tok_s: Option<f64>,
@@ -126,6 +127,24 @@ impl Metrics {
         }
     }
 
+    /// Pedido cancelado por el cliente (se desconectó durante el stream). Su uso llega aparte,
+    /// desde el hilo del modelo ([`Metrics::add_usage`]), porque el `Done` ya no se pudo entregar.
+    pub fn cancelled(&self, timer: GenTimer) {
+        self.finish(timer, None, None);
+        if let Ok(mut i) = self.inner.lock() {
+            i.cancelled += 1;
+        }
+    }
+
+    /// Suma tokens de un pedido cuyo `Done` no llegó al handler (cancelado).
+    pub fn add_usage(&self, u: Usage) {
+        if let Ok(mut i) = self.inner.lock() {
+            i.prompt_tokens += u.input_tokens as u64;
+            i.generated_tokens += u.output_tokens as u64;
+            i.cached_tokens += u.cached_tokens as u64;
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let i = self.inner.lock().expect("métricas");
         Snapshot {
@@ -137,6 +156,7 @@ impl Metrics {
             prompt_tokens: i.prompt_tokens,
             generated_tokens: i.generated_tokens,
             cached_tokens: i.cached_tokens,
+            cancelled: i.cancelled,
             ttft_ms: stats(&i.ttft, i.last_ttft_ms),
             decode_tok_s: stats(&i.decode, i.last_decode_tok_s),
             errors: i
@@ -181,6 +201,8 @@ pub struct Snapshot {
     pub generated_tokens: u64,
     /// Tokens de prompt servidos desde el prefix cache.
     pub cached_tokens: u64,
+    /// Pedidos cancelados por el cliente a mitad de la generación.
+    pub cancelled: u64,
     pub ttft_ms: Stats,
     pub decode_tok_s: Stats,
     pub errors: BTreeMap<String, u64>,
@@ -222,6 +244,23 @@ mod tests {
         );
         assert!(s.ttft_ms.last.unwrap() >= 1.0);
         assert!(s.decode_tok_s.last.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn cancelado_cuenta_pedido_y_tokens() {
+        let m = Metrics::new();
+        let mut t = m.begin("/v1/chat/completions");
+        t.on_event(&ChatEvent::Text("hola".into()));
+        m.cancelled(t);
+        m.add_usage(Usage {
+            input_tokens: 20,
+            output_tokens: 300,
+            cached_tokens: 0,
+        });
+        let s = m.snapshot();
+        assert_eq!(s.cancelled, 1);
+        assert_eq!((s.prompt_tokens, s.generated_tokens), (20, 300));
+        assert!(s.errors.is_empty());
     }
 
     #[test]

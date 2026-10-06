@@ -98,7 +98,7 @@ fn print_status(s: &Value) {
     );
     println!("ruta        {}", str_at(s, &["model", "path"]));
     let sha = str_at(s, &["model", "weights_sha256_declarado"]);
-    let sha = if sha.len() > 16 { &sha[..16] } else { sha };
+    let sha = take(sha, 16);
     println!(
         "pesos       sha256 declarado {sha}…  {}",
         gib(u64_at(s, &["model", "weights_bytes"]))
@@ -176,21 +176,9 @@ fn print_metrics(m: &Value) {
         u64_at(m, &["generated_tokens"]),
         u64_at(m, &["cached_tokens"])
     );
-    line("TTFT", &m["ttft_ms"]);
-    println!(
-        "{:<12}último {}, media {}, p50 {} (n={})",
-        "decode tok/s",
-        f64_at(&m["decode_tok_s"], &["last"])
-            .map(|v| format!("{v:.1}"))
-            .unwrap_or_else(|| "—".into()),
-        f64_at(&m["decode_tok_s"], &["mean"])
-            .map(|v| format!("{v:.1}"))
-            .unwrap_or_else(|| "—".into()),
-        f64_at(&m["decode_tok_s"], &["p50"])
-            .map(|v| format!("{v:.1}"))
-            .unwrap_or_else(|| "—".into()),
-        u64_at(&m["decode_tok_s"], &["samples"])
-    );
+    println!("cancelados  {}", u64_at(m, &["cancelled"]));
+    line("TTFT ms", &m["ttft_ms"]);
+    line("decode t/s", &m["decode_tok_s"]);
     let errors = &m["errors"];
     if errors.as_object().is_none_or(|o| o.is_empty()) {
         println!("errores     ninguno");

@@ -32,9 +32,15 @@ Tema claro y oscuro vía `prefers-color-scheme`, usable a 1280 px y en ancho de 
 
 ## Capturas
 
-Pendientes: se sacan con un `serve` real a 2K (dos turnos de chat y una cancelación). En esta
-sesión no se pudieron tomar porque la verificación con `brasa` quedó fuera de alcance por pedido
-del usuario; quedan anotadas en "Estado" de `QWEN-DEEPSEEK.md`.
+Tomadas el 2026-10-06 en M1 Pro 16 GB con `brasa serve qwen3-4b-q4 --ctx 2048` (KV f16):
+
+- [Chat de dos turnos](chat-dos-turnos.jpg): el segundo turno usa el contexto del primero.
+- [Cancelación](chat-cancelado.jpg): el botón Cancelar corta el stream, la respuesta queda
+  marcada `[cancelado]` y Enviar vuelve a estar disponible.
+- [Estado](estado.jpg): memoria (plan y presupuesto), rendimiento, servidor y sistema.
+
+Después de la cancelación, `brasa ps` y la pestaña Estado cuentan el pedido en `cancelados` y
+suman sus tokens generados.
 
 ## Revisión 2 (R2.5): qué mirar a mano
 

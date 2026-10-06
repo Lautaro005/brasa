@@ -213,6 +213,7 @@ async function refreshEstado() {
       ['decode último', num(me.decode_tok_s.last) + ' tok/s'],
       ['decode media', num(me.decode_tok_s.mean) + ' tok/s'],
       ['tokens generados', String(me.generated_tokens)],
+      ['cancelados', String(me.cancelled)],
       ['prefix cache', String(me.cached_tokens) + ' tok'],
       ['cola', st.queue.pending + ' + ' + st.queue.running],
     ]);

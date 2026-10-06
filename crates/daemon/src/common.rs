@@ -47,7 +47,11 @@ pub async fn start(
 ) -> Result<Running, (ErrorKind, String)> {
     let timer = state.metrics.begin(endpoint);
     let (tx, mut rx) = mpsc::unbounded_channel();
-    if let Err(e) = state.engine.submit(Job { req, events: tx }) {
+    if let Err(e) = state.engine.submit(Job {
+        req,
+        events: tx,
+        metrics: state.metrics.clone(),
+    }) {
         state.metrics.finish(timer, None, Some(ErrorKind::Internal));
         return Err((ErrorKind::Internal, e));
     }
@@ -161,8 +165,11 @@ pub fn sse(state: Shared, run: Running, mut enc: impl SseEncoder) -> axum::respo
         }
         if !finished {
             send_all(enc.end()).await;
+            // Cancelado: el uso lo suma el hilo del modelo al no poder entregar el Done.
+            state.metrics.cancelled(timer);
+        } else {
+            state.metrics.finish(timer, usage, error);
         }
-        state.metrics.finish(timer, usage, error);
     });
     use axum::response::IntoResponse;
     Sse::new(ReceiverStream::new(rx))

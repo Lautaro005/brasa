@@ -15,10 +15,30 @@ use brasa_runtime::{Limits, Session};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::metrics::Metrics;
+
 #[derive(Debug)]
 pub struct Job {
     pub req: ChatRequest,
     pub events: UnboundedSender<ChatEvent>,
+    /// Recibe el uso si el `Done` no se puede entregar (el cliente canceló).
+    pub metrics: Arc<Metrics>,
+}
+
+impl Job {
+    /// Envía un evento al handler. Si el cliente ya se fue y el evento es el `Done`, su uso
+    /// se suma igual a las métricas. Devuelve `false` si hay que cancelar.
+    fn send(&self, e: ChatEvent) -> bool {
+        let usage = match &e {
+            ChatEvent::Done { usage, .. } => Some(*usage),
+            _ => None,
+        };
+        let ok = self.events.send(e).is_ok();
+        if let (false, Some(u)) = (ok, usage) {
+            self.metrics.add_usage(u);
+        }
+        ok
+    }
 }
 
 /// Datos del modelo cargado que el daemon informa en `/api/status` (U1). Se completan una vez,
@@ -136,7 +156,7 @@ impl Engine {
                             if debug {
                                 log_event(&e);
                             }
-                            job.events.send(e).is_ok()
+                            job.send(e)
                         });
                     }
                     r.fetch_sub(1, Ordering::Relaxed);
@@ -173,7 +193,7 @@ impl Engine {
                     p.fetch_sub(1, Ordering::Relaxed);
                     r.fetch_add(1, Ordering::Relaxed);
                     if !job.events.is_closed() {
-                        let mut on_event = |e: ChatEvent| job.events.send(e).is_ok();
+                        let mut on_event = |e: ChatEvent| job.send(e);
                         handler(&job.req, &mut on_event);
                     }
                     r.fetch_sub(1, Ordering::Relaxed);
