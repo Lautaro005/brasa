@@ -25,6 +25,22 @@ pub fn safe_relative(path: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Un valor que se une a `models_dir` (como `name` o `hf_dir`) tiene que ser un solo componente
+/// normal: sin `/`, `.`, `..` ni rutas absolutas.
+fn validate_component(field: &str, value: &str) -> Result<()> {
+    let p = Path::new(value);
+    if value.is_empty()
+        || p.is_absolute()
+        || p.components().count() != 1
+        || matches!(value, "." | "..")
+    {
+        return Err(Error(format!(
+            "{field} {value:?}: tiene que ser un solo componente, sin `/`, `.` ni `..`"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FileSpec {
     /// Ruta dentro del repo de Hugging Face.
@@ -56,14 +72,21 @@ const BUILTIN: &[&str] = &[include_str!("../manifests/qwen3-4b-q4.toml")];
 
 impl Manifest {
     pub fn parse(text: &str) -> Result<Self> {
-        let m: Self =
+        let mut m: Self =
             toml::from_str(text).map_err(|e| Error(format!("manifiesto inválido: {e}")))?;
         m.validate()?;
+        // El sha256 calculado siempre va en minúsculas: se normaliza el del manifiesto.
+        for f in &mut m.files {
+            f.sha256 = f.sha256.to_ascii_lowercase();
+        }
         Ok(m)
     }
 
-    /// Valida los campos que el resto del código asume: sha256 de 64 hex y rutas seguras.
+    /// Valida los campos que el resto del código asume: `name`/`hf_dir` de un solo componente,
+    /// sha256 de 64 hex y rutas de archivo seguras.
     fn validate(&self) -> Result<()> {
+        validate_component("name", &self.name)?;
+        validate_component("hf_dir", &self.hf_dir)?;
         for f in &self.files {
             if f.sha256.len() != 64 || !f.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(Error(format!(
@@ -172,5 +195,52 @@ files = [{ path = "%PATH%", sha256 = "%SHA%" , size = 1}]
             .replace("%PATH%", "sub/model.safetensors")
             .replace("%SHA%", &"a".repeat(64));
         assert!(Manifest::parse(&ok).is_ok());
+    }
+
+    #[test]
+    fn rechaza_name_y_hf_dir_inseguros() {
+        let plantilla = r#"
+name = "%NAME%"
+family = "qwen3"
+source_repo = "a/b"
+source_revision = "r"
+hf_dir = "%HF%"
+max_context = 4096
+files = [{ path = "model.safetensors", sha256 = "%SHA%" }]
+"#;
+        let sha = "a".repeat(64);
+        for (name, hf) in [
+            ("ok", "../x"),
+            ("ok", "/tmp/x"),
+            ("ok", "a/b"),
+            ("..", "ok"),
+            (".", "ok"),
+            ("a/b", "ok"),
+            ("/abs", "ok"),
+        ] {
+            let t = plantilla
+                .replace("%NAME%", name)
+                .replace("%HF%", hf)
+                .replace("%SHA%", &sha);
+            assert!(
+                Manifest::parse(&t).is_err(),
+                "aceptó name={name:?} hf_dir={hf:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normaliza_el_sha256_a_minusculas() {
+        let t = r#"
+name = "x"
+family = "qwen3"
+source_repo = "a/b"
+source_revision = "r"
+hf_dir = "x-hf"
+max_context = 4096
+files = [{ path = "model.safetensors", sha256 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }]
+"#;
+        let m = Manifest::parse(t).unwrap();
+        assert_eq!(m.files[0].sha256, "a".repeat(64));
     }
 }
