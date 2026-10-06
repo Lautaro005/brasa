@@ -65,6 +65,7 @@ cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tie
 cargo run --release -p brasa-kernels --example mma_peak   # techo de simdgroup MMA del chip (f32/f16)
 cargo run --release -p brasa-models --example profile_decode -- 16000 16064 q8_0   # decode: ms/token de GPU en una posición [ctx] [kv]
 cargo run --release -p brasa-kernels --example decode_breakdown -- 2000  # decode: ms/token por kernel (×36 capas)
+cargo run --release -p brasa-kernels --example attn_decode_sweep -- [f16|q8_0|f32]  # atención de decode: µs/capa según la longitud de la caché
 
 # Baselines (ver docs/adr/0002). Pesos en models/ (gitignored):
 .venv/bin/hf download Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c --local-dir models/qwen3-4b-hf

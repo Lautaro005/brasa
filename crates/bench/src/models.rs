@@ -25,7 +25,7 @@ pub const MODELS: &[ModelSpec] = &[ModelSpec {
     mlx_path: "models/qwen3-4b-mlx-q4g32",
     mlx_quant: "MLX 4 bits, grupos de 32 (escala y bias BF16)",
     brasa_dir: "models/qwen3-4b-q4",
-    brasa_quant: "q4_0 g32 + q8_0 embeddings (.brasa, ADR 0006)",
+    brasa_quant: "q4_0 g32 + q6_0 embeddings (.brasa, ADR 0006 y 0012)",
 }];
 
 pub fn find(name: &str) -> Option<&'static ModelSpec> {

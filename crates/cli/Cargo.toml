@@ -17,15 +17,19 @@ brasa-memory.workspace = true
 brasa-tuner.workspace = true
 brasa-runtime.workspace = true
 brasa-tokenizer.workspace = true
+brasa-quant.workspace = true
 brasa-daemon.workspace = true
 brasa-catalog.workspace = true
 brasa-bench.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

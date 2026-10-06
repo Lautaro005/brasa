@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brasa</title>
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<header class="top">
+  <span class="brand">brasa</span>
+  <nav id="tabs" class="tabs">
+    <button data-tab="chat" class="active" type="button">Chat</button>
+    <button data-tab="estado" type="button">Estado</button>
+    <button data-tab="bench" type="button">Benchmarks</button>
+    <button data-tab="plan" type="button">Plan</button>
+    <button data-tab="agentes" type="button">Agentes</button>
+  </nav>
+  <span id="model-id" class="muted"></span>
+</header>
+
+<main>
+  <section id="tab-chat" class="tab active">
+    <div class="chat">
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="composer" class="composer">
+        <textarea id="input" rows="3" placeholder="Escribí un mensaje… (Enter para enviar, Shift+Enter para salto de línea)"></textarea>
+        <div class="composer-actions">
+          <button id="send" type="button" class="primary">Enviar</button>
+          <button id="cancel" type="button" disabled>Cancelar</button>
+          <button id="clear" type="button">Limpiar</button>
+        </div>
+      </div>
+      <fieldset class="params">
+        <legend>Parámetros</legend>
+        <label>max_tokens <input id="p-max" type="number" min="1" value="512"></label>
+        <label>temperature <input id="p-temp" type="number" step="0.05" min="0" value="0.7"></label>
+        <label>top_p <input id="p-topp" type="number" step="0.05" min="0" max="1" value="0.95"></label>
+        <label>top_k <input id="p-topk" type="number" min="0" value="20"></label>
+        <label>seed <input id="p-seed" type="number" min="0" placeholder="aleatoria"></label>
+        <label class="check"><input id="p-think" type="checkbox"> razonamiento (&lt;think&gt;)</label>
+      </fieldset>
+    </div>
+  </section>
+
+  <section id="tab-estado" class="tab">
+    <div class="cards">
+      <div class="card">
+        <h2>Memoria</h2>
+        <div class="bar"><div id="mem-bar" class="bar-fill"></div></div>
+        <div id="mem-legend" class="muted"></div>
+        <dl id="mem-list" class="kv"></dl>
+      </div>
+      <div class="card">
+        <h2>Rendimiento</h2>
+        <dl id="perf-list" class="kv"></dl>
+      </div>
+      <div class="card">
+        <h2>Servidor</h2>
+        <dl id="srv-list" class="kv"></dl>
+      </div>
+      <div class="card">
+        <h2>Sistema</h2>
+        <dl id="sys-list" class="kv"></dl>
+      </div>
+    </div>
+    <p id="estado-note" class="muted"></p>
+  </section>
+
+  <section id="tab-bench" class="tab">
+    <div class="row">
+      <h2>Reportes de docs/bench</h2>
+      <span id="bench-note" class="muted"></span>
+    </div>
+    <div id="bench-charts" class="charts"></div>
+    <div class="scroll">
+      <table id="bench-table">
+        <thead><tr>
+          <th>Engine</th><th>Variante</th><th>Modelo</th><th>Ctx</th>
+          <th>TTFT ms</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>Memoria GiB</th><th>Válido</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-plan" class="tab">
+    <form id="plan-form" class="params wide">
+      <label>ctx <input id="plan-ctx" type="number" min="256" step="256" value="16384"></label>
+      <label>chunk <input id="plan-chunk" type="number" min="64" step="64" value="128"></label>
+      <label>kv
+        <select id="plan-kv">
+          <option value="f16" selected>f16</option>
+          <option value="q8_0">q8_0</option>
+          <option value="f32">f32</option>
+        </select>
+      </label>
+      <label>perfil
+        <select id="plan-perfil">
+          <option value="esta" selected>esta máquina</option>
+          <option value="16gb">16 GB</option>
+          <option value="8gb">8 GB</option>
+        </select>
+      </label>
+      <button type="submit" class="primary">Calcular</button>
+    </form>
+    <pre id="plan-out" class="out">—</pre>
+  </section>
+
+  <section id="tab-agentes" class="tab">
+    <div class="row">
+      <label>ctx <input id="agents-ctx" type="number" min="256" step="256" placeholder="ctx del servidor"></label>
+      <button id="agents-load" type="button" class="primary">Generar</button>
+    </div>
+    <div id="agents-out" class="agents"></div>
+  </section>
+</main>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

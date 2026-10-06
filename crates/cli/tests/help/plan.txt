@@ -1,0 +1,34 @@
+Plan de memoria de un modelo y contexto, sin cargarlo
+
+Usage: plan [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          
+
+Options:
+      --ctx <CTX>
+          Contexto a evaluar
+          
+          [default: 4096]
+
+      --chunk <CHUNK>
+          Tokens por bloque de prefill
+          
+          [default: 128]
+
+      --kv <KV>
+          Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009)
+          
+          [default: f16]
+
+      --perfil <PERFIL>
+          Simular el presupuesto de otra Mac en lugar de medir esta
+          
+          [possible values: 8gb, 16gb]
+
+      --json
+          Salida en JSON
+
+  -h, --help
+          Print help

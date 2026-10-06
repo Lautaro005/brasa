@@ -146,11 +146,23 @@ impl Session {
                 return;
             }
         };
+        let usage = Usage {
+            input_tokens: stats.prompt_tokens,
+            output_tokens: stats.generated,
+            cached_tokens: stats.reused_tokens,
+        };
+        // Cancelado por el cliente: el Done igual lleva el uso, para las métricas del daemon.
+        let cancelled = ChatEvent::Done {
+            reason: FinishReason::Cancelled,
+            usage,
+        };
         if !alive {
+            on_event(cancelled);
             return;
         }
         for e in parser.finish() {
             if !on_event(e) {
+                on_event(cancelled);
                 return;
             }
         }
@@ -160,13 +172,6 @@ impl Session {
             StopReason::Stop if parser.tool_calls() > 0 => FinishReason::ToolCalls,
             StopReason::Stop => FinishReason::Stop,
         };
-        on_event(ChatEvent::Done {
-            reason,
-            usage: Usage {
-                input_tokens: stats.prompt_tokens,
-                output_tokens: stats.generated,
-                cached_tokens: stats.reused_tokens,
-            },
-        });
+        on_event(ChatEvent::Done { reason, usage });
     }
 }

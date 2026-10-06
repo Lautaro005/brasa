@@ -280,7 +280,7 @@ pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Respons
         },
     };
     let stream = b["stream"].as_bool().unwrap_or(false);
-    let run = match start(&s, req).await {
+    let run = match start(&s, "/v1/responses", req).await {
         Ok(r) => r,
         Err((k, m)) => {
             let st = if k == ErrorKind::Internal {
@@ -293,6 +293,7 @@ pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Respons
     };
     if stream {
         return sse(
+            s.clone(),
             run,
             RespEncoder {
                 base,
@@ -304,7 +305,7 @@ pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Respons
         )
         .into_response();
     }
-    let c = collect(run).await;
+    let c = collect(&s, run).await;
     if let Some((k, m)) = c.error {
         return error(StatusCode::INTERNAL_SERVER_ERROR, k, &m);
     }

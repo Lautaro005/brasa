@@ -1,0 +1,64 @@
+Mide TTFT, prefill, decode y memoria pico; guarda un reporte JSON en docs/bench/
+
+Usage: benchmark [OPTIONS] --ctx <CTX>
+
+Options:
+      --baseline <BASELINE>
+          Engine de referencia a medir. Sin este flag se mide Brasa
+          
+          [possible values: llama.cpp, mlx-lm]
+
+      --model <MODEL>
+          Modelo del registro del harness
+          
+          [default: qwen3-4b-q4]
+
+      --ctx <CTX>
+          Contexto total (prompt + generación). Debe existir en fixtures/bench/manifest.json
+
+      --runs <RUNS>
+          Corridas medidas (se reporta la mediana)
+          
+          [default: 3]
+
+      --warmup <WARMUP>
+          Corridas de calentamiento descartadas
+          
+          [default: 1]
+
+      --weights <WEIGHTS>
+          Ruta de pesos alternativa (por defecto, la del registro)
+
+      --engine-arg <ENGINE_ARGS>
+          Argumento extra para el engine; repetible. Ej.: --engine-arg=-ctk --engine-arg=q8_0
+
+      --label <LABEL>
+          Etiqueta de la variante (por ejemplo "kv-q8"); va al reporte y al nombre del archivo
+          
+          [default: ""]
+
+      --llama-bin <LLAMA_BIN>
+          Binario de llama.cpp
+          
+          [default: llama-completion]
+
+      --chunk <CHUNK>
+          Tokens por bloque de prefill de Brasa
+          
+          [default: 128]
+
+      --kv <KV>
+          Tipo de KV cache de Brasa: f16 (por defecto), q8_0 o f32 (ADR 0009)
+          
+          [default: f16]
+
+      --python <PYTHON>
+          Intérprete de Python con mlx-lm (venv de tools/)
+          
+          [default: .venv/bin/python]
+
+      --out-dir <OUT_DIR>
+          Carpeta de salida (por defecto docs/bench/<chip>-<ram>gb)
+
+  -h, --help
+          Print help

@@ -47,6 +47,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 tokio-stream = "0.1"
 futures = "0.3"
 sha2 = "0.11"
+toml = "0.8"
+ureq = "2"
+clap_complete = "4"
 
 [profile.release]
 lto = "thin"

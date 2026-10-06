@@ -1,0 +1,20 @@
+Lista los modelos locales y verifica sus hashes
+
+Usage: models [OPTIONS] [COMMAND]
+
+Commands:
+  verify  Recalcula los sha256 de un modelo contra su `.brasa`
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Salida en JSON
+
+      --dir <DIR>
+          Carpeta base de modelos (por defecto `$BRASA_MODELS` o `./models`)
+
+      --verify
+          Verifica el sha256 de cada modelo listado (lee los archivos enteros)
+
+  -h, --help
+          Print help

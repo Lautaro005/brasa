@@ -137,20 +137,26 @@ kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq,
 #if defined(KV_Q8)
             // Q8: producto con los int8 de cada bloque de 32 y una sola escala por bloque.
             device const char4* kq = (device const char4*)kr;
+            // Las lecturas de cada bloque van juntas antes de los productos (ver abajo, P·V).
             for (uint b = 0; b < D / 32; ++b) {
+                char4 kc[8];
+                for (uint i = 0; i < 8; ++i) kc[i] = kq[b * 8 + i];
+                float sc = kv_scale(kr, b);
                 float sb[G];
                 for (uint h = 0; h < G; ++h) sb[h] = 0.0f;
                 for (uint i = 0; i < 8; ++i) {
-                    float4 kv = float4(kq[b * 8 + i]);
+                    float4 kv = float4(kc[i]);
                     for (uint h = 0; h < G; ++h) sb[h] += dot(Qs[h * (D / 4) + b * 8 + i], kv);
                 }
-                float sc = kv_scale(kr, b);
                 for (uint h = 0; h < G; ++h) s[h] += sb[h] * sc;
             }
 #else
-            for (uint d4 = 0; d4 < D / 4; ++d4) {
-                float4 kv = kv4(kr, d4);
-                for (uint h = 0; h < G; ++h) s[h] += dot(Qs[h * (D / 4) + d4], kv);
+            // De a 4 lecturas antes de los productos (ver abajo, P·V).
+            for (uint d0 = 0; d0 < D / 4; d0 += 4) {
+                float4 kk[4];
+                for (uint u = 0; u < 4; ++u) kk[u] = kv4(kr, d0 + u);
+                for (uint u = 0; u < 4; ++u)
+                    for (uint h = 0; h < G; ++h) s[h] += dot(Qs[h * (D / 4) + d0 + u], kk[u]);
             }
 #endif
         }
@@ -164,8 +170,18 @@ kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq,
             acc[h] *= alpha;
             m[h] = mn;
         }
+        // P·V. En bloques completos, las filas de V se leen de a 4 antes de acumular: con una
+        // lectura por iteración la latencia de memoria se pagaba en serie (~60 µs fijos por capa
+        // en M1 Pro, medido con attn_decode_sweep). Mismo orden de sumas, mismos bits.
         uint n = min(32u, j1 - j0);
-        for (uint jj = 0; jj < n; ++jj) {
+        if (n == 32) {
+            for (uint jb = 0; jb < 32; jb += 4) {
+                float4 vv[4];
+                for (uint u = 0; u < 4; ++u) vv[u] = kv4(kv_row(v, (j0 + jb + u) * hkv + kh), lane);
+                for (uint u = 0; u < 4; ++u)
+                    for (uint h = 0; h < G; ++h) acc[h] += simd_shuffle(p[h], ushort(jb + u)) * vv[u];
+            }
+        } else for (uint jj = 0; jj < n; ++jj) {
             float4 vv = kv4(kv_row(v, (j0 + jj) * hkv + kh), lane);
             for (uint h = 0; h < G; ++h) acc[h] += simd_shuffle(p[h], ushort(jj)) * vv;
         }
