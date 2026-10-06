@@ -108,20 +108,35 @@ fn sampling(args: &RunArgs) -> SamplingParams {
     p
 }
 
-pub fn run(args: RunArgs) -> Result<(), String> {
-    let cfg = crate::config::Config::load()?;
+/// Valores efectivos de `run`: flag > archivo > defecto, con su origen.
+#[derive(Debug, Clone)]
+pub struct Effective {
+    pub model: crate::config::Value<String>,
+    pub ctx: crate::config::Value<usize>,
+    pub kv: crate::config::Value<brasa_runtime::KvType>,
+}
+
+/// Resuelve la configuración efectiva de `run` sin cargar nada (función pura).
+pub fn effective(args: &RunArgs, cfg: &crate::config::Config) -> Result<Effective, String> {
     let model = crate::config::pick(
         args.model.clone(),
         cfg.model.clone(),
         crate::config::DEFAULT_MODEL.to_string(),
     );
-    let ctx = crate::config::run_ctx(args.ctx, &cfg);
+    let ctx = crate::config::run_ctx(args.ctx, cfg);
     let cfg_kv = cfg.kv.as_deref().map(crate::parse_kv).transpose()?;
     let kv = crate::config::pick(
         args.kv,
         cfg_kv,
         brasa_runtime::KvType::parse(crate::config::DEFAULT_KV).expect("kv por defecto"),
     );
+    Ok(Effective { model, ctx, kv })
+}
+
+pub fn run(args: RunArgs) -> Result<(), String> {
+    let cfg = crate::config::Config::load()?;
+    let e = effective(&args, &cfg)?;
+    let (model, ctx, kv) = (e.model, e.ctx, e.kv);
     let dir = resolve_model(&model.value)?;
     let mem = MemorySampler::start(Duration::from_millis(100));
     let limits = Limits {
@@ -210,4 +225,51 @@ pub fn run(args: RunArgs) -> Result<(), String> {
         params.seed
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Section, Source};
+
+    fn args() -> RunArgs {
+        RunArgs {
+            model: None,
+            prompt: None,
+            system: None,
+            no_think: false,
+            max_tokens: 1024,
+            chunk: 128,
+            ctx: None,
+            kv: None,
+            greedy: false,
+            temp: None,
+            top_k: None,
+            top_p: None,
+            seed: None,
+        }
+    }
+
+    #[test]
+    fn effective_usa_archivo_y_flags() {
+        let cfg = Config {
+            kv: Some("q8_0".into()),
+            run: Section { ctx: Some(2048) },
+            ..Config::default()
+        };
+        // Sin flags: mandan el archivo y su [run] ctx.
+        let e = effective(&args(), &cfg).unwrap();
+        assert_eq!((e.ctx.value, e.ctx.source), (2048, Source::File));
+        assert_eq!(e.kv.value.name(), "q8_0");
+        assert_eq!(
+            (e.model.value.as_str(), e.model.source),
+            ("qwen3-4b-q4", Source::Default)
+        );
+
+        // Con flag: manda el flag.
+        let mut a = args();
+        a.ctx = Some(4096);
+        let e = effective(&a, &cfg).unwrap();
+        assert_eq!((e.ctx.value, e.ctx.source), (4096, Source::Flag));
+    }
 }

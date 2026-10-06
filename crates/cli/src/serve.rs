@@ -31,12 +31,26 @@ pub struct ServeArgs {
     kv: Option<KvType>,
 }
 
-pub fn run(a: ServeArgs) -> Result<(), String> {
-    let cfg = Config::load()?;
-    let model = config::pick(a.model, cfg.model.clone(), DEFAULT_MODEL.to_string());
-    let host = config::pick(a.host, cfg.host.clone(), DEFAULT_HOST.to_string());
+/// Valores efectivos de `serve`: flag > archivo > defecto, con su origen.
+#[derive(Debug, Clone)]
+pub struct Effective {
+    pub model: config::Value<String>,
+    pub host: config::Value<String>,
+    pub port: config::Value<u16>,
+    pub ctx: config::Value<usize>,
+    pub kv: config::Value<KvType>,
+}
+
+/// Resuelve la configuración efectiva de `serve` sin cargar nada (función pura).
+pub fn effective(a: &ServeArgs, cfg: &Config) -> Result<Effective, String> {
+    let model = config::pick(
+        a.model.clone(),
+        cfg.model.clone(),
+        DEFAULT_MODEL.to_string(),
+    );
+    let host = config::pick(a.host.clone(), cfg.host.clone(), DEFAULT_HOST.to_string());
     let port = config::pick(a.port, cfg.port, DEFAULT_PORT);
-    let ctx = config::serve_ctx(a.ctx, &cfg);
+    let ctx = config::serve_ctx(a.ctx, cfg);
     let cfg_kv = cfg
         .kv
         .as_deref()
@@ -49,6 +63,19 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
         cfg_kv,
         KvType::parse(DEFAULT_KV).expect("kv por defecto"),
     );
+    Ok(Effective {
+        model,
+        host,
+        port,
+        ctx,
+        kv,
+    })
+}
+
+pub fn run(a: ServeArgs) -> Result<(), String> {
+    let cfg = Config::load()?;
+    let e = effective(&a, &cfg)?;
+    let (model, host, port, ctx, kv) = (e.model, e.host, e.port, e.ctx, e.kv);
 
     let dir = resolve_model(&model.value)?;
     let model_id = dir
@@ -70,4 +97,47 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
         addr,
         commit: env!("BRASA_BUILD_COMMIT").to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Section, Source};
+
+    fn args(ctx: Option<usize>) -> ServeArgs {
+        ServeArgs {
+            model: None,
+            host: None,
+            port: None,
+            ctx,
+            chunk: 512,
+            kv: None,
+        }
+    }
+
+    #[test]
+    fn effective_usa_archivo_y_flags() {
+        let cfg = Config {
+            port: Some(9123),
+            kv: Some("q8_0".into()),
+            serve: Section { ctx: Some(8192) },
+            ..Config::default()
+        };
+        // Sin flags: mandan el archivo y su [serve] ctx.
+        let e = effective(&args(None), &cfg).unwrap();
+        assert_eq!((e.port.value, e.port.source), (9123, Source::File));
+        assert_eq!((e.ctx.value, e.ctx.source), (8192, Source::File));
+        assert_eq!(e.kv.value.name(), "q8_0");
+        assert_eq!(
+            (e.model.value.as_str(), e.model.source),
+            ("qwen3-4b-q4", Source::Default)
+        );
+
+        // Con flags: mandan los flags.
+        let mut a = args(Some(4096));
+        a.port = Some(8080);
+        let e = effective(&a, &cfg).unwrap();
+        assert_eq!((e.port.value, e.port.source), (8080, Source::Flag));
+        assert_eq!((e.ctx.value, e.ctx.source), (4096, Source::Flag));
+    }
 }
