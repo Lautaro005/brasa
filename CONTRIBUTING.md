@@ -2,7 +2,8 @@
 
 Brasa es el engine de inferencia local para Apple Silicon. El proyecto está en desarrollo, antes
 de 1.0: se corrige solo `main`. La arquitectura y las reglas completas están en
-[CLAUDE.md](CLAUDE.md); el plan de tareas, en [PLAN.md](PLAN.md).
+[CLAUDE.md](CLAUDE.md). El estado de cada fase y los resultados medidos están en los ADR
+([docs/adr/](docs/adr/)) y en [docs/bench/baseline.md](docs/bench/baseline.md).
 
 ## Cómo compilar
 
