@@ -183,7 +183,7 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 |---|---|---|
 | V0 | hecha | e08494a |
 | V1 | hecha | 4d8887c |
-| V2 | pendiente | |
+| V2 | hecha | 284a138 |
 | V3 | pendiente | |
 | V4 | pendiente | |
 | V5 | pendiente | |
@@ -200,6 +200,8 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 - **V1 (TODO):** definir un **contacto alternativo** de seguridad (por ejemplo, un alias o un
   buzón dedicado) para poner en `SECURITY.md`. Hoy no hay ninguno y no se publica un email
   personal.
+- **V2:** subir a `main` `.github/workflows/ci.yml` y `.github/dependabot.yml` para que la CI y
+  Dependabot se activen (no hago push). Hasta que no estén en la rama por defecto, no corren.
 
 ## Pedidos a Claude
 
