@@ -182,7 +182,7 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 | Tarea | Estado | Commit |
 |---|---|---|
 | V0 | hecha | e08494a |
-| V1 | pendiente | |
+| V1 | hecha | 4d8887c |
 | V2 | pendiente | |
 | V3 | pendiente | |
 | V4 | pendiente | |
@@ -192,6 +192,14 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 ## Pedidos al usuario
 
 (Lo que requiere publicar o cambiar la configuración del repo en GitHub.)
+
+- **V1:** habilitar el **reporte privado de vulnerabilidades** en GitHub (Settings → Security and
+  quality → Advanced Security → Private vulnerability reporting → Enable). Sin eso, el botón
+  "Report a vulnerability" de la pestaña Security no aparece y `SECURITY.md` queda sin canal de
+  reporte.
+- **V1 (TODO):** definir un **contacto alternativo** de seguridad (por ejemplo, un alias o un
+  buzón dedicado) para poner en `SECURITY.md`. Hoy no hay ninguno y no se publica un email
+  personal.
 
 ## Pedidos a Claude
 
