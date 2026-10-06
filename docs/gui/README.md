@@ -35,3 +35,18 @@ Tema claro y oscuro vía `prefers-color-scheme`, usable a 1280 px y en ancho de 
 Pendientes: se sacan con un `serve` real a 2K (dos turnos de chat y una cancelación). En esta
 sesión no se pudieron tomar porque la verificación con `brasa` quedó fuera de alcance por pedido
 del usuario; quedan anotadas en "Estado" de `QWEN-DEEPSEEK.md`.
+
+## Revisión 2 (R2.5): qué mirar a mano
+
+Estos tres arreglos son de `app.js` y no tienen test automatizado (el daemon cubre las respuestas
+de `/api/plan`, `/api/agents` y el filtrado de `/api/bench`). Con un `serve` real a 2K:
+
+- **Errores con mensaje del daemon.** En Plan, pedí un `ctx` inválido (por ejemplo `0` o vacío):
+  la salida muestra el mensaje del daemon (`ctx 0 fuera de rango…`), no un genérico `HTTP 400`.
+  Igual en Agentes con el campo de contexto vacío.
+- **Agentes arranca con el ctx real.** Al abrir la pestaña, el campo de contexto ya trae el
+  `context.ctx` del servidor (no 16384 fijo). Si se borra el campo y se recarga, no se manda
+  `ctx=` y la petición no da 400.
+- **Un error a mitad del stream.** Con una respuesta cortada, el error se muestra una sola vez
+  (nota en el mensaje del asistente), no repetido como mensaje de error aparte.
+

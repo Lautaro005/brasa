@@ -13,7 +13,15 @@ const num = (v, d = 1) => (typeof v === 'number' && isFinite(v) ? v.toFixed(d) :
 
 async function getJSON(url) {
   const r = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!r.ok) throw new Error(url + ' -> HTTP ' + r.status);
+  if (!r.ok) {
+    // El daemon devuelve {"error": "..."} en los 400: mostrarlo, no solo "HTTP 400".
+    let msg = url + ' -> HTTP ' + r.status;
+    try {
+      const j = await r.json();
+      if (j && j.error) msg = typeof j.error === 'string' ? j.error : (j.error.message || msg);
+    } catch (_) { /* el cuerpo no era JSON */ }
+    throw new Error(msg);
+  }
   return r.json();
 }
 
@@ -143,7 +151,8 @@ async function send() {
     if (e.name === 'AbortError') {
       // No se guarda dentro del contenido: se muestra aparte y no se reenvía al modelo.
       acc.cancelled = true;
-    } else {
+    } else if (!acc.error) {
+      // Si el error vino a mitad del stream, ya se muestra en la nota del mensaje: no duplicar.
       messages.push({ role: 'error', content: 'Error: ' + e.message });
     }
   } finally {
@@ -332,9 +341,11 @@ $('#plan-form').addEventListener('submit', async (e) => {
 async function loadAgents() {
   const out = $('#agents-out');
   out.innerHTML = '';
-  const ctx = $('#agents-ctx').value || '';
+  // Si el campo quedó vacío, no mandar `ctx=`: el daemon responde 400 con vacío.
+  const ctx = $('#agents-ctx').value.trim();
+  const url = ctx ? '/api/agents?ctx=' + encodeURIComponent(ctx) : '/api/agents';
   try {
-    const data = await getJSON('/api/agents?ctx=' + encodeURIComponent(ctx));
+    const data = await getJSON(url);
     for (const key of Object.keys(data.tools)) {
       const card = el('div', 'agent');
       const head = el('header');
@@ -362,6 +373,9 @@ $('#agents-load').addEventListener('click', loadAgents);
   try {
     const st = await getJSON('/api/status');
     $('#model-id').textContent = st.model.id;
+    // El contexto de la pestaña Agentes arranca con el ctx real del servidor.
+    const ac = $('#agents-ctx');
+    if (ac && st.context && st.context.ctx) ac.value = st.context.ctx;
   } catch (_) { /* el servidor puede no responder todavía */ }
   refreshEstado();
 })();
