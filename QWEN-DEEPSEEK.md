@@ -180,6 +180,7 @@ bf16 → f32 → q4), documentá exactamente por qué y no lo des por cerrado.
 | U5 | hecha | 22c2881 | `~/.config/brasa/config.toml` con precedencia flag > archivo > defecto, `[run] ctx`/`[serve] ctx` y `deny_unknown_fields` (R1.4), `brasa config show [--json]`, `brasa completions zsh|bash|fish`, `--json` en plan/models/ps/doctor y sugerencias accionables (ADR 0022). |
 | U6 | hecha | ecfbda7 | `README.md` (instalación y primeros pasos, cifras solo citando `docs/bench/baseline.md`) y `docs/guia/` (agentes, GUI, memoria y KV, problemas). Aceptación: `scripts/check-docs.sh` y un test in-process equivalente contra el árbol de clap. |
 | Revisión 1 | hecha | 937efd7 | R0 y R1 en `937efd7`, `336c441`, `d746397`, `ac2d616`, `ea1f3be`; R2 en este commit. `./scripts/ci.sh` sale 0. Detalle en "Pedidos a Claude". |
+| Revisión 2 | hecha | 6a2b848 | R2.1–R2.6 en `6a2b848`, `6fe9a88`, `6025f7b`, `0e6adb6`, `da62d17`, `117a72e`; `./scripts/ci.sh` sale 0. La sección "Revisión 2" del encargo se commiteó con R2.1. Resumen: `rm` no sigue una base con symlink (`--seguir-symlink-base`, tests con tempdir); `dechunk` sin desborde (test en debug y release); `name`/`hf_dir` del manifiesto validados y `sha256` normalizado a minúsculas; `serve::effective`/`run::effective` con test de precedencia real; GUI (mensaje de error del daemon, ctx real en Agentes, error de stream una sola vez); `/api/bench` no sigue symlinks y canonicaliza la carpeta. R2.5 es revisión manual documentada en `docs/gui/README.md` (no tiene test). |
 
 ## Pedidos a Claude
 
@@ -191,6 +192,8 @@ bf16 → f32 → q4), documentá exactamente por qué y no lo des por cerrado.
 - R0 se resolvió **sin tocar** `crates/models` ni `kernels`: se hizo `merge` de `origin/main`
   (c0333e8, `fase-3`) y se usó el `QType::Q6_0` que ya está en main; el conversor solo agrega
   `quant_q6_0` en `crates/quant/src/convert.rs`.
+- Revisión 2 (R2.1–R2.6) resuelta dentro de las zonas permitidas. R2.5 es la única sin test
+  automatizado: queda como revisión manual documentada en `docs/gui/README.md`.
 - Aceptaciones que necesitan el binario real (las hace Claude al integrar, porque el usuario pidió
   no ejecutar `brasa`):
   - `brasa ps` contra `brasa serve qwen3-4b-q4 --ctx 2048`;
