@@ -12,9 +12,20 @@ use serde_json::{Value, json};
 use crate::Shared;
 
 /// Carpeta de reportes: `$BRASA_BENCH_DIR` o `docs/bench`. Se resuelve **una vez** al arrancar,
-/// relativa a donde corre `serve`, no en cada pedido.
+/// relativa a donde corre `serve`, no en cada pedido; se canonicaliza y, si no existe, se avisa.
 pub fn resolve_dir() -> PathBuf {
-    std::env::var_os("BRASA_BENCH_DIR").map_or_else(|| PathBuf::from("docs/bench"), PathBuf::from)
+    let dir = std::env::var_os("BRASA_BENCH_DIR")
+        .map_or_else(|| PathBuf::from("docs/bench"), PathBuf::from);
+    match std::fs::canonicalize(&dir) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!(
+                "brasa: no existe la carpeta de benchmarks {} (/api/bench responderá vacío)",
+                dir.display()
+            );
+            dir
+        }
+    }
 }
 
 fn json_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -22,8 +33,13 @@ fn json_files(dir: &Path, out: &mut Vec<PathBuf>) {
         return;
     };
     for e in entries.flatten() {
+        // `file_type()` no sigue symlinks: evita ciclos como `bucle -> .`.
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
         let p = e.path();
-        if p.is_dir() {
+        if ft.is_dir() {
             json_files(&p, out);
         } else if p.extension().is_some_and(|x| x == "json") {
             out.push(p);
@@ -125,17 +141,28 @@ mod tests {
 
     #[test]
     fn extrae_resumen_de_un_reporte() {
-        let dir = Path::new("/tmp");
-        let p = Path::new("/tmp/x.json");
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("x.json");
         let json = r#"{"schema":1,"timestamp":"t","machine":{"chip":"M1 Pro"},"engine":{"name":"brasa","label":""},"model":{"name":"qwen3-4b-q4","quant":"q4_0"},"ctx":2048,"prompt_tokens":1920,"gen_tokens":128,"summary":{"ttft_ms":{"median":900.0,"min":1,"max":2},"prefill_tok_s":{"median":500.0},"decode_tok_s":{"median":40.0},"peak_footprint_bytes":{"median":3.0e9}},"valid":false,"invalid_reasons":["swap"]}"#;
-        let v: Value = serde_json::from_str(json).unwrap();
-        let text = v.to_string();
-        std::fs::write(p, text).unwrap();
-        let r = one(dir, p).unwrap();
+        std::fs::write(&p, json).unwrap();
+        let r = one(tmp.path(), &p).unwrap();
         assert_eq!(r["decode_tok_s"], 40.0);
         assert_eq!(r["engine"], "brasa");
         assert_eq!(r["valid"], false);
-        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn no_sigue_symlinks_de_carpeta() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("reporte.json"),
+            r#"{"schema":1,"engine":{"name":"brasa"},"model":{},"summary":{}}"#,
+        )
+        .unwrap();
+        // Un ciclo `bucle -> .`: si `json_files` siguiera symlinks, no terminaría.
+        std::os::unix::fs::symlink(".", tmp.path().join("bucle")).unwrap();
+        let v = load(tmp.path());
+        assert_eq!(v["reports"].as_array().unwrap().len(), 1);
     }
 
     #[test]
