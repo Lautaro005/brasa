@@ -10,12 +10,26 @@ use serde_json::Value;
 /// Hace `GET path` a `host:port` y devuelve el cuerpo de la respuesta (error si el estado no
 /// es 2xx).
 pub fn get(host: &str, port: u16, path: &str) -> Result<String, String> {
+    request("GET", host, port, path)
+}
+
+/// Hace `POST path` sin cuerpo (para las órdenes del Model Manager, ADR 0025).
+pub fn post(host: &str, port: u16, path: &str) -> Result<String, String> {
+    request("POST", host, port, path)
+}
+
+fn request(method: &str, host: &str, port: u16, path: &str) -> Result<String, String> {
     let addr = format!("{host}:{port}");
     let mut stream = TcpStream::connect(&addr)
         .map_err(|e| format!("no se pudo conectar a {addr}: {e}. ¿Corriste `brasa serve`?"))?;
     stream.set_read_timeout(Some(Duration::from_secs(15))).ok();
+    let len = if method == "POST" {
+        "Content-Length: 0\r\n"
+    } else {
+        ""
+    };
     let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json\r\n{len}Connection: close\r\n\r\n"
     );
     stream
         .write_all(req.as_bytes())

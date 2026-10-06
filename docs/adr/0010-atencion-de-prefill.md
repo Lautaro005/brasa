@@ -79,3 +79,54 @@ en f32, y achicar la memoria threadgroup tampoco ayuda. Lo que le da ventaja a l
 equipo no es la precisión. Queda para un intento futuro, con perfilado (Xcode GPU counters) antes
 de tocar el kernel. Con esto no hay ninguna decisión de precisión pendiente en la atención.
 
+
+## Perfilado y nuevos intentos (2026-10-06)
+
+`flash_attention` T=512 en M1 Pro 16 GB, macOS 27.0, KV f16. Medido con
+`cargo run --release -p brasa-kernels --example flash_sweep`:
+
+- 1130–1190 GFLOP/s desde 2K;
+- 2,3 ms por capa en pos0 = 0;
+- 115–120 ms por capa en pos0 = 15 872.
+
+En el prefill de 16K del harness (TTFT de 118 s), la atención es ~60 % del tiempo y los GEMM ~38 %.
+Es una estimación por microbenchmarks, no una medición del forward.
+
+**Contadores de GPU.** Tomados con `xctrace` e instrumento Metal GPU Counters, solo en las muestras
+con Compute Occupancy ≥ 20 % (los contadores son de toda la GPU, y el escritorio y el tiempo ocioso
+diluyen el promedio):
+
+| Contador | % |
+|---|---:|
+| Compute Occupancy | 10–23 durante el kernel |
+| ALU utilization | ~19 |
+| ALU limiter | ~21 |
+| Texture cache limiter | ~29 |
+| GPU last level cache limiter | ~21 |
+
+Ningún limitador satura: el kernel está limitado por latencia con ocupación baja.
+
+Probado sin mejora (revertido):
+
+| Cambio | T=512 a 16K |
+|---|---:|
+| base | 1134 GFLOP/s |
+| claves repartidas entre simdgroups, O completa por simdgroup, sin barreras en el bucle (estilo flash-decoding), 16 filas | 224 (se derraman registros) |
+| ídem con 8 filas | 371 |
+| 8 filas por threadgroup (`FA_ROWS` = 8, como `NQPSG` de llama.cpp) | 1167 (ruido) |
+| +8 KiB de memoria threadgroup de relleno (para ver si la ocupación depende de ella) | 1183 (sin caída) |
+
+- **Registros.** Sin `max_total_threads_per_threadgroup`, el compilador admite 896 hilos por
+  threadgroup, así que no parecen el límite.
+- **Memoria threadgroup.** El relleno no empeora nada, así que tampoco lo es, salvo que el
+  compilador elimine el arreglo.
+- **Lo que queda por entender.** Por qué la ocupación de cómputo no pasa de ~20 %.
+- **Diferencias con llama.cpp** (fuente en `~/.unsloth/llama.cpp`, MIT; solo se leyó la
+  estructura):
+  - usa 8 queries de una cabeza por threadgroup;
+  - usa Q, K y P en `half`;
+  - saltea los bloques enmascarados con una máscara por bloques precalculada.
+
+  Esto último no aplica a nuestro prefill causal, que ya recorre solo hasta `kend`.
+- **Siguiente intento sugerido.** Una captura de GPU de Xcode con los contadores por kernel
+  (occupancy manager, registros por hilo) en lugar de los contadores globales.

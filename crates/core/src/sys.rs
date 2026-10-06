@@ -83,7 +83,8 @@ mod tests {
 
     #[test]
     fn reads_known_sysctls() {
-        assert!(sysctl_u64("hw.memsize").unwrap() >= 8 << 30);
+        // Valor plausible, no el de las Macs del proyecto: el runner de CI de GitHub tiene 7 GB.
+        assert!(sysctl_u64("hw.memsize").unwrap() >= 1 << 30);
         assert!(sysctl_string("kern.osproductversion").is_some());
         assert_eq!(sysctl_u64("hw.pagesize"), Some(16384));
         assert!(sysctl_u64("no.existe.esto").is_none());

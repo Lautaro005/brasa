@@ -8,7 +8,9 @@ mod common;
 pub mod connect;
 pub mod engine;
 mod metrics;
+mod model;
 mod openai;
+mod origin;
 mod plan;
 mod responses;
 mod status;
@@ -66,6 +68,8 @@ pub struct AppState {
     pub started: Instant,
     pub version: String,
     pub commit: String,
+    /// Señal de apagado ordenado (la dispara `POST /api/model/stop`, ADR 0025).
+    pub shutdown: Arc<tokio::sync::Notify>,
 }
 
 /// Datos de configuración del servidor que se fijan al arrancar.
@@ -96,6 +100,7 @@ impl AppState {
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             commit: meta.commit,
+            shutdown: Arc::new(tokio::sync::Notify::new()),
         })
     }
 }
@@ -128,6 +133,11 @@ pub fn router(state: Shared) -> Router {
         .route("/api/plan", get(plan::plan))
         .route("/api/bench", get(bench::bench))
         .route("/api/agents", get(connect::agents))
+        .route("/api/model/load", post(model::load))
+        .route("/api/model/idle", post(model::idle))
+        .route("/api/model/pause", post(model::pause))
+        .route("/api/model/resume", post(model::resume))
+        .route("/api/model/stop", post(model::stop))
         .route("/ui", get(ui::index))
         .route("/ui/", get(ui::index))
         .route("/ui/app.css", get(ui::css))
@@ -137,6 +147,10 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/responses", post(responses::create))
         .route("/v1/messages", post(anthropic::messages))
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            origin::local_only,
+        ))
         .with_state(state)
 }
 
@@ -190,6 +204,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         commit: cfg.commit.clone(),
     };
     let state = AppState::new(engine, tok, model, meta);
+    let shutdown = state.shutdown.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -204,8 +219,11 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         );
         eprintln!("GUI: http://{}/ui", cfg.addr);
         axum::serve(listener, router(state))
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
+            .with_graceful_shutdown(async move {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = shutdown.notified() => {}
+                }
             })
             .await
             .map_err(|e| e.to_string())

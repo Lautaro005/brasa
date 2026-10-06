@@ -35,6 +35,22 @@ brasa serve qwen3-4b-q4 --ctx 16384 --kv q8_0
 - **8 GB:** validar cada cambio también acá; conviene mirar la presión con `brasa doctor` antes de
   medir.
 
+## Liberar memoria sin cerrar el daemon
+
+`brasa model` le manda órdenes a un `serve` corriendo (ADR 0025):
+
+```bash
+brasa model idle      # suelta pesos y KV; el daemon sigue vivo y atendiendo /api/*
+brasa model load      # los vuelve a cargar con el plan de memoria
+brasa model pause     # frena la cola sin descargar el modelo
+brasa model resume    # la vuelve a mover
+brasa model stop      # apaga el daemon de forma ordenada
+```
+
+Con el modelo en `idle`, el próximo pedido a `/v1/*` lo vuelve a cargar solo: el cliente solo ve más
+latencia en ese pedido. En `pause`, los pedidos quedan encolados hasta el `resume`. `brasa ps` y
+`/api/status` informan el estado del modelo (`loaded`, `idle`, `paused`, `stopped`).
+
 ## Valores por defecto
 
 El modelo, el contexto, el puerto y el KV se pueden fijar en `~/.config/brasa/config.toml`. Los

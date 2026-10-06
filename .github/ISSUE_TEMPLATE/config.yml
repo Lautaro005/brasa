@@ -1,0 +1,6 @@
+# Manda los temas de seguridad al canal correcto y desalienta el issue en blanco.
+blank_issues_enabled: false
+contact_links:
+  - name: "Seguridad: no abras un issue público"
+    url: https://github.com/Lautaro005/brasa/blob/main/SECURITY.md
+    about: 'Leé SECURITY.md y reportá por el botón "Report a vulnerability" de la pestaña Security.'
