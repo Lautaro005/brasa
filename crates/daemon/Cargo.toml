@@ -9,6 +9,8 @@ rust-version.workspace = true
 
 [dependencies]
 brasa-core.workspace = true
+brasa-memory.workspace = true
+brasa-quant.workspace = true
 brasa-runtime.workspace = true
 brasa-tokenizer.workspace = true
 brasa-catalog.workspace = true
@@ -18,6 +20,10 @@ tokio-stream.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -1,0 +1,20 @@
+Borra un modelo local (pide confirmación)
+
+Usage: rm [OPTIONS] <MODEL>
+
+Arguments:
+  <MODEL>
+          
+
+Options:
+      --dir <DIR>
+          Carpeta base de modelos
+
+  -y, --yes
+          No pedir confirmación
+
+      --seguir-symlink-base
+          Permitir que la carpeta de modelos pase por un symlink (por defecto `rm` se niega)
+
+  -h, --help
+          Print help

@@ -1,0 +1,10 @@
+Muestra chip, núcleos, RAM, macOS, familia Metal y presión de memoria
+
+Usage: doctor [OPTIONS]
+
+Options:
+      --json
+          Salida en JSON
+
+  -h, --help
+          Print help

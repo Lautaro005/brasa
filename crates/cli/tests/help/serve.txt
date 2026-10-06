@@ -1,0 +1,28 @@
+API local compatible con OpenAI y Anthropic para agentes
+
+Usage: serve [OPTIONS] [MODEL]
+
+Arguments:
+  [MODEL]
+          Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta. Sin esto, el del archivo de configuración
+
+Options:
+      --host <HOST>
+          Dirección a escuchar (por defecto 127.0.0.1)
+
+      --port <PORT>
+          Puerto (por defecto 8080)
+
+      --ctx <CTX>
+          Contexto (los agentes mandan prompts de 10K–30K tokens). El planner lo verifica
+
+      --chunk <CHUNK>
+          Tokens por bloque de prefill
+          
+          [default: 512]
+
+      --kv <KV>
+          Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009)
+
+  -h, --help
+          Print help

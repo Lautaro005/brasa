@@ -1,0 +1,16 @@
+Estado y métricas de un `serve` corriendo (endpoints /api/status y /api/metrics)
+
+Usage: ps [OPTIONS]
+
+Options:
+      --host <HOST>
+          Host del `serve` (por defecto el del archivo de configuración o 127.0.0.1)
+
+      --port <PORT>
+          Puerto del `serve` (por defecto el del archivo de configuración o 8080)
+
+      --json
+          Imprime las respuestas crudas en JSON
+
+  -h, --help
+          Print help

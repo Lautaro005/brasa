@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta.
-    model: String,
+    /// Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta. Sin esto, el
+    /// del archivo de configuración.
+    model: Option<String>,
     /// Mensaje del usuario; sin esto, modo interactivo.
     #[arg(long, short)]
     prompt: Option<String>,
@@ -28,14 +29,14 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 1024)]
     max_tokens: usize,
     /// Contexto (posiciones de la KV cache).
-    #[arg(long, default_value_t = 4096)]
-    ctx: usize,
+    #[arg(long)]
+    ctx: Option<usize>,
     /// Tokens por bloque de prefill.
     #[arg(long, default_value_t = 128)]
     chunk: usize,
     /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
-    #[arg(long, default_value = "f16", value_parser = crate::parse_kv)]
-    kv: brasa_runtime::KvType,
+    #[arg(long, value_parser = crate::parse_kv)]
+    kv: Option<brasa_runtime::KvType>,
     /// Greedy (temperatura 0); ignora temp/top-k/top-p.
     #[arg(long)]
     greedy: bool,
@@ -50,19 +51,31 @@ pub struct RunArgs {
     seed: Option<u64>,
 }
 
+/// Carpeta base de modelos: `$BRASA_MODELS` o `./models`.
+pub fn models_dir() -> PathBuf {
+    PathBuf::from(std::env::var("BRASA_MODELS").unwrap_or_else(|_| "models".into()))
+}
+
 pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
     let direct = Path::new(name);
     if direct.join("model.brasa").exists() {
         return Ok(direct.to_path_buf());
     }
-    let base = std::env::var("BRASA_MODELS").unwrap_or_else(|_| "models".into());
-    let p = Path::new(&base).join(name);
+    let base = models_dir();
+    let p = base.join(name);
     if p.join("model.brasa").exists() {
         return Ok(p);
     }
+    // La carpeta de safetensors de Hugging Face sale del manifiesto si existe.
+    let hf = brasa_catalog::manifest::Manifest::find(name)
+        .map_or_else(|_| format!("{name}-hf"), |m| m.hf_dir);
     Err(format!(
-        "no se encontró el modelo {name:?} (buscado en {} y como ruta). Convertilo con tools/convert_brasa.py",
-        p.display()
+        "no se encontró el modelo {name:?} (buscado en {} y como ruta).\n\
+         Sugerencia: corré `brasa models` para ver los locales, o `brasa pull {name}` y \
+         `brasa convert {} {}` para bajarlo y convertirlo.",
+        p.display(),
+        base.join(&hf).display(),
+        base.join(name).display()
     ))
 }
 
@@ -95,16 +108,44 @@ fn sampling(args: &RunArgs) -> SamplingParams {
     p
 }
 
+/// Valores efectivos de `run`: flag > archivo > defecto, con su origen.
+#[derive(Debug, Clone)]
+pub struct Effective {
+    pub model: crate::config::Value<String>,
+    pub ctx: crate::config::Value<usize>,
+    pub kv: crate::config::Value<brasa_runtime::KvType>,
+}
+
+/// Resuelve la configuración efectiva de `run` sin cargar nada (función pura).
+pub fn effective(args: &RunArgs, cfg: &crate::config::Config) -> Result<Effective, String> {
+    let model = crate::config::pick(
+        args.model.clone(),
+        cfg.model.clone(),
+        crate::config::DEFAULT_MODEL.to_string(),
+    );
+    let ctx = crate::config::run_ctx(args.ctx, cfg);
+    let cfg_kv = cfg.kv.as_deref().map(crate::parse_kv).transpose()?;
+    let kv = crate::config::pick(
+        args.kv,
+        cfg_kv,
+        brasa_runtime::KvType::parse(crate::config::DEFAULT_KV).expect("kv por defecto"),
+    );
+    Ok(Effective { model, ctx, kv })
+}
+
 pub fn run(args: RunArgs) -> Result<(), String> {
-    let dir = resolve_model(&args.model)?;
+    let cfg = crate::config::Config::load()?;
+    let e = effective(&args, &cfg)?;
+    let (model, ctx, kv) = (e.model, e.ctx, e.kv);
+    let dir = resolve_model(&model.value)?;
     let mem = MemorySampler::start(Duration::from_millis(100));
     let limits = Limits {
-        ctx: args.ctx,
+        ctx: ctx.value,
         max_tokens: args.chunk,
         max_logit_rows: 1,
-        kv: args.kv,
+        kv: kv.value,
     };
-    eprintln!("cargando {} (contexto {}) ...", dir.display(), args.ctx);
+    eprintln!("cargando {} (contexto {}) ...", dir.display(), ctx.value);
     let mut session = Session::load(&dir, limits).map_err(|e| e.to_string())?;
     let params = sampling(&args);
     let mut sampler = Sampler::new(params, session.vocab());
@@ -184,4 +225,51 @@ pub fn run(args: RunArgs) -> Result<(), String> {
         params.seed
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Section, Source};
+
+    fn args() -> RunArgs {
+        RunArgs {
+            model: None,
+            prompt: None,
+            system: None,
+            no_think: false,
+            max_tokens: 1024,
+            chunk: 128,
+            ctx: None,
+            kv: None,
+            greedy: false,
+            temp: None,
+            top_k: None,
+            top_p: None,
+            seed: None,
+        }
+    }
+
+    #[test]
+    fn effective_usa_archivo_y_flags() {
+        let cfg = Config {
+            kv: Some("q8_0".into()),
+            run: Section { ctx: Some(2048) },
+            ..Config::default()
+        };
+        // Sin flags: mandan el archivo y su [run] ctx.
+        let e = effective(&args(), &cfg).unwrap();
+        assert_eq!((e.ctx.value, e.ctx.source), (2048, Source::File));
+        assert_eq!(e.kv.value.name(), "q8_0");
+        assert_eq!(
+            (e.model.value.as_str(), e.model.source),
+            ("qwen3-4b-q4", Source::Default)
+        );
+
+        // Con flag: manda el flag.
+        let mut a = args();
+        a.ctx = Some(4096);
+        let e = effective(&a, &cfg).unwrap();
+        assert_eq!((e.ctx.value, e.ctx.source), (4096, Source::Flag));
+    }
 }

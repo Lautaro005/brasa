@@ -1,0 +1,23 @@
+Convierte safetensors de Hugging Face al formato nativo `.brasa` (sin Python)
+
+Usage: convert [OPTIONS] <SRC> <DST>
+
+Arguments:
+  <SRC>
+          Carpeta con los safetensors de Hugging Face (config.json, index.json y shards)
+
+  <DST>
+          Carpeta de salida (`model.brasa`, `tokenizer.json`, `tokenizer_config.json`)
+
+Options:
+      --source-repo <SOURCE_REPO>
+          Repo de origen (por defecto, el del manifiesto del modelo)
+
+      --source-commit <SOURCE_COMMIT>
+          Revisión de origen (por defecto, la del manifiesto del modelo)
+
+      --json
+          Salida en JSON
+
+  -h, --help
+          Print help

@@ -1,0 +1,51 @@
+Chat con un modelo en la terminal
+
+Usage: run [OPTIONS] [MODEL]
+
+Arguments:
+  [MODEL]
+          Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta. Sin esto, el del archivo de configuración
+
+Options:
+  -p, --prompt <PROMPT>
+          Mensaje del usuario; sin esto, modo interactivo
+
+      --system <SYSTEM>
+          Mensaje de sistema
+
+      --no-think
+          Desactiva el razonamiento (`enable_thinking = false`)
+
+      --max-tokens <MAX_TOKENS>
+          Tokens máximos por respuesta
+          
+          [default: 1024]
+
+      --ctx <CTX>
+          Contexto (posiciones de la KV cache)
+
+      --chunk <CHUNK>
+          Tokens por bloque de prefill
+          
+          [default: 128]
+
+      --kv <KV>
+          Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009)
+
+      --greedy
+          Greedy (temperatura 0); ignora temp/top-k/top-p
+
+      --temp <TEMP>
+          
+
+      --top-k <TOP_K>
+          
+
+      --top-p <TOP_P>
+          
+
+      --seed <SEED>
+          Semilla; por defecto, una distinta por ejecución (se informa al final)
+
+  -h, --help
+          Print help
