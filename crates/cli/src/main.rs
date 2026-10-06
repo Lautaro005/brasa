@@ -8,6 +8,7 @@ mod connect;
 mod convert;
 mod doctor;
 mod http;
+mod model;
 mod models;
 mod plan;
 mod ps;
@@ -52,6 +53,8 @@ enum Command {
     Serve(serve::ServeArgs),
     /// Estado y métricas de un `serve` corriendo (endpoints /api/status y /api/metrics).
     Ps(ps::PsArgs),
+    /// Model Manager de un `serve` corriendo: carga, libera, pausa, reanuda o apaga el modelo.
+    Model(model::ModelArgs),
     /// Lista los modelos locales y verifica sus hashes.
     Models(models::ModelsArgs),
     /// Descarga un modelo de Hugging Face según su manifiesto.
@@ -83,6 +86,12 @@ fn main() {
         }
         Command::Ps(args) => {
             if let Err(e) = ps::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Model(args) => {
+            if let Err(e) = model::run(args) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

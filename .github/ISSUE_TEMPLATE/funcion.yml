@@ -1,0 +1,29 @@
+name: Pedido de función
+description: Una idea o una mejora.
+title: "[función] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Contá el **caso de uso**, no solo la solución. Si toca el camino caliente (kernels, memoria,
+        atención), mirá [CLAUDE.md](../CLAUDE.md): un kernel nuevo entra con referencia CPU, test de
+        equivalencia y microbenchmark, y nada se afirma sin medir.
+  - type: textarea
+    id: problema
+    attributes:
+      label: Qué problema resuelve
+      description: El caso de uso y quién lo necesita.
+    validations:
+      required: true
+  - type: textarea
+    id: propuesta
+    attributes:
+      label: Propuesta
+    validations:
+      required: false
+  - type: textarea
+    id: alternativas
+    attributes:
+      label: Alternativas consideradas
+    validations:
+      required: false

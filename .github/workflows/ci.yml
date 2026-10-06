@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Los runners de GitHub no dan una GPU Metal utilizable: acá solo corre lo que no la necesita.
+# Ver docs/adr/0024-ci-en-github-actions.md.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sin-gpu:
+    name: fmt + clippy + build + tests sin GPU
+    # macOS arm64 (Apple Silicon) estándar: macos-15 es M1, 3 CPU y 7 GB. Los tests que crean un
+    # dispositivo Metal no corren en CI.
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Toolchain
+        # rust-toolchain.toml fija "stable" con rustfmt y clippy; el runner ya trae rustup.
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+      - name: Formato
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Compilar
+        run: cargo build --workspace
+      - name: Tests sin GPU
+        # Crates que no dependen de brasa-metal (core, quant, tokenizer, catalog): corren sin
+        # dispositivo Metal. El resto se prueba local, donde sí hay GPU.
+        run: cargo test -p brasa-core -p brasa-quant -p brasa-tokenizer -p brasa-catalog

@@ -18,6 +18,7 @@ pub async fn status(State(s): State<Shared>) -> Response {
         "version": s.version,
         "commit": s.commit,
         "uptime_s": s.started.elapsed().as_secs_f64(),
+        "state": s.engine.state(),
         "model": {
             "id": s.model_id,
             "path": model.path,

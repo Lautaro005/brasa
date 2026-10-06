@@ -1,0 +1,21 @@
+Model Manager de un `serve` corriendo: carga, libera, pausa, reanuda o apaga el modelo
+
+Usage: model [OPTIONS] <COMMAND>
+
+Commands:
+  load    Carga el modelo con el plan de memoria
+  idle    Libera los pesos y la KV; el daemon sigue vivo
+  pause   Frena la cola sin descargar el modelo
+  resume  Vuelve a sacar trabajos de la cola
+  stop    Apaga el daemon de forma ordenada
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --host <HOST>
+          Host del `serve` (por defecto el del archivo de configuración o 127.0.0.1)
+
+      --port <PORT>
+          Puerto del `serve` (por defecto el del archivo de configuración o 8080)
+
+  -h, --help
+          Print help

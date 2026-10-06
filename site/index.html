@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brasa — engine de inferencia local para Apple Silicon</title>
+<meta name="description" content="Brasa es un engine de inferencia local en Rust sobre Metal, con API compatible con OpenAI y Anthropic, para correr agentes de código contra un modelo en tu Mac.">
+<style>
+  :root{
+    --case:#17150f; --case-2:#100e0a; --rail:#26231b;
+    --panel:#d7d4cd; --panel-hi:#e9e7e2; --panel-lo:#bdbab2;
+    --edge:#8b887f; --ink:#17150f; --ink-2:#46433c;
+    --amber:#b8701a; --amber-hi:#e0a03a; --amber-deep:#8a5210; --led-on:#1c7f47; --led-off:#a5a299;
+    --over:#ac3527; --paper:#eae5db; --paper-2:#a7a298;
+    --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --u:clamp(16px,1.05vw,19px);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:
+      radial-gradient(1200px 600px at 78% -8%, #241f16 0%, transparent 60%),
+      linear-gradient(180deg,var(--case) 0%, var(--case-2) 100%);
+    background-attachment:fixed;
+    color:var(--paper); font-family:var(--sans); font-size:var(--u); line-height:1.55;
+    letter-spacing:.005em;
+  }
+  ::selection{background:var(--amber);color:#120f0a}
+  a{color:inherit}
+
+  /* ---------- rack frame ---------- */
+  .case{max-width:1240px;margin:0 auto;padding:0 clamp(12px,3vw,34px) 40px}
+  .rails{position:relative}
+  .rails::before,.rails::after{
+    content:"";position:absolute;top:0;bottom:0;width:16px;
+    background:
+      radial-gradient(circle at 50% 12px, #3a3529 0 2.4px, transparent 2.6px) 0 0/16px 56px repeat-y,
+      linear-gradient(90deg,#2c2820,#191712 55%,#0d0b08);
+    box-shadow:inset 0 0 8px rgba(0,0,0,.7);
+  }
+  .rails::before{left:0}.rails::after{right:0}
+  @media (max-width:760px){.rails::before,.rails::after{display:none}}
+
+  /* ---------- top plate ---------- */
+  .top{
+    display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;justify-content:space-between;
+    padding:14px 0 26px;border-bottom:1px solid #322d22;
+  }
+  .brandline{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .wordmark{
+    font-weight:800;font-size:1.45rem;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--panel-hi);
+    text-shadow:0 1px 0 #000, 0 -1px 0 rgba(255,255,255,.10);
+  }
+  .modelplate{
+    font-family:var(--mono);font-size:.78rem;letter-spacing:.04em;
+    color:var(--paper-2);border:1px solid #3a342719;border-color:#3a3427;border-radius:4px;
+    padding:4px 8px;background:#100e0a70;
+  }
+  nav.pages{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+  nav.pages a{
+    font-family:var(--mono);font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--paper-2);text-decoration:none;padding:6px 8px;border-radius:4px;
+    border:1px solid transparent;
+  }
+  nav.pages a:hover{color:var(--paper);border-color:#3a3427}
+  .lang{display:flex;border:1px solid #3a3427;border-radius:999px;overflow:hidden}
+  .lang button{
+    font-family:var(--mono);font-size:.78rem;letter-spacing:.1em;background:transparent;color:var(--paper-2);
+    border:0;padding:6px 11px;cursor:pointer;
+  }
+  .lang button[aria-pressed="true"]{background:var(--panel);color:var(--ink)}
+
+  /* ---------- hero ---------- */
+  .hero{padding:clamp(34px,5vw,62px) 0 clamp(18px,3vw,30px)}
+  h1{
+    margin:0 0 .5em;font-size:clamp(2.05rem,4.6vw,3.6rem);line-height:1.03;
+    letter-spacing:-.03em;font-weight:790;max-width:19ch;color:#fbf8f2;
+  }
+  h1 em{font-style:normal;color:var(--amber-hi)}
+  .lede{margin:0;max-width:60ch;color:#d3cec3}
+  .cta{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin:26px 0 34px}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    font-family:var(--mono);font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;
+    background:linear-gradient(180deg,var(--panel-hi),var(--panel-lo));
+    color:var(--ink);text-decoration:none;border:1px solid var(--edge);border-radius:6px;
+    padding:12px 18px;font-weight:700;
+    box-shadow:0 2px 6px rgba(0,0,0,.35), inset 0 1px 0 #ffffffaa;
+  }
+  .btn:hover{filter:brightness(1.05)}
+  .btn:active{transform:translateY(1px);box-shadow:0 1px 3px rgba(0,0,0,.3),inset 0 1px 0 #ffffffaa}
+  .btn svg{width:13px;height:13px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .cta-note{font-family:var(--mono);font-size:.8rem;color:var(--paper-2);letter-spacing:.04em}
+
+  /* ---------- aluminum units ---------- */
+  .unit{
+    position:relative;margin:0 0 clamp(20px,3vw,34px);padding:3px;
+    background:
+      linear-gradient(180deg,var(--panel-hi) 0%, var(--panel) 12%, var(--panel) 88%, var(--panel-lo) 100%);
+    background-color:var(--panel);
+    border:1px solid var(--edge);border-radius:7px;color:var(--ink);
+    box-shadow:0 3px 8px rgba(0,0,0,.4), inset 0 1px 0 #ffffffcc, inset 0 -2px 0 #00000018;
+  }
+  .unit::before,.unit::after{
+    content:"";position:absolute;width:8px;height:8px;border-radius:50%;top:9px;
+    background:radial-gradient(circle at 35% 30%, #f3f1ec, #9c988e 60%, #6d6a62);
+    box-shadow:inset 0 -1px 1px #00000066, 0 1px 0 #ffffff88;
+  }
+  .unit::before{left:10px}.unit::after{right:10px}
+  .unit > .body{position:relative;padding:clamp(20px,2.4vw,30px)}
+  .plate-strip{
+    display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    padding:12px clamp(20px,2.4vw,30px);border-bottom:1px solid #00000022;
+  }
+  .plate-strip h2{
+    margin:0;font-size:.84rem;letter-spacing:.2em;text-transform:uppercase;font-weight:800;
+    font-family:var(--mono);color:var(--ink);
+    text-shadow:0 1px 0 #ffffffaa;
+  }
+  .plate-strip .hint{margin:0;font-family:var(--mono);font-size:.78rem;color:var(--ink-2)}
+
+  h3{margin:0 0 .35em;font-size:1.08rem;letter-spacing:-.01em}
+  .grid2{display:grid;gap:clamp(18px,3vw,34px);grid-template-columns:minmax(0,1.05fr) minmax(0,1fr)}
+  @media (max-width:820px){.grid2{grid-template-columns:minmax(0,1fr)}}
+  p{margin:0 0 .8em}
+  .muted{color:var(--ink-2)}
+
+  /* ---------- patchbay ---------- */
+  .pb-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 24px;align-items:end;margin-bottom:20px}
+  @media (max-width:820px){.pb-head{grid-template-columns:minmax(0,1fr)}}
+  .pb-in-label{font-family:var(--mono);font-size:.78rem;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-2);text-align:right}
+  @media (max-width:820px){.pb-in-label{text-align:left}}
+  .pb-rows{display:flex;flex-direction:column;gap:2px;border:1px solid #00000026;border-radius:6px;background:#00000008;padding:8px}
+  .pb-row{display:grid;grid-template-columns:minmax(0,13.5rem) minmax(0,1fr);gap:12px;align-items:center;padding:5px 6px;border-radius:5px;position:relative}
+  @media (max-width:600px){.pb-row{grid-template-columns:minmax(0,10.5rem) minmax(0,1fr);gap:8px}.pb-in-w{display:none}}
+  .jack{
+    appearance:none;font:inherit;cursor:pointer;text-align:left;width:100%;
+    display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:5px;
+    background:linear-gradient(180deg,#cbc8c0,#b5b2aa);border:1px solid #7f7c74;color:var(--ink);
+    box-shadow:inset 0 1px 0 #ffffffaa, 0 1px 0 #ffffff55;
+  }
+  .jack .socket{width:19px;height:19px;border-radius:50%;flex:none;
+    background:radial-gradient(circle at 50% 50%, #2b2823 0 36%, #6f6c64 38% 62%, #d9d6cf 64% 100%);
+    box-shadow:inset 0 0 0 1px #00000055;
+  }
+  .jack .name{font-family:var(--mono);font-size:.8rem;letter-spacing:.02em;font-weight:600}
+  .jack[aria-pressed="true"]{background:linear-gradient(180deg,#e6e4de,#cbc8c0);border-color:#5d5a53}
+  .jack[aria-pressed="true"] .socket{
+    background:radial-gradient(circle at 50% 50%, #3a2a10 0 36%, var(--amber) 38% 62%, #f0c479 64% 100%);
+    outline:2px solid var(--amber-deep);outline-offset:2px;box-shadow:inset 0 0 0 1px #00000055;
+  }
+  .pb-line{display:flex;align-items:center;min-width:0}
+  .cable{flex:1 1 auto;min-width:0;height:34px;overflow:visible;color:#8d8a82}
+  .cable path{fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round}
+  .cable .shadow{stroke:#00000022;stroke-width:5}
+  .pb-row[data-on="true"] .cable{color:var(--amber)}
+  .pb-row[data-on="true"] .cable .live{
+    stroke-dasharray:220;stroke-dashoffset:220;animation:patch .62s cubic-bezier(.2,.8,.15,1) forwards;
+  }
+  @keyframes patch{to{stroke-dashoffset:0}}
+  .pb-in-jack{display:flex;align-items:center;gap:8px;flex:none;font-family:var(--mono);font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2)}
+  .pb-in-jack .dot{width:14px;height:14px;border-radius:50%;flex:none;
+    background:radial-gradient(circle at 50% 50%, #2b2823 0 38%, #79766e 40% 66%, #dedbd4 68% 100%);box-shadow:inset 0 0 0 1px #00000055}
+  .pb-row[data-on="true"] .pb-in-jack .dot{background:radial-gradient(circle at 50% 50%, #3a2a10 0 38%, var(--amber) 40% 66%, #f3cb87 68% 100%);outline:2px solid var(--amber-deep);outline-offset:2px}
+  .pb-out{margin-top:16px;border:1px solid #00000026;border-radius:6px;background:#191712;color:#e7e2d8;padding:14px 16px}
+  .pb-out .cmd{font-family:var(--mono);font-size:.86rem;color:var(--amber-hi);margin:0 0 .5em;word-break:break-word}
+  .pb-out .note{margin:0;font-size:.86rem;color:#c9c4b9;max-width:70ch}
+  .pb-out .note[hidden]{display:none}
+  .led{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--led-on);margin-right:7px;vertical-align:1px}
+
+  /* ---------- spec strips ---------- */
+  .strips{list-style:none;margin:0;padding:0;border-top:1px solid #0000001f}
+  .strips li{display:grid;grid-template-columns:minmax(0,13rem) minmax(0,1fr) auto;gap:12px 20px;align-items:baseline;
+    padding:13px 4px;border-bottom:1px solid #0000001f}
+  @media (max-width:640px){.strips li{grid-template-columns:minmax(0,1fr)}}
+  .strips .k{font-family:var(--mono);font-size:.8rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink);font-weight:700}
+  .strips .v{margin:0;color:#3c3931}
+  .strips .st{font-family:var(--mono);font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);white-space:nowrap}
+
+  /* ---------- memory ---------- */
+  .mem{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:clamp(18px,3vw,34px)}
+  @media (max-width:820px){.mem{grid-template-columns:minmax(0,1fr)}}
+  .dial{width:100%;max-width:360px;height:auto;display:block}
+  .dial .face{fill:url(#dialface);stroke:var(--edge)}
+  .dial .tick{stroke:var(--ink-2);stroke-width:1.2}
+  .dial .cap{font-family:var(--mono);font-size:7px;letter-spacing:.16em;fill:var(--ink-2);text-transform:uppercase}
+  .dial .needle{stroke:var(--amber);stroke-width:3;stroke-linecap:round;transition:transform 1s cubic-bezier(.16,.9,.16,1);transform-box:view-box;transform-origin:100px 108px}
+  .plan{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 14px;align-items:stretch}
+  .axis{display:flex;flex-direction:column;justify-content:space-between;font-family:var(--mono);font-size:.76rem;color:var(--ink-2);padding:2px 8px 2px 0;border-right:1px solid #0000002a;text-align:right}
+  .blocks{display:grid;grid-template-rows:2.6fr 1.5fr .8fr .9fr;gap:6px;min-height:230px}
+  .blk{border-radius:4px;border:1px solid #00000026;display:flex;align-items:center;padding:8px 10px;gap:10px;
+    font-family:var(--mono);font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--ink);background:#0000000d}
+  .blk b{font-family:var(--sans);font-size:.82rem;letter-spacing:0;text-transform:none;font-weight:700}
+  .blk.pesos{background:#0000001a}
+  .blk.margen{border-style:dashed}
+  .queue{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:16px;padding:10px 12px;border:1px solid #00000026;border-radius:5px;background:#00000008;font-family:var(--mono);font-size:.8rem;letter-spacing:.02em;color:var(--ink-2)}
+  .queue .light{width:8px;height:8px;border-radius:50%;background:var(--led-on)}
+
+  /* ---------- gui ---------- */
+  .shots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(14px,2vw,22px)}
+  .shots figure{margin:0;border-radius:5px;overflow:hidden}
+  .shots figure.wide{grid-column:1/-1}
+  .shots img{display:block;width:100%;height:auto}
+  .shots figcaption{padding:9px 12px;font-family:var(--mono);font-size:.8rem;letter-spacing:.04em;color:#cfcac0;background:#141109;border-top:1px solid #00000055}
+  @media (max-width:560px){.shots{grid-template-columns:minmax(0,1fr)}}
+
+  /* ---------- code ---------- */
+  pre{margin:0;overflow-x:auto;background:#100e0a;border:1px solid #33301f;border-radius:6px;padding:16px 18px}
+  code{font-family:var(--mono);font-size:.82rem;color:#e9e4da}
+  pre code .c{color:#8c887c}
+  pre code .k{color:var(--amber-hi)}
+  .cmdline{color:#ded8cc}
+  a.inline{color:#7d4d0c;text-underline-offset:3px}
+  a.inline:hover{color:#5c3808}
+
+  /* ---------- footer ---------- */
+  footer{margin-top:clamp(26px,4vw,46px);padding-top:22px;border-top:1px solid #322d22;display:flex;flex-wrap:wrap;gap:12px 26px;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:.8rem;letter-spacing:.06em;color:var(--paper-2)}
+  footer a{color:var(--paper);text-decoration:none;border-bottom:1px solid #4a4436;padding-bottom:1px}
+  footer a:hover{border-color:var(--amber)}
+
+  :focus-visible{outline:2px solid var(--ink);outline-offset:2px;box-shadow:0 0 0 4px var(--panel-hi)}
+  body.lang-es .en{display:none!important}
+  body.lang-en .es{display:none!important}
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+  }
+</style>
+</head>
+<body class="lang-es">
+<div class="case rails">
+
+  <header class="top">
+    <div class="brandline">
+      <span class="wordmark">Brasa</span>
+      <span class="modelplate">Apple Silicon · Local · Apache-2.0</span>
+    </div>
+    <nav class="pages" aria-label="Secciones">
+      <a href="#especificaciones" class="es">Especificaciones</a>
+      <a href="#especificaciones" class="en" lang="en">Specs</a>
+      <a href="#memoria" class="es">Memoria</a>
+      <a href="#memoria" class="en" lang="en">Memory</a>
+      <a href="#gui">GUI</a>
+      <a href="#rendimiento" class="es">Rendimiento</a>
+      <a href="#rendimiento" class="en" lang="en">Performance</a>
+      <a href="#instalacion" class="es">Instalación</a>
+      <a href="#instalacion" class="en" lang="en">Install</a>
+    </nav>
+    <div class="lang" role="group" aria-label="Idioma / Language">
+      <button type="button" data-lang="es" aria-pressed="true">ES</button>
+      <button type="button" data-lang="en" aria-pressed="false">EN</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="es">Tu agente de código, contra un modelo que corre en tu Mac.</h1>
+      <h1 class="en" lang="en">Your coding agent, against a model that runs on your Mac.</h1>
+      <p class="lede es">Brasa es un engine de inferencia propio, en Rust sobre Metal y sin llama.cpp, MLX ni Ollama en el camino caliente. Expone una API local compatible con OpenAI y Anthropic, y una GUI embebida, para que Claude Code, Codex, Cline u OpenCode trabajen contra el modelo local.</p>
+      <p class="lede en" lang="en">Brasa is its own inference engine, written in Rust on Metal and with no llama.cpp, MLX or Ollama in the hot path. It exposes a local API compatible with OpenAI and Anthropic, plus an embedded GUI, so Claude Code, Codex, Cline or OpenCode can work against a local model.</p>
+      <p class="cta">
+        <a class="btn es" href="https://github.com/Lautaro005/brasa">Ver el repositorio <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3 4 12"/></svg></a>
+        <a class="btn en" lang="en" href="https://github.com/Lautaro005/brasa">View the repository <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3 4 12"/></svg></a>
+        <span class="cta-note es">Se compila desde el código; no hay instalador ni binarios publicados.</span>
+        <span class="cta-note en" lang="en">Built from source; there is no installer and no published binaries.</span>
+      </p>
+
+      <div class="unit" id="patchbay">
+        <div class="plate-strip">
+          <h2>Patchbay</h2>
+          <p class="hint es">brasa connect · imprime la configuración, no toca tus archivos</p>
+          <p class="hint en" lang="en">brasa connect · prints the config, never touches your files</p>
+        </div>
+        <div class="body">
+          <div class="pb-head">
+            <h3 class="es">Elegí un agente y parcheá el engine.</h3>
+            <h3 class="en" lang="en">Pick an agent and patch the engine.</h3>
+            <p class="pb-in-label es">Entrada del engine</p>
+            <p class="pb-in-label en" lang="en">Engine input</p>
+          </div>
+
+          <div class="pb-rows" id="pb-rows" role="group" aria-label="Elegir agente">
+            <div class="pb-row" data-agent="claude-code" data-on="true">
+              <button type="button" class="jack" aria-pressed="true" data-agent="claude-code">
+                <span class="socket" aria-hidden="true"></span><span class="name">Claude Code</span>
+              </button>
+              <span class="pb-line">
+                <svg class="cable" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="shadow" vector-effect="non-scaling-stroke" d="M2 17 C 38 2, 82 32, 118 17"/>
+                  <path class="live" vector-effect="non-scaling-stroke" d="M2 17 C 38 2, 82 32, 118 17"/>
+                </svg>
+                <span class="pb-in-jack"><span class="dot" aria-hidden="true"></span><span class="pb-in-w">In</span></span>
+              </span>
+            </div>
+            <div class="pb-row" data-agent="codex" data-on="false">
+              <button type="button" class="jack" aria-pressed="false" data-agent="codex">
+                <span class="socket" aria-hidden="true"></span><span class="name">Codex</span>
+              </button>
+              <span class="pb-line">
+                <svg class="cable" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="shadow" vector-effect="non-scaling-stroke" d="M2 17 C 38 32, 82 2, 118 17"/>
+                  <path class="live" vector-effect="non-scaling-stroke" d="M2 17 C 38 32, 82 2, 118 17"/>
+                </svg>
+                <span class="pb-in-jack"><span class="dot" aria-hidden="true"></span><span class="pb-in-w">In</span></span>
+              </span>
+            </div>
+            <div class="pb-row" data-agent="cline" data-on="false">
+              <button type="button" class="jack" aria-pressed="false" data-agent="cline">
+                <span class="socket" aria-hidden="true"></span><span class="name">Cline</span>
+              </button>
+              <span class="pb-line">
+                <svg class="cable" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="shadow" vector-effect="non-scaling-stroke" d="M2 17 C 38 4, 82 30, 118 17"/>
+                  <path class="live" vector-effect="non-scaling-stroke" d="M2 17 C 38 4, 82 30, 118 17"/>
+                </svg>
+                <span class="pb-in-jack"><span class="dot" aria-hidden="true"></span><span class="pb-in-w">In</span></span>
+              </span>
+            </div>
+            <div class="pb-row" data-agent="opencode" data-on="false">
+              <button type="button" class="jack" aria-pressed="false" data-agent="opencode">
+                <span class="socket" aria-hidden="true"></span><span class="name">OpenCode</span>
+              </button>
+              <span class="pb-line">
+                <svg class="cable" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="shadow" vector-effect="non-scaling-stroke" d="M2 17 C 38 30, 82 4, 118 17"/>
+                  <path class="live" vector-effect="non-scaling-stroke" d="M2 17 C 38 30, 82 4, 118 17"/>
+                </svg>
+                <span class="pb-in-jack"><span class="dot" aria-hidden="true"></span><span class="pb-in-w">In</span></span>
+              </span>
+            </div>
+          </div>
+
+          <div class="pb-out" aria-live="polite">
+            <p class="cmd"><span class="led" aria-hidden="true"></span><span id="pb-cmd">brasa connect claude-code</span></p>
+            <p class="note es" data-agent="claude-code">Usa la API Messages de Anthropic; la configuración sugiere limitar las herramientas y fijar el contexto real del perfil.</p>
+            <p class="note es" data-agent="codex" hidden>Habla la API Responses de OpenAI; imprime sus dos archivos de configuración, incluido el perfil con la ventana de contexto.</p>
+            <p class="note es" data-agent="cline" hidden>Usa un proveedor compatible con OpenAI; imprime la Base URL, la API key de prueba, el modelo y el contexto.</p>
+            <p class="note es" data-agent="opencode" hidden>Usa un proveedor compatible con OpenAI; imprime la Base URL, la API key de prueba, el modelo y el contexto.</p>
+            <p class="note en" lang="en" data-agent="claude-code">Uses Anthropic's Messages API; the config suggests limiting tools and setting the profile's real context.</p>
+            <p class="note en" lang="en" data-agent="codex" hidden>Speaks OpenAI's Responses API; it prints its two config files, including the profile with the context window.</p>
+            <p class="note en" lang="en" data-agent="cline" hidden>Uses an OpenAI-compatible provider; it prints the Base URL, a test API key, the model and the context.</p>
+            <p class="note en" lang="en" data-agent="opencode" hidden>Uses an OpenAI-compatible provider; it prints the Base URL, a test API key, the model and the context.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="unit" id="especificaciones">
+      <div class="plate-strip">
+        <h2 class="es">Especificaciones</h2>
+        <h2 class="en" lang="en">Specs</h2>
+        <p class="hint es">lo que hay adentro del rack</p>
+        <p class="hint en" lang="en">what's inside the rack</p>
+      </div>
+      <div class="body">
+        <ul class="strips">
+          <li><span class="k es">Engine propio</span><span class="k en" lang="en">Own engine</span>
+            <p class="v es">Rust sobre Metal, con kernels y planner propios. Nada de llama.cpp, MLX ni Ollama en el camino caliente.</p>
+            <p class="v en" lang="en">Rust on Metal, with its own kernels and planner. No llama.cpp, MLX or Ollama in the hot path.</p>
+            <span class="st">Metal</span></li>
+          <li><span class="k es">API compatible</span><span class="k en" lang="en">Compatible API</span>
+            <p class="v es">Chat Completions y Responses (OpenAI), y Messages (Anthropic), con streaming, cancelación y tool calling.</p>
+            <p class="v en" lang="en">Chat Completions and Responses (OpenAI), and Messages (Anthropic), with streaming, cancellation and tool calling.</p>
+            <span class="st">/v1</span></li>
+          <li><span class="k es">Planner de memoria</span><span class="k en" lang="en">Memory planner</span>
+            <p class="v es">Calcula pesos, KV y workspace antes de cargar; si no entra, baja el contexto o rechaza, sin swap silencioso.</p>
+            <p class="v en" lang="en">Computes weights, KV and workspace before loading; if it does not fit, it lowers the context or refuses, with no silent swap.</p>
+            <span class="st es">Presupuesto</span><span class="st en" lang="en">Budget</span></li>
+          <li><span class="k es">GUI embebida</span><span class="k en" lang="en">Embedded GUI</span>
+            <p class="v es">Dashboard en <code>/ui</code> servido por el propio binario: sin CDN, sin fuentes remotas, sin analytics.</p>
+            <p class="v en" lang="en">Dashboard at <code>/ui</code>, served by the binary itself: no CDN, no remote fonts, no analytics.</p>
+            <span class="st">/ui</span></li>
+          <li><span class="k es">Catálogo</span><span class="k en" lang="en">Catalog</span>
+            <p class="v es">Manifiestos con repo, revisión y sha256 por archivo. <code>brasa models</code>, <code>verify</code>, <code>pull</code> y un <code>rm</code> acotado a la carpeta de modelos.</p>
+            <p class="v en" lang="en">Manifests with repo, revision and a sha256 per file. <code>brasa models</code>, <code>verify</code>, <code>pull</code>, and a <code>rm</code> bounded to the models folder.</p>
+            <span class="st">sha256</span></li>
+          <li><span class="k es">Conversión nativa</span><span class="k en" lang="en">Native conversion</span>
+            <p class="v es">De safetensors a <code>.brasa</code> en Rust, sin Python en el binario.</p>
+            <p class="v en" lang="en">From safetensors to <code>.brasa</code> in Rust, with no Python in the binary.</p>
+            <span class="st es">nativo</span><span class="st en" lang="en">native</span></li>
+          <li><span class="k es">Prefix cache</span><span class="k en" lang="en">Prefix cache</span>
+            <p class="v es">Los agentes reenvían el mismo contexto en cada turno; la KV del prefijo se reutiliza entre pedidos.</p>
+            <p class="v en" lang="en">Agents resend the same context every turn; the prefix KV is reused across requests.</p>
+            <span class="st es">Reúso</span><span class="st en" lang="en">Reuse</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="unit" id="memoria">
+      <div class="plate-strip">
+        <h2 class="es">Presupuesto de memoria</h2>
+        <h2 class="en" lang="en">Memory budget</h2>
+        <p class="hint es">vista esquemática del plan</p>
+        <p class="hint en" lang="en">schematic view of the plan</p>
+      </div>
+      <div class="body">
+        <div class="mem">
+          <div>
+            <h3 class="es">El cálculo va antes de reservar memoria.</h3>
+            <h3 class="en" lang="en">The math runs before memory is reserved.</h3>
+            <p class="es">El planner suma pesos, KV cache, workspace y un margen del sistema, y compara contra lo que la máquina puede dar. Si el contexto no entra, lo baja o rechaza con un mensaje claro, y el plan queda explícito antes de tocar la memoria.</p>
+            <p class="en" lang="en">The planner adds up weights, KV cache, workspace and a system margin, and compares against what the machine can give. If the context does not fit, it lowers it or refuses with a clear message, and the plan is explicit before any memory is touched.</p>
+            <svg class="dial" viewBox="0 0 200 122" role="img" aria-label="Vúmetro esquemático del plan de memoria">
+              <defs>
+                <linearGradient id="dialface" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#efedE9"/><stop offset="1" stop-color="#cbc8c1"/>
+                </linearGradient>
+              </defs>
+              <path class="face" d="M14 108 A 86 86 0 0 1 186 108 Z"/>
+              <line class="tick" x1="22" y1="108" x2="14" y2="108"/>
+              <line class="tick" x1="32.5" y1="69" x2="25.5" y2="65"/>
+              <line class="tick" x1="61" y1="40.4" x2="57" y2="33.5"/>
+              <line class="tick" x1="100" y1="30" x2="100" y2="22"/>
+              <line class="tick" x1="139" y1="40.4" x2="143" y2="33.5"/>
+              <line class="tick" x1="167.5" y1="69" x2="174.5" y2="65"/>
+              <line class="tick" x1="178" y1="108" x2="186" y2="108"/>
+              <text class="cap es" x="14" y="120">Pesos</text>
+              <text class="cap en" lang="en" x="14" y="120">Weights</text>
+              <text class="cap es" x="150" y="120">Margen</text>
+              <text class="cap en" lang="en" x="150" y="120">Margin</text>
+              <text class="cap" x="82" y="14">Plan</text>
+              <line id="needle" class="needle" x1="100" y1="108" x2="100" y2="32"/>
+              <circle cx="100" cy="108" r="5.5" fill="#17150f"/>
+            </svg>
+            <div class="queue">
+              <span class="light" aria-hidden="true"></span>
+              <span class="es">Un trabajo a la vez · el siguiente pedido se ve antes de entrar</span>
+              <span class="en" lang="en">One job at a time · the next request is visible before it starts</span>
+            </div>
+          </div>
+          <div>
+            <div class="plan">
+              <div class="axis" aria-hidden="true">
+                <span>—</span><span>·</span><span>·</span><span>·</span><span>0</span>
+              </div>
+              <div class="blocks" role="img" aria-label="Bloques del plan de memoria: pesos, KV, workspace y margen del sistema, sobre un mismo eje">
+                <span class="blk pesos"><b class="es">Pesos</b><b class="en" lang="en">Weights</b></span>
+                <span class="blk"><b>KV</b></span>
+                <span class="blk"><b class="es">Workspace</b><b class="en" lang="en">Workspace</b></span>
+                <span class="blk margen"><b class="es">Margen del sistema</b><b class="en" lang="en">System margin</b></span>
+              </div>
+            </div>
+            <p class="muted es" style="margin-top:14px;font-size:.82rem">Las cifras reales salen de <code>brasa plan</code>. Acá no van velocidades ni tamaños: solo el orden de las piezas.</p>
+            <p class="muted en" lang="en" style="margin-top:14px;font-size:.82rem">Real numbers come from <code>brasa plan</code>. No speeds or sizes here: just the order of the pieces.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="unit" id="gui">
+      <div class="plate-strip">
+        <h2>GUI</h2>
+        <p class="hint es">capturas reales del dashboard</p>
+        <p class="hint en" lang="en">real dashboard captures</p>
+      </div>
+      <div class="body">
+        <p class="es" style="max-width:70ch">Chat con streaming, estado y métricas, benchmarks y plan, servidos en <code>127.0.0.1:8080/ui</code> desde el mismo proceso que atiende la API.</p>
+        <p class="en" lang="en" style="max-width:70ch">Streaming chat, status and metrics, benchmarks and plan, served at <code>127.0.0.1:8080/ui</code> by the same process that serves the API.</p>
+        <div class="shots">
+          <figure class="wide">
+            <img data-key="chat" src="img/chat-dos-turnos.jpg" alt="Pantalla de chat de la GUI: una pregunta sobre la configuración de Rust y su respuesta, con el segundo turno usando el contexto del primero.">
+            <figcaption class="es">Chat · dos turnos sobre el mismo contexto.</figcaption>
+            <figcaption class="en" lang="en">Chat · two turns over the same context.</figcaption>
+          </figure>
+          <figure>
+            <img data-key="estado" src="img/estado.jpg" alt="Pantalla de estado de la GUI: memoria del plan contra el presupuesto, rendimiento, estado del servidor y presión del sistema.">
+            <figcaption class="es">Estado · memoria, rendimiento y cola. Las cifras son de la corrida de la captura; las mediciones están en el reporte.</figcaption>
+            <figcaption class="en" lang="en">Status · memory, throughput and queue. Figures are from that run; measurements live in the report.</figcaption>
+          </figure>
+          <figure>
+            <img data-key="cancel" src="img/chat-cancelado.jpg" alt="Pantalla de chat de la GUI con una generación cancelada: el botón Cancelar corta el stream y la respuesta queda marcada como cancelada.">
+            <figcaption class="es">Cancelación · el botón corta el stream.</figcaption>
+            <figcaption class="en" lang="en">Cancellation · the button cuts the stream.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="unit" id="rendimiento">
+      <div class="plate-strip">
+        <h2 class="es">Rendimiento</h2>
+        <h2 class="en" lang="en">Performance</h2>
+        <p class="hint es">metodología y reportes</p>
+        <p class="hint en" lang="en">methodology and reports</p>
+      </div>
+      <div class="body">
+        <p class="es" style="max-width:70ch">Acá no hay cifras: en este proyecto nada se afirma sin medir. Los números están en el reporte de benchmarks, con chip, RAM, macOS y el commit del engine con el que se midieron.</p>
+        <p class="en" lang="en" style="max-width:70ch">No figures here: in this project nothing is claimed without measuring it. The numbers live in the benchmark report, with the chip, RAM, macOS and the engine commit they were measured on.</p>
+        <p><a class="inline" href="https://github.com/Lautaro005/brasa/blob/main/docs/bench/baseline.md">docs/bench/baseline.md</a></p>
+      </div>
+    </section>
+
+    <section class="unit" id="instalacion">
+      <div class="plate-strip">
+        <h2 class="es">Instalación</h2>
+        <h2 class="en" lang="en">Install</h2>
+        <p class="hint es">compilado desde el repositorio</p>
+        <p class="hint en" lang="en">build it from the repo</p>
+      </div>
+      <div class="body">
+        <pre class="es"><code><span class="c"># Requisitos: macOS sobre Apple Silicon y una toolchain de Rust.</span>
+<span class="k">git</span> <span class="cmdline">clone https://github.com/Lautaro005/brasa</span>
+<span class="k">cd</span> <span class="cmdline">brasa</span>
+<span class="k">cargo</span> <span class="cmdline">build --release -p brasa-cli</span>
+
+<span class="c"># Diagnóstico, pesos y conversión al formato nativo.</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">doctor</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">pull qwen3-4b-q4</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">convert models/qwen3-4b-hf models/qwen3-4b-q4</span>
+
+<span class="c"># Servir contra un agente (perfil 16K con KV Q8).</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">serve qwen3-4b-q4 --ctx 16384 --kv q8_0</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">connect claude-code</span></code></pre>
+        <pre class="en" lang="en"><code><span class="c"># Requirements: macOS on Apple Silicon and a Rust toolchain.</span>
+<span class="k">git</span> <span class="cmdline">clone https://github.com/Lautaro005/brasa</span>
+<span class="k">cd</span> <span class="cmdline">brasa</span>
+<span class="k">cargo</span> <span class="cmdline">build --release -p brasa-cli</span>
+
+<span class="c"># Diagnostics, weights and conversion to the native format.</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">doctor</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">pull qwen3-4b-q4</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">convert models/qwen3-4b-hf models/qwen3-4b-q4</span>
+
+<span class="c"># Serve it to an agent (16K profile with Q8 KV).</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">serve qwen3-4b-q4 --ctx 16384 --kv q8_0</span>
+<span class="k">./target/release/brasa</span> <span class="cmdline">connect claude-code</span></code></pre>
+        <p class="muted es" style="margin-top:14px;font-size:.82rem">El perfil de agente recomendado es 16K con KV Q8; el servidor escucha en 127.0.0.1 y no tiene autenticación, así que no lo expongas fuera de la máquina.</p>
+        <p class="muted en" lang="en" style="margin-top:14px;font-size:.82rem">The recommended agent profile is 16K with Q8 KV; the server listens on 127.0.0.1 and has no authentication, so do not expose it beyond your machine.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Brasa · Apache-2.0</span>
+    <span>
+      <a href="https://github.com/Lautaro005/brasa">GitHub</a> ·
+      <a href="https://github.com/Lautaro005/brasa/blob/main/SECURITY.md">SECURITY.md</a> ·
+      <a href="https://github.com/Lautaro005/brasa/blob/main/LICENSE">Licencia / License</a>
+    </span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // Texto que no puede conmutarse con CSS (title, meta, aria-label, alt).
+  var TXT = {
+    es: {
+      title: "Brasa — engine de inferencia local para Apple Silicon",
+      desc: "Brasa es un engine de inferencia local en Rust sobre Metal, con API compatible con OpenAI y Anthropic, para correr agentes de código contra un modelo en tu Mac.",
+      group: "Elegir agente",
+      dial: "Vúmetro esquemático del plan de memoria",
+      blocks: "Bloques del plan de memoria: pesos, KV, workspace y margen del sistema, sobre un mismo eje",
+      alts: {
+        chat: "Pantalla de chat de la GUI: una pregunta sobre la configuración de Rust y su respuesta, con el segundo turno usando el contexto del primero.",
+        estado: "Pantalla de estado de la GUI: memoria del plan contra el presupuesto, rendimiento, estado del servidor y presión del sistema.",
+        cancel: "Pantalla de chat de la GUI con una generación cancelada: el botón Cancelar corta el stream y la respuesta queda marcada como cancelada."
+      }
+    },
+    en: {
+      title: "Brasa — local inference engine for Apple Silicon",
+      desc: "Brasa is a local inference engine in Rust on Metal, with an OpenAI- and Anthropic-compatible API, for running coding agents against a model on your Mac.",
+      group: "Choose an agent",
+      dial: "Schematic gauge of the memory plan",
+      blocks: "Memory plan blocks: weights, KV, workspace and system margin, on one shared axis",
+      alts: {
+        chat: "The GUI's chat screen: a question about Rust's configuration and its answer, with the second turn reusing the first turn's context.",
+        estado: "The GUI's status screen: memory plan against budget, throughput, server state and system pressure.",
+        cancel: "The GUI's chat screen with a cancelled generation: the Cancel button cuts the stream and the answer is marked as cancelled."
+      }
+    }
+  };
+
+  var btns = document.querySelectorAll(".lang button");
+  function setLang(lang){
+    var t = TXT[lang] || TXT.es;
+    document.body.classList.toggle("lang-en", lang === "en");
+    document.body.classList.toggle("lang-es", lang !== "en");
+    document.documentElement.setAttribute("lang", lang);
+    btns.forEach(function(b){ b.setAttribute("aria-pressed", String(b.dataset.lang === lang)); });
+    document.title = t.title;
+    var meta = document.querySelector('meta[name="description"]');
+    if (meta) meta.setAttribute("content", t.desc);
+    var group = document.getElementById("pb-rows");
+    if (group) group.setAttribute("aria-label", t.group);
+    var dial = document.querySelector(".dial");
+    if (dial) dial.setAttribute("aria-label", t.dial);
+    var blocks = document.querySelector(".blocks");
+    if (blocks) blocks.setAttribute("aria-label", t.blocks);
+    document.querySelectorAll("img[data-key]").forEach(function(img){
+      var a = t.alts[img.dataset.key];
+      if (a) img.setAttribute("alt", a);
+    });
+    try { localStorage.setItem("brasa.lang", lang); } catch (e) {}
+  }
+  btns.forEach(function(b){
+    b.addEventListener("click", function(){ setLang(b.dataset.lang); });
+  });
+  var saved = null;
+  try { saved = localStorage.getItem("brasa.lang"); } catch (e) {}
+  if (saved === "en" || saved === "es") setLang(saved);
+
+  // --- patchbay: elegir agente ---
+  var rows = [].slice.call(document.querySelectorAll(".pb-row"));
+  var cmd = document.getElementById("pb-cmd");
+  rows.forEach(function(row){
+    var btn = row.querySelector(".jack");
+    btn.addEventListener("click", function(){ patch(row.dataset.agent); });
+  });
+  function patch(agent){
+    rows.forEach(function(r){
+      var on = r.dataset.agent === agent;
+      r.dataset.on = String(on);
+      r.querySelector(".jack").setAttribute("aria-pressed", String(on));
+    });
+    if (cmd) cmd.textContent = "brasa connect " + agent;
+    document.querySelectorAll(".pb-out .note").forEach(function(p){
+      p.hidden = p.dataset.agent !== agent;
+    });
+  }
+
+  // --- aguja del vúmetro: un solo gesto, al entrar en pantalla ---
+  var needle = document.getElementById("needle");
+  var dial = document.querySelector(".dial");
+  if (needle && dial && "IntersectionObserver" in window){
+    var set = function(){ needle.style.transform = "rotate(28deg)"; };
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){ if (en.isIntersecting){ set(); io.disconnect(); } });
+    }, {threshold:.4});
+    io.observe(dial);
+  } else if (needle){
+    needle.style.transform = "rotate(28deg)";
+  }
+})();
+</script>
+</body>
+</html>
