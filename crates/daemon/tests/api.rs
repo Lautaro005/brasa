@@ -301,3 +301,106 @@ async fn metrics_cuentan_un_stream_cancelado() {
     assert!(m["generated_tokens"].as_u64().unwrap() > 0, "{m}");
     assert!(m["errors"].as_object().unwrap().is_empty(), "{m}");
 }
+
+// --- V5: Model Manager (ADR 0025) ---
+
+fn pedido() -> Value {
+    json!({"messages": [{"role": "user", "content": "hola"}], "stream": false})
+}
+
+async fn estado(app: Router) -> String {
+    let v = json_body(get(app, "/api/status").await).await;
+    v["state"].as_str().unwrap_or("?").to_string()
+}
+
+#[tokio::test]
+async fn model_manager_transiciones() {
+    let s = state();
+    let app = brasa_daemon::router(s.clone());
+    assert_eq!(estado(app.clone()).await, "loaded");
+
+    // idle libera el modelo.
+    let r = post(app.clone(), "/api/model/idle", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(json_body(r).await["state"], "idle");
+    assert_eq!(s.engine.state().name(), "idle");
+    assert_eq!(estado(app.clone()).await, "idle");
+
+    // pausar sin modelo es un conflicto, no un pánico.
+    let r = post(app.clone(), "/api/model/pause", json!({})).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+
+    // load lo vuelve a cargar.
+    let r = post(app.clone(), "/api/model/load", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(s.engine.state().name(), "loaded");
+
+    // pause deja la cola detenida; resume la vuelve a mover.
+    let r = post(app.clone(), "/api/model/pause", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(s.engine.state().name(), "paused");
+
+    // load limpia la pausa y, sin pausa, resume es un conflicto.
+    let r = post(app.clone(), "/api/model/load", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = post(app.clone(), "/api/model/resume", json!({})).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+
+    // stop deja el modelo detenido.
+    let r = post(app.clone(), "/api/model/stop", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(s.engine.state().name(), "stopped");
+}
+
+#[tokio::test]
+async fn pedido_en_idle_vuelve_a_cargar() {
+    let s = state();
+    let app = brasa_daemon::router(s.clone());
+    post(app.clone(), "/api/model/idle", json!({})).await;
+
+    let resp = post(app.clone(), "/v1/chat/completions", pedido()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["choices"][0]["message"]["content"], "hola mundo");
+    // El pedido dejó el modelo cargado otra vez.
+    assert_eq!(s.engine.state().name(), "loaded");
+}
+
+#[tokio::test]
+async fn pedido_en_pausa_espera_al_resume() {
+    let s = state();
+    let app = brasa_daemon::router(s.clone());
+    post(app.clone(), "/api/model/pause", json!({})).await;
+
+    // Con el modelo en pausa el pedido queda encolado: no responde dentro del plazo.
+    let encolado = tokio::time::timeout(
+        std::time::Duration::from_millis(400),
+        post(app.clone(), "/v1/chat/completions", pedido()),
+    )
+    .await;
+    assert!(encolado.is_err(), "respondió con el modelo en pausa");
+
+    // Al reanudar, la cola vuelve a moverse.
+    let r = post(app.clone(), "/api/model/resume", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        post(app.clone(), "/v1/chat/completions", pedido()),
+    )
+    .await
+    .expect("el pedido no se sirvió tras resume");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["choices"][0]["message"]["content"], "hola mundo");
+}
+
+#[tokio::test]
+async fn status_informa_el_estado() {
+    let app = brasa_daemon::router(state());
+    let v = json_body(get(app.clone(), "/api/status").await).await;
+    assert_eq!(v["state"], "loaded");
+    // El resto de `/api/status` no cambió.
+    assert_eq!(v["model"]["id"], "qwen3-4b-q4");
+    assert_eq!(v["context"]["ctx"], 2048);
+    assert_eq!(v["queue"]["pending"], 0);
+}

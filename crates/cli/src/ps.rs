@@ -96,6 +96,7 @@ fn print_status(s: &Value) {
         str_at(s, &["model", "id"]),
         str_at(s, &["model", "family"])
     );
+    println!("estado      {}", str_at(s, &["state"]));
     println!("ruta        {}", str_at(s, &["model", "path"]));
     let sha = str_at(s, &["model", "weights_sha256_declarado"]);
     let sha = take(sha, 16);
