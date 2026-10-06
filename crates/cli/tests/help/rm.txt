@@ -13,5 +13,8 @@ Options:
   -y, --yes
           No pedir confirmación
 
+      --seguir-symlink-base
+          Permitir que la carpeta de modelos pase por un symlink (por defecto `rm` se niega)
+
   -h, --help
           Print help

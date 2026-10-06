@@ -299,3 +299,79 @@ merge no tenga conflictos. El cuantizador de referencia es `quant_q6_0` en
 
 Cuando termines R0–R2, `./scripts/ci.sh` tiene que salir con 0. Anotá "Revisión 1: hecha" en la
 tabla Estado.
+
+## Revisión 2 (Claude, 2026-10-05): lo que queda antes de integrar `ui`
+
+Verificado: `./scripts/ci.sh` sale con 0; `brasa convert` sobre `models/qwen3-4b-hf` da
+`data_sha256 7cc86…f7b8dc`, los 398 tensores iguales (nombre, dtype, shape, offset, sha256) y la
+región de datos idéntica byte a byte al `.brasa` de Python (solo difiere el campo `converter` del
+encabezado); `brasa models verify` sobre esa salida pasa. No se tocaron zonas prohibidas. R0, R1.2,
+R1.3, R1.5, R1.6, R1.8–R1.11 y R2 están corregidos. Falta lo siguiente, en este orden:
+
+### R2.1 (grave) `brasa rm` sigue borrando los pesos compartidos si la carpeta de modelos es un symlink
+
+`local::resolve_child` (`crates/catalog/src/local.rs`) canonicaliza la **base**, así que el symlink
+`models -> ../brasa/models` de este worktree se sigue sin aviso: `brasa rm qwen3-4b-q4 -y` desde
+`brasa-ui/` borra `/Users/lauti/Desktop/test/brasa/models/qwen3-4b-q4`. Reproducido en un tempdir
+(`ws/models -> ../real`; `brasa rm m -y` borró `real/m`).
+
+- Si `models_dir` (o cualquier componente que no sea el prefijo del sistema, como `/private/tmp`)
+  es un symlink, `rm` se niega salvo un flag explícito (por ejemplo `--seguir-symlink-base`), y el
+  mensaje nombra la ruta real.
+- **Aceptación:** test con tempdir donde `ws/models` es symlink a `real/`: `resolve_child(ws/models,
+  "m")` falla y `real/m` sigue existiendo; con el flag, borra. Los tests actuales siguen pasando.
+
+### R2.2 (media) `dechunk` todavía puede entrar en pánico
+
+`crates/cli/src/http.rs`: con un tamaño de chunk `ffffffffffffffff`, `size + 2` desborda (pánico en
+debug; en release da 1 y `&raw[..size]` entra en pánico).
+
+- Usá `size.checked_add(2)` (o `raw.len() - size < 2` tras comparar `size <= raw.len()`).
+- **Aceptación:** caso nuevo en `rechaza_chunk_truncado` con `ffffffffffffffff\r\nab` que devuelve
+  `Err` en `cargo test` (debug) y en `cargo test --release -p brasa-cli`.
+
+### R2.3 (media) Manifiestos externos: `hf_dir` y `name` sin validar
+
+`Manifest::validate` (`crates/catalog/src/manifest.rs`) valida `files[].path`, pero no `hf_dir` ni
+`name`, que se unen a `models_dir` en `cli/src/pull.rs` (`models_dir().join(&m.hf_dir)`) y en las
+sugerencias de `run.rs`/`pull.rs`. Un `$BRASA_CATALOG/x.toml` con `hf_dir = "/Users/…/Documents"`
+o `"../../x"` hace que `pull` escriba fuera de la carpeta de modelos.
+
+- `hf_dir` y `name`: un solo componente normal (sin `/`, `.`, `..` ni absolutas).
+- Normalizá `sha256` a minúsculas al validar (hoy un hash en mayúsculas falla siempre tras bajar
+  el archivo entero).
+- **Aceptación:** tests en `manifest.rs` que rechazan `hf_dir = "../x"`, `"/tmp/x"`, `"a/b"` y
+  `name = ".."`, y aceptan un sha256 en mayúsculas.
+
+### R2.4 (baja) Test de punta a punta de la configuración (pendiente de R1.4)
+
+`serve_y_run_usan_la_precedencia` (`crates/cli/src/config.rs`) prueba `run_ctx`/`serve_ctx`, no
+que `serve::run`/`run::run` los usen para `model`, `port`, `kv` y `ctx`.
+
+- Extraé en `serve.rs` y `run.rs` una función pura `effective(args, &Config) -> (modelo, host,
+  puerto, ctx, kv)` que use `run`, y testeala con flags y con archivo.
+- **Aceptación:** un test por subcomando que, con `[serve] ctx = 8192`, `port = 9123` y `kv =
+  "q8_0"` en el archivo y sin flags, obtiene esos valores; y con `--ctx 4096` obtiene 4096.
+
+### R2.5 (baja) GUI
+
+- `getJSON` tira en `!r.ok` sin leer el cuerpo: los 400 de `/api/plan` y `/api/agents` muestran
+  "HTTP 400" y no el mensaje del daemon. Leé `error` del JSON antes de tirar.
+- Agentes: el campo `agents-ctx` arranca en 16384 fijo; tiene que arrancar con el `ctx` real del
+  servidor (`/api/status` → `context.ctx`) y, si queda vacío, no mandar `ctx=` (hoy da 400).
+- Un error a mitad del stream se muestra dos veces (nota en el mensaje y mensaje `error` aparte).
+- **Aceptación:** test del daemon o revisión manual documentada en `docs/gui/README.md`.
+
+### R2.6 (baja) `/api/bench`
+
+- `json_files` (`crates/daemon/src/bench.rs`) sigue symlinks a directorios sin límite: un ciclo
+  hace desbordar la pila y aborta el daemon. Usá `symlink_metadata`/`file_type()` y no entres en
+  symlinks (o limitá la profundidad).
+- `resolve_dir` deja `docs/bench` relativo al cwd: canonicalizalo al arrancar y, si no existe,
+  informalo una vez por stderr.
+- El test `extrae_resumen_de_un_reporte` escribe en `/tmp/x.json` fijo: usá `tempfile`.
+- **Aceptación:** test con un symlink `bucle -> .` dentro de la carpeta de prueba que devuelve los
+  reportes sin colgarse.
+
+Cuando R2.1–R2.3 estén, `./scripts/ci.sh` en 0 y la fila "Revisión 2" en "Estado", la rama se
+puede integrar; R2.4–R2.6 pueden ir en el mismo pase o justo después.

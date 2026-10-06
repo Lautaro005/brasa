@@ -17,12 +17,16 @@ pub struct RmArgs {
     /// No pedir confirmación.
     #[arg(short, long)]
     yes: bool,
+    /// Permitir que la carpeta de modelos pase por un symlink (por defecto `rm` se niega).
+    #[arg(long)]
+    seguir_symlink_base: bool,
 }
 
 pub fn run(a: RmArgs) -> Result<(), String> {
     let base = a.dir.unwrap_or_else(models_dir);
     // Solo subcarpetas directas de `models_dir`, sin rutas, `..` ni symlinks: `rm` borra.
-    let dir = local::resolve_child(&base, &a.model).map_err(|e| e.0)?;
+    // Si la base es (o pasa por) un symlink, se niega salvo --seguir-symlink-base.
+    let dir = local::resolve_child_with(&base, &a.model, a.seguir_symlink_base).map_err(|e| e.0)?;
     let bytes = std::fs::metadata(dir.join("model.brasa")).map_or(0, |m| m.len());
     if !a.yes {
         eprint!(

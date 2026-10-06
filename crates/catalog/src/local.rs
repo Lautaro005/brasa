@@ -83,8 +83,28 @@ pub fn resolve(models_dir: &Path, name: &str) -> Result<PathBuf> {
 
 /// Resuelve `name` como una **subcarpeta directa** de `models_dir`, para operaciones que borran
 /// (`brasa rm`). Rechaza rutas absolutas, separadores, `.`/`..` y symlinks: canonicaliza y exige
-/// que el destino sea exactamente `models_dir/<name>` dentro de la carpeta de modelos.
+/// que el destino sea exactamente `models_dir/<name>` dentro de la carpeta de modelos. También
+/// rechaza una carpeta de modelos alcanzada por un symlink (ver [`resolve_child_with`]).
 pub fn resolve_child(models_dir: &Path, name: &str) -> Result<PathBuf> {
+    resolve_child_with(models_dir, name, false)
+}
+
+/// Como [`resolve_child`], pero `seguir_base` permite que `models_dir` pase por un symlink. Por
+/// defecto no se sigue: en un worktree `models -> ../brasa/models` un `rm` borraría los pesos
+/// compartidos. Los firmlinks del sistema (`/var -> /private/var`, etc.) no cuentan.
+pub fn resolve_child_with(models_dir: &Path, name: &str, seguir_base: bool) -> Result<PathBuf> {
+    if !seguir_base {
+        if let Some(link) = primer_symlink_del_usuario(models_dir) {
+            let real = std::fs::canonicalize(models_dir).unwrap_or_else(|_| link.clone());
+            return Err(Error(format!(
+                "la carpeta de modelos {} pasa por el symlink {} -> {}; `brasa rm` no lo sigue \
+                 (usá --seguir-symlink-base para borrar en la ruta real)",
+                models_dir.display(),
+                link.display(),
+                real.display()
+            )));
+        }
+    }
     let comp = Path::new(name);
     if name.is_empty()
         || comp.is_absolute()
@@ -118,6 +138,46 @@ pub fn resolve_child(models_dir: &Path, name: &str) -> Result<PathBuf> {
         )));
     }
     Ok(canon)
+}
+
+/// Firmlinks de macOS: no son symlinks que haya puesto el usuario.
+fn es_firmlink_del_sistema(p: &Path) -> bool {
+    matches!(
+        p.to_str(),
+        Some(
+            "/var"
+                | "/tmp"
+                | "/etc"
+                | "/private"
+                | "/private/var"
+                | "/private/tmp"
+                | "/private/etc"
+        )
+    )
+}
+
+/// Primer componente del camino (resuelto contra el cwd si es relativo) que es un symlink y no es
+/// un firmlink del sistema. `None` si la carpeta es real.
+fn primer_symlink_del_usuario(path: &Path) -> Option<PathBuf> {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut prefix = PathBuf::new();
+    for c in abs.components() {
+        prefix.push(c);
+        if es_firmlink_del_sistema(&prefix) {
+            continue;
+        }
+        if std::fs::symlink_metadata(&prefix)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Some(prefix);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -169,5 +229,39 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("vacia")).unwrap();
         assert!(resolve_child(tmp.path(), "vacia").is_err());
+    }
+
+    #[test]
+    fn resolve_child_rechaza_base_que_es_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        modelo(&real, "m");
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let base = ws.join("models");
+        std::os::unix::fs::symlink(&real, &base).unwrap();
+
+        // Sin el flag: se niega y no toca los pesos reales.
+        let err = resolve_child(&base, "m").unwrap_err();
+        assert!(err.0.contains("symlink"), "{}", err.0);
+        assert!(real.join("m/model.brasa").is_file());
+
+        // Con el flag: resuelve a la ruta real y se puede borrar.
+        let p = resolve_child_with(&base, "m", true).unwrap();
+        assert_eq!(p, real.canonicalize().unwrap().join("m"));
+        std::fs::remove_dir_all(&p).unwrap();
+        assert!(!real.join("m").exists());
+    }
+
+    #[test]
+    fn resolve_child_rechaza_base_con_symlink_intermedio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        modelo(&real, "m");
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // `link` es un symlink intermedio: la base `link/sub` no existe como real.
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        assert!(resolve_child(&link.join("sub"), "m").is_err());
     }
 }
