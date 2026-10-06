@@ -190,6 +190,29 @@ GEMM tiled 2,65 TFLOPS, `flash_attention` ~0,7 TFLOPS, `decode_attention_gqa` a 
     medible y ocupa un núcleo.
 - **T3.6 Cierre.** `brasa benchmark` válido a 2K, 8K y 16K contra los baselines de T0.5, demo de
   Claude Code repetida y tabla en docs/bench/baseline.md.
+  Estado (2026-10-06): hecha en M1 Pro 16 GB. Commit 8dc9fa3, reportes en `docs/bench/m1pro-16gb/`
+  y tabla regenerada en `docs/bench/baseline.md`.
+  - Las corridas se hicieron con la GPU libre: se descartaron las que se solaparon con la CI de la
+    rama `ui`.
+  - Demo de Claude Code repetida con el perfil de agente, 16K y KV Q8:
+    `docs/demos/fase3-claude-code.md`.
+
+  | Ctx | Prefill Brasa / llama.cpp (tok/s) | Decode Brasa / llama.cpp (tok/s) | Memoria Brasa / llama.cpp (GiB) |
+  |---:|---:|---:|---:|
+  | 2048 | 299 / 490 | 50,2 / 50,8 | 2,55 / 3,18 |
+  | 8192 | 195 / 356 | 34,6 / 38,0 | 3,40 / 4,03 |
+  | 16384 | 138 / 260 | 28,0 / 28,6 | 4,54 / 5,20 |
+  | 16384 KV Q8 | 134 / 260 | **27,1 / 19,7** | 3,48 / 4,13 |
+
+  **Compuerta de la fase 3: no se cumple.**
+  - Brasa usa menos memoria en todos los contextos.
+  - Con KV Q8, el perfil de agente, el decode supera a llama.cpp en 38 %.
+  - Con KV f16, el decode queda a 1–9 % (peor a 8K).
+  - El prefill es 0,51–0,61× el de llama.cpp, y el TTFT a 16K es de 118 s contra 63 s.
+  - El bloqueo es el prefill: GEMM (T3.3: 2,82 contra ~3,5 TFLOPS) y atención de prefill (T3.2,
+    que pesa más a 8K y 16K). Siguiente paso: perfilar la GPU (Instruments, Metal System Trace)
+    del prefill a 16K y repartir el tiempo entre GEMM y atención antes de tocar kernels.
+  - Tampoco se cumple en decode a 8K con KV f16: 34,6 contra 38,0 tok/s.
 
 ## Fase 4 — Autotuning y memoria
 
@@ -203,5 +226,5 @@ GUI web, segunda familia (Llama 3.2 3B), luego speculative decoding, Qwen3.5 (Ga
 ## Decisiones abiertas
 
 - ~~Confirmar `config.json` real de Qwen3-4B y recalcular la tabla de KV.~~ Hecho (ver tabla de KV).
-- Verificar los formatos de API de Codex y Claude Code vigentes antes de la fase 2.
-- Licencia del repo: Apache-2.0 propuesta.
+- ~~Verificar los formatos de API de Codex y Claude Code vigentes antes de la fase 2.~~ Hecho en la fase 2 (Codex 0.153.4, Claude Code 2.1.274; ADR 0008).
+- Licencia del repo: Apache-2.0 propuesta; `LICENSE` ya está en el repo. Falta la confirmación del usuario.
