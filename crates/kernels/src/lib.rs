@@ -39,6 +39,24 @@ pub mod sources {
     pub const QKV: &str = include_str!("metal/qkv.metal");
     /// Acceso a la KV cache por tipo; [`super::kv_source`] lo antepone a los kernels de atención.
     pub const KV_ACCESS: &str = include_str!("metal/kv_access.metal");
+
+    /// Todas las fuentes con su nombre de archivo. La versión de los kernels del fingerprint de
+    /// tuning (ADR 0026) es un hash de esta lista: un archivo nuevo tiene que sumarse acá.
+    pub const ALL: &[(&str, &str)] = &[
+        ("elementwise.metal", ELEMENTWISE),
+        ("norm.metal", NORM),
+        ("softmax.metal", SOFTMAX),
+        ("rope.metal", ROPE),
+        ("embed.metal", EMBED),
+        ("matmul.metal", MATMUL),
+        ("attention.metal", ATTENTION),
+        ("matmul_tiled.metal", MATMUL_TILED),
+        ("flash_attention.metal", FLASH_ATTENTION),
+        ("decode_attention.metal", DECODE_ATTENTION),
+        ("kv.metal", KV),
+        ("qkv.metal", QKV),
+        ("kv_access.metal", KV_ACCESS),
+    ];
 }
 
 /// Fuente de un kernel de atención para el tipo de KV `kv`: el `#define` del tipo, el acceso a
