@@ -404,3 +404,55 @@ async fn status_informa_el_estado() {
     assert_eq!(v["context"]["ctx"], 2048);
     assert_eq!(v["queue"]["pending"], 0);
 }
+
+#[tokio::test]
+async fn rechaza_pedidos_de_otro_origen() {
+    // Una página web no puede apagar el daemon ni usar /v1/* (CSRF) ni entrar por DNS rebinding.
+    let app = brasa_daemon::router(state());
+    let req = |uri: &str, host: &str, origin: Option<&str>| {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("host", host)
+            .header("content-type", "application/json");
+        if let Some(o) = origin {
+            b = b.header("origin", o);
+        }
+        b.body(Body::from(
+            json!({"messages": [{"role": "user", "content": "hola"}]}).to_string(),
+        ))
+        .unwrap()
+    };
+    let r = app
+        .clone()
+        .oneshot(req(
+            "/api/model/stop",
+            "127.0.0.1:8080",
+            Some("https://evil.example"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let r = app
+        .clone()
+        .oneshot(req("/v1/chat/completions", "evil.example:8080", None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    // La GUI (mismo origen) y los SDKs (sin Origin) siguen funcionando.
+    let r = app
+        .clone()
+        .oneshot(req(
+            "/v1/chat/completions",
+            "127.0.0.1:8080",
+            Some("http://127.0.0.1:8080"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = app
+        .oneshot(req("/v1/chat/completions", "localhost:8080", None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+}

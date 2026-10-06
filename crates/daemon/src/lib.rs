@@ -10,6 +10,7 @@ pub mod engine;
 mod metrics;
 mod model;
 mod openai;
+mod origin;
 mod plan;
 mod responses;
 mod status;
@@ -146,6 +147,10 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/responses", post(responses::create))
         .route("/v1/messages", post(anthropic::messages))
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            origin::local_only,
+        ))
         .with_state(state)
 }
 

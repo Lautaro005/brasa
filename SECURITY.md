@@ -59,6 +59,15 @@ socket de loopback. No hay servicio remoto, cuentas ni datos de usuario.
   la interfaz (`--host`) es decisión del usuario; el default no expone el puerto a la red. Es
   vulnerabilidad, por ejemplo, que un pedido HTTP bien formado lea o escriba fuera de `models/` y
   de la carpeta de reportes, o que tumbe el daemon.
+- **Pedidos desde el navegador.** Sin autenticación, una página web abierta en el navegador del
+  usuario podría hacer que este envíe pedidos al daemon. Por eso:
+  - los pedidos que modifican estado (`POST` a `/v1/*` o a `/api/model/*`) que traen un `Origin`
+    distinto del propio daemon se rechazan con 403 (CSRF). Los SDKs y agentes no mandan `Origin`;
+    la GUI de `/ui` es del mismo origen;
+  - escuchando en loopback, el `Host` tiene que ser `127.0.0.1`, `localhost` o `[::1]` (DNS
+    rebinding).
+
+  Saltear cualquiera de las dos reglas desde una página web es una vulnerabilidad en alcance.
 - **Integridad de los pesos.** El formato nativo `.brasa` guarda un sha256 de cada tensor y uno del
   bloque de datos completo, y `brasa models verify` los recalcula. Un `.brasa` o un safetensors con
   encabezados manipulados (longitudes, offsets, `dtype` o `shape` mentidos) que provoque un pánico,
@@ -96,6 +105,8 @@ Apache-2.0; ver [LICENSE](LICENSE).
 
 <!--
 Referencias del modelo de amenazas (archivo:línea):
+- Pedidos desde el navegador (Origin y Host): crates/daemon/src/origin.rs (check, local_only)
+  y crates/daemon/src/lib.rs (router, capa from_fn_with_state).
 - `brasa serve` en 127.0.0.1 sin autenticación: crates/cli/src/config.rs:12 (DEFAULT_HOST),
   crates/cli/src/serve.rs:17 (flag --host), crates/daemon/src/lib.rs:122 (router(), sin middleware
   de autenticación) y crates/daemon/src/lib.rs:198 (TcpListener::bind(cfg.addr)).
