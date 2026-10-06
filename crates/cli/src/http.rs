@@ -88,8 +88,10 @@ fn dechunk(mut raw: &[u8]) -> Result<String, String> {
             break;
         }
         // La respuesta puede venir truncada: no se puede indexar sin verificar los límites.
-        if raw.len() < size + 2 {
-            return Err("chunk truncado".into());
+        // `size + 2` puede desbordar con un tamaño como `ffffffffffffffff`.
+        match size.checked_add(2) {
+            Some(end) if raw.len() >= end => {}
+            _ => return Err("chunk truncado".into()),
         }
         out.extend_from_slice(&raw[..size]);
         if &raw[size..size + 2] != b"\r\n" {
@@ -128,6 +130,9 @@ mod tests {
         assert!(parse(r).is_err());
         // Tamaño de chunk con relleno que no entra.
         let r = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffff\r\nab";
+        assert!(parse(r).is_err());
+        // Tamaño máximo de u64: `size + 2` desborda; tiene que dar error, no pánico.
+        let r = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nab";
         assert!(parse(r).is_err());
     }
 }
