@@ -184,7 +184,7 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 | V0 | hecha | e08494a |
 | V1 | hecha | 4d8887c |
 | V2 | hecha | 284a138 |
-| V3 | pendiente | |
+| V3 | hecha | 692ae89 |
 | V4 | pendiente | |
 | V5 | pendiente | |
 | V6 | pendiente | |
@@ -202,6 +202,8 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
   personal.
 - **V2:** subir a `main` `.github/workflows/ci.yml` y `.github/dependabot.yml` para que la CI y
   Dependabot se activen (no hago push). Hasta que no estén en la rama por defecto, no corren.
+- **V3:** las plantillas de issues, su `config.yml` y la plantilla de PR también tienen que estar
+  en la rama por defecto para que GitHub las muestre.
 
 ## Pedidos a Claude
 

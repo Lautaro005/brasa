@@ -1,0 +1,49 @@
+name: Reporte de bug
+description: Algo no funciona como debería.
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por reportar. **No abras un issue para temas de seguridad**: leé
+        [SECURITY.md](../SECURITY.md) y usá el reporte privado de la pestaña Security.
+
+        Si podés, adjuntá la salida de `brasa doctor --json` y el comando exacto.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Salida de `brasa doctor --json`
+      description: Pegá la salida completa (chip, RAM, macOS, Metal, presión).
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: comando
+    attributes:
+      label: Comando
+      description: El comando exacto que corriste.
+      placeholder: "brasa serve qwen3-4b-q4 --ctx 16384"
+    validations:
+      required: true
+  - type: textarea
+    id: salida
+    attributes:
+      label: Salida y error
+      description: Lo que imprimió, con el error completo y el backtrace si lo hay.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versión
+      description: La salida de `brasa --version` (incluye el commit del build).
+      placeholder: "0.0.1 (abc123def456)"
+    validations:
+      required: true
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Qué esperabas que pasara
+    validations:
+      required: false
