@@ -26,12 +26,17 @@ brasa serve qwen3-4b-q4 --ctx 16384
 
 ## Codex
 
-Habla la API Responses. `brasa connect codex` imprime los dos archivos de configuración
-(`~/.codex/config.toml` y el perfil con la ventana de contexto).
+Habla la API Responses. `brasa connect codex` imprime el proveedor, un catálogo de modelos y el
+perfil con la ventana de contexto.
 
 ```bash
 brasa connect codex
 ```
+
+El catálogo (`~/.codex/brasa-models.json`) define la entrada del modelo **sin**
+`apply_patch_tool_type`: así Codex no le ofrece el parche `apply_patch` y el modelo edita los
+archivos con comandos de shell (`shell_type = unified_exec`), que es lo que un 4B sí sabe hacer.
+Medido en [la demo de la fase 4](../demos/fase4-codex.md).
 
 ## Cline y OpenCode
 

@@ -187,7 +187,7 @@ de shell en lugar de `apply_patch`, por ejemplo en el catálogo de modelos de
 | V3 | hecha | 692ae89 |
 | V4 | hecha | 6c902c5 |
 | V5 | hecha | 78981aa |
-| V6 | pendiente | |
+| V6 | hecha | bcd05fb |
 
 ## Pedidos al usuario
 
