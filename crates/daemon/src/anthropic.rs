@@ -193,14 +193,18 @@ pub async fn count_tokens(State(s): State<Shared>, body: axum::body::Bytes) -> R
     }
 }
 
-pub async fn messages(State(s): State<Shared>, body: axum::body::Bytes) -> Response {
+pub async fn messages(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let (b, req) = match parse_body(&body) {
         Ok(v) => v,
         Err(r) => return *r,
     };
     let model = b["model"].as_str().unwrap_or(&s.model_id).to_string();
     let stream = b["stream"].as_bool().unwrap_or(false);
-    let run = match start(&s, "/v1/messages", req).await {
+    let run = match start(&s, "/v1/messages", &headers, req).await {
         Ok(r) => r,
         Err((k, m)) => return error(status_of(k), k, &m),
     };

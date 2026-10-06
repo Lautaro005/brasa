@@ -128,7 +128,11 @@ fn call_json(c: &ToolCall) -> Value {
            "function": {"name": c.name, "arguments": arguments_string(&c.arguments)}})
 }
 
-pub async fn chat_completions(State(s): State<Shared>, body: axum::body::Bytes) -> Response {
+pub async fn chat_completions(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let b: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -148,7 +152,7 @@ pub async fn chat_completions(State(s): State<Shared>, body: axum::body::Bytes) 
     let include_usage = b["stream_options"]["include_usage"]
         .as_bool()
         .unwrap_or(false);
-    let run = match start(&s, "/v1/chat/completions", req).await {
+    let run = match start(&s, "/v1/chat/completions", &headers, req).await {
         Ok(r) => r,
         Err((k, m)) => return error(status_of(k), k, &m),
     };

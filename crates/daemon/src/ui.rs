@@ -9,7 +9,15 @@ pub const APP_CSS: &str = include_str!("../assets/app.css");
 pub const APP_JS: &str = include_str!("../assets/app.js");
 
 fn asset(body: &'static str, content_type: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, content_type)], body).into_response()
+    // Los archivos cambian con el binario: que el navegador no use una copia vieja.
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 pub async fn index() -> Response {

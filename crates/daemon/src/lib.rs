@@ -7,6 +7,7 @@ mod bench;
 mod common;
 pub mod connect;
 pub mod engine;
+mod local_models;
 mod metrics;
 mod model;
 mod openai;
@@ -130,6 +131,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/hello", get(health).head(health))
         .route("/api/status", get(status::status))
         .route("/api/metrics", get(status::metrics))
+        .route("/api/activity", get(status::activity))
+        .route("/api/models", get(local_models::models))
         .route("/api/plan", get(plan::plan))
         .route("/api/bench", get(bench::bench))
         .route("/api/agents", get(connect::agents))

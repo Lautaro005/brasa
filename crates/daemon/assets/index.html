@@ -3,118 +3,301 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>brasa</title>
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
-<header class="top">
-  <span class="brand">brasa</span>
-  <nav id="tabs" class="tabs">
-    <button data-tab="chat" class="active" type="button">Chat</button>
-    <button data-tab="estado" type="button">Estado</button>
-    <button data-tab="bench" type="button">Benchmarks</button>
-    <button data-tab="plan" type="button">Plan</button>
-    <button data-tab="agentes" type="button">Agentes</button>
-  </nav>
-  <span id="model-id" class="muted"></span>
-</header>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-monitor" viewBox="0 0 20 20"><path d="M2.5 11.5h3l2-5 3 9 2.5-6 1.5 2h3"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 20 20"><path d="M3.5 4.5h13v9h-7l-4 3v-3h-2z"/></symbol>
+  <symbol id="i-models" viewBox="0 0 20 20"><path d="M10 2.5l7 3.75-7 3.75-7-3.75zM3 10l7 3.75L17 10M3 13.75l7 3.75 7-3.75"/></symbol>
+  <symbol id="i-bench" viewBox="0 0 20 20"><path d="M3.5 16.5h13M5.5 16.5v-5M10 16.5v-11M14.5 16.5v-7.5"/></symbol>
+  <symbol id="i-plan" viewBox="0 0 20 20"><path d="M3.5 4.5h13v11h-13zM3.5 9h13M8.5 9v6.5"/></symbol>
+  <symbol id="i-agents" viewBox="0 0 20 20"><path d="M7 6.5L3.5 10 7 13.5M13 6.5l3.5 3.5-3.5 3.5M11 4.5l-2 11"/></symbol>
+  <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.5l9 5.5-9 5.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
+  <symbol id="i-unload" viewBox="0 0 20 20"><path d="M10 3.5v9M6.5 9l3.5 3.5L13.5 9M4 16.5h12"/></symbol>
+  <symbol id="i-load" viewBox="0 0 20 20"><path d="M10 12.5v-9M6.5 7L10 3.5 13.5 7M4 16.5h12"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 20 20"><path d="M5.5 5.5h9v9h-9z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 20 20"><path d="M3.5 10h12M11 5.5l4.5 4.5-4.5 4.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 20 20"><path d="M7 7h9.5v9.5H7zM13 7V3.5H3.5V13H7"/></symbol>
+  <symbol id="i-clear" viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4h4v2M6 6l.75 10h6.5L14 6"/></symbol>
+</svg>
 
-<main>
-  <section id="tab-chat" class="tab active">
-    <div class="chat">
-      <div id="messages" class="messages" aria-live="polite"></div>
-      <div id="composer" class="composer">
-        <textarea id="input" rows="3" placeholder="Escribí un mensaje… (Enter para enviar, Shift+Enter para salto de línea)"></textarea>
-        <div class="composer-actions">
-          <button id="send" type="button" class="primary">Enviar</button>
-          <button id="cancel" type="button" disabled>Cancelar</button>
-          <button id="clear" type="button">Limpiar</button>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <span class="wordmark">brasa</span>
+      <span id="version" class="brand-meta"></span>
+    </div>
+    <nav class="nav" aria-label="Secciones">
+      <a href="#monitor" data-view="monitor"><svg class="ic"><use href="#i-monitor"/></svg>Monitor</a>
+      <a href="#chat" data-view="chat"><svg class="ic"><use href="#i-chat"/></svg>Chat</a>
+      <a href="#modelos" data-view="modelos"><svg class="ic"><use href="#i-models"/></svg>Modelos</a>
+      <a href="#benchmarks" data-view="benchmarks"><svg class="ic"><use href="#i-bench"/></svg>Benchmarks</a>
+      <a href="#plan" data-view="plan"><svg class="ic"><use href="#i-plan"/></svg>Plan de memoria</a>
+      <a href="#agentes" data-view="agentes"><svg class="ic"><use href="#i-agents"/></svg>Agentes</a>
+    </nav>
+    <div class="rail-state" aria-live="polite">
+      <span id="rail-led" class="led" data-state="unknown"></span>
+      <div>
+        <div id="rail-state" class="rail-state-name">Conectando…</div>
+        <div id="rail-model" class="rail-model"></div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <p id="offline" class="offline" hidden role="status">No hay respuesta del servidor. Los datos de esta pantalla son los últimos que llegaron.</p>
+
+    <!-- Monitor -->
+    <section id="v-monitor" class="view" aria-labelledby="h-monitor">
+      <header class="view-head">
+        <h1 id="h-monitor">Monitor</h1>
+        <p id="mon-sub" class="view-sub"></p>
+      </header>
+
+      <section class="panel heat-panel" aria-labelledby="h-heat">
+        <div class="panel-head">
+          <h2 id="h-heat">Actividad</h2>
+          <p class="panel-note">Últimos 120 s, un casillero por segundo</p>
+          <div class="heat-legend" aria-hidden="true">
+            <span class="legend-label">tok/s</span>
+            <span class="sw" data-h="0"></span>
+            <span class="sw" data-h="1"></span><span class="sw" data-h="2"></span><span class="sw" data-h="3"></span>
+            <span class="sw" data-h="4"></span><span class="sw" data-h="5"></span><span class="sw" data-h="6"></span>
+            <span class="legend-scale">decode: pasos de 10 (≥ 50) · prefill: pasos de 100 (≥ 500)</span>
+          </div>
+        </div>
+        <div class="heat" id="heat">
+          <div class="lane-label">prefill</div>
+          <div class="lane" id="lane-prefill" aria-hidden="true"></div>
+          <div class="lane-label">decode</div>
+          <div class="lane" id="lane-decode" aria-hidden="true"></div>
+          <div></div>
+          <div class="heat-axis" aria-hidden="true"><span>−120 s</span><span>−90 s</span><span>−60 s</span><span>−30 s</span><span>ahora</span></div>
+        </div>
+        <p id="heat-summary" class="heat-summary"></p>
+      </section>
+
+      <div class="mon-grid">
+        <div class="mon-main">
+        <section class="panel" aria-labelledby="h-req">
+          <div class="panel-head">
+            <h2 id="h-req">Pedidos</h2>
+            <p id="req-note" class="panel-note"></p>
+          </div>
+          <div class="table-wrap">
+            <table class="data" id="req-table">
+              <thead><tr>
+                <th scope="col">Estado</th><th scope="col">Cliente</th><th scope="col">Endpoint</th>
+                <th scope="col" class="n">Hace</th><th scope="col" class="n">TTFT</th><th scope="col" class="n">tok/s</th>
+                <th scope="col" class="n">Prompt</th><th scope="col" class="n">Caché</th><th scope="col" class="n">Salida</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="req-empty" class="empty" hidden>
+            <p><strong>Todavía no llegó ningún pedido.</strong></p>
+            <p>Conectá un agente desde <a href="#agentes">Agentes</a> o probá el modelo en <a href="#chat">Chat</a>; cada pedido aparece acá mientras se procesa.</p>
+          </div>
+        </section>
+        <section class="panel totals-panel" aria-labelledby="h-tot">
+          <div class="panel-head">
+            <h2 id="h-tot">Desde el arranque</h2>
+            <p id="tot-note" class="panel-note"></p>
+          </div>
+          <dl class="totals" id="totals"></dl>
+        </section>
+        </div>
+
+        <div class="mon-side">
+          <section class="panel" aria-labelledby="h-mem">
+            <div class="panel-head">
+              <h2 id="h-mem">Memoria</h2>
+              <p id="mem-pressure" class="panel-note"></p>
+            </div>
+            <div class="mem">
+              <div class="mem-figure"><span id="mem-used" class="mem-num">—</span><span id="mem-of" class="mem-of"></span></div>
+              <div class="stack" id="mem-stack" role="img" aria-label="Plan de memoria frente al presupuesto">
+                <span class="seg" data-k="weights"></span><span class="seg" data-k="kv"></span>
+                <span class="seg" data-k="workspace"></span><span class="seg" data-k="overhead"></span>
+                <span class="mark" id="mem-mark" title="Huella del proceso"></span>
+              </div>
+              <dl class="kv" id="mem-list"></dl>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="h-model">
+            <div class="panel-head">
+              <h2 id="h-model">Modelo</h2>
+              <p id="model-state-note" class="panel-note"></p>
+            </div>
+            <div class="controls top" id="controls">
+              <button type="button" class="btn" data-op="load"><svg class="ic"><use href="#i-load"/></svg>Cargar</button>
+              <button type="button" class="btn" data-op="idle"><svg class="ic"><use href="#i-unload"/></svg>Descargar</button>
+              <button type="button" class="btn" data-op="pause"><svg class="ic"><use href="#i-pause"/></svg>Pausar</button>
+              <button type="button" class="btn" data-op="resume"><svg class="ic"><use href="#i-play"/></svg>Reanudar</button>
+              <button type="button" class="btn danger" data-op="stop"><svg class="ic"><use href="#i-stop"/></svg>Detener servidor</button>
+            </div>
+            <p id="control-msg" class="control-msg" role="status"></p>
+            <dl class="kv" id="model-list"></dl>
+          </section>
         </div>
       </div>
-      <fieldset class="params">
-        <legend>Parámetros</legend>
-        <label>max_tokens <input id="p-max" type="number" min="1" value="512"></label>
-        <label>temperature <input id="p-temp" type="number" step="0.05" min="0" value="0.7"></label>
-        <label>top_p <input id="p-topp" type="number" step="0.05" min="0" max="1" value="0.95"></label>
-        <label>top_k <input id="p-topk" type="number" min="0" value="20"></label>
-        <label>seed <input id="p-seed" type="number" min="0" placeholder="aleatoria"></label>
-        <label class="check"><input id="p-think" type="checkbox"> razonamiento (&lt;think&gt;)</label>
-      </fieldset>
-    </div>
-  </section>
+    </section>
 
-  <section id="tab-estado" class="tab">
-    <div class="cards">
-      <div class="card">
-        <h2>Memoria</h2>
-        <div class="bar"><div id="mem-bar" class="bar-fill"></div></div>
-        <div id="mem-legend" class="muted"></div>
-        <dl id="mem-list" class="kv"></dl>
+    <!-- Chat -->
+    <section id="v-chat" class="view" aria-labelledby="h-chat" hidden>
+      <div class="chat-layout">
+        <div class="chat-main">
+          <header class="view-head">
+            <h1 id="h-chat">Chat</h1>
+            <p class="view-sub">Pedidos reales a <code>/v1/chat/completions</code> con streaming.</p>
+          </header>
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <form id="composer" class="composer">
+            <label class="sr-only" for="input">Mensaje</label>
+            <textarea id="input" rows="3" placeholder="Escribí un mensaje. Enter envía; Shift+Enter agrega una línea."></textarea>
+            <div class="composer-bar">
+              <span id="composer-state" class="composer-state"></span>
+              <button id="clear" type="button" class="btn ghost"><svg class="ic"><use href="#i-clear"/></svg>Borrar conversación</button>
+              <button id="cancel" type="button" class="btn" hidden><svg class="ic"><use href="#i-stop"/></svg>Cancelar</button>
+              <button id="send" type="submit" class="btn primary"><svg class="ic"><use href="#i-send"/></svg>Enviar</button>
+            </div>
+          </form>
+        </div>
+        <aside class="chat-side" aria-label="Estadísticas y parámetros">
+          <section class="panel">
+            <div class="panel-head"><h2>Último pedido</h2></div>
+            <dl class="kv" id="chat-stats"></dl>
+            <div class="mini-heat" id="mini-heat" aria-hidden="true"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Parámetros</h2></div>
+            <div class="form-grid">
+              <label>max_tokens <input id="p-max" type="number" min="1" value="512" inputmode="numeric"></label>
+              <label>temperature <input id="p-temp" type="number" step="0.05" min="0" value="0.7"></label>
+              <label>top_p <input id="p-topp" type="number" step="0.05" min="0" max="1" value="0.95"></label>
+              <label>top_k <input id="p-topk" type="number" min="0" value="20" inputmode="numeric"></label>
+              <label>seed <input id="p-seed" type="number" min="0" placeholder="aleatoria" inputmode="numeric"></label>
+            </div>
+            <label class="check"><input id="p-think" type="checkbox"> Razonamiento (<code>&lt;think&gt;</code>)</label>
+          </section>
+        </aside>
       </div>
-      <div class="card">
-        <h2>Rendimiento</h2>
-        <dl id="perf-list" class="kv"></dl>
-      </div>
-      <div class="card">
-        <h2>Servidor</h2>
-        <dl id="srv-list" class="kv"></dl>
-      </div>
-      <div class="card">
-        <h2>Sistema</h2>
-        <dl id="sys-list" class="kv"></dl>
-      </div>
-    </div>
-    <p id="estado-note" class="muted"></p>
-  </section>
+    </section>
 
-  <section id="tab-bench" class="tab">
-    <div class="row">
-      <h2>Reportes de docs/bench</h2>
-      <span id="bench-note" class="muted"></span>
-    </div>
-    <div id="bench-charts" class="charts"></div>
-    <div class="scroll">
-      <table id="bench-table">
-        <thead><tr>
-          <th>Engine</th><th>Variante</th><th>Modelo</th><th>Ctx</th>
-          <th>TTFT ms</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>Memoria GiB</th><th>Válido</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+    <!-- Modelos -->
+    <section id="v-modelos" class="view" aria-labelledby="h-modelos" hidden>
+      <header class="view-head">
+        <h1 id="h-modelos">Modelos</h1>
+        <p id="models-sub" class="view-sub"></p>
+      </header>
+      <section class="panel" aria-labelledby="h-inst">
+        <div class="panel-head">
+          <h2 id="h-inst">En disco</h2>
+          <p id="inst-note" class="panel-note"></p>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="inst-table">
+            <thead><tr>
+              <th scope="col">Modelo</th><th scope="col">Estado</th><th scope="col" class="n">En disco</th>
+              <th scope="col" class="n">Plan con este servidor</th><th scope="col" class="n">Huella</th><th scope="col" class="n">Residente</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="panel-foot">Cada servidor sirve un modelo. Para servir otro, deteneló y corré <code>brasa serve &lt;modelo&gt;</code>.</p>
+      </section>
+      <section class="panel" aria-labelledby="h-cat">
+        <div class="panel-head">
+          <h2 id="h-cat">Catálogo sin descargar</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="cat-table">
+            <thead><tr>
+              <th scope="col">Modelo</th><th scope="col">Familia</th><th scope="col">Cuantización</th><th scope="col">Licencia</th>
+              <th scope="col" class="n">Contexto máx.</th><th scope="col" class="n">Descarga</th><th scope="col">Comando</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cat-empty" class="empty-inline" hidden>Todo el catálogo ya está en disco.</p>
+      </section>
+    </section>
 
-  <section id="tab-plan" class="tab">
-    <form id="plan-form" class="params wide">
-      <label>ctx <input id="plan-ctx" type="number" min="256" step="256" value="16384"></label>
-      <label>chunk <input id="plan-chunk" type="number" min="64" step="64" value="128"></label>
-      <label>kv
-        <select id="plan-kv">
-          <option value="f16" selected>f16</option>
-          <option value="q8_0">q8_0</option>
-          <option value="f32">f32</option>
-        </select>
-      </label>
-      <label>perfil
-        <select id="plan-perfil">
-          <option value="esta" selected>esta máquina</option>
-          <option value="16gb">16 GB</option>
-          <option value="8gb">8 GB</option>
-        </select>
-      </label>
-      <button type="submit" class="primary">Calcular</button>
-    </form>
-    <pre id="plan-out" class="out">—</pre>
-  </section>
+    <!-- Benchmarks -->
+    <section id="v-benchmarks" class="view" aria-labelledby="h-bench" hidden>
+      <header class="view-head">
+        <h1 id="h-bench">Benchmarks</h1>
+        <p id="bench-note" class="view-sub"></p>
+      </header>
+      <div class="bench-charts" id="bench-charts"></div>
+      <section class="panel" aria-labelledby="h-bench-t">
+        <div class="panel-head"><h2 id="h-bench-t">Reportes</h2></div>
+        <div class="table-wrap">
+          <table class="data" id="bench-table">
+            <thead><tr>
+              <th scope="col">Engine</th><th scope="col">Variante</th><th scope="col">Modelo</th><th scope="col" class="n">Contexto</th>
+              <th scope="col" class="n">TTFT ms</th><th scope="col" class="n">Prefill tok/s</th><th scope="col" class="n">Decode tok/s</th>
+              <th scope="col" class="n">Memoria GiB</th><th scope="col">Válido</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
 
-  <section id="tab-agentes" class="tab">
-    <div class="row">
-      <label>ctx <input id="agents-ctx" type="number" min="256" step="256" placeholder="ctx del servidor"></label>
-      <button id="agents-load" type="button" class="primary">Generar</button>
-    </div>
-    <div id="agents-out" class="agents"></div>
-  </section>
-</main>
+    <!-- Plan -->
+    <section id="v-plan" class="view" aria-labelledby="h-plan" hidden>
+      <header class="view-head">
+        <h1 id="h-plan">Plan de memoria</h1>
+        <p class="view-sub">El mismo planner que <code>brasa plan</code>: calcula sin cargar el modelo.</p>
+      </header>
+      <section class="panel">
+        <form id="plan-form" class="form-row">
+          <label>Contexto <input id="plan-ctx" type="number" min="256" step="256" value="16384" inputmode="numeric"></label>
+          <label>Chunk <input id="plan-chunk" type="number" min="64" step="64" value="128" inputmode="numeric"></label>
+          <label>KV
+            <select id="plan-kv">
+              <option value="f16" selected>f16</option>
+              <option value="q8_0">q8_0</option>
+              <option value="f32">f32</option>
+            </select>
+          </label>
+          <label>Perfil
+            <select id="plan-perfil">
+              <option value="esta" selected>esta máquina</option>
+              <option value="16gb">16 GB</option>
+              <option value="8gb">8 GB</option>
+            </select>
+          </label>
+          <button type="submit" class="btn primary">Calcular</button>
+        </form>
+        <div id="plan-out" class="plan-out">
+          <p class="empty-inline">Elegí contexto, KV y perfil, y calculá.</p>
+        </div>
+      </section>
+    </section>
+
+    <!-- Agentes -->
+    <section id="v-agentes" class="view" aria-labelledby="h-agentes" hidden>
+      <header class="view-head">
+        <h1 id="h-agentes">Agentes</h1>
+        <p class="view-sub">Configuración para apuntar cada herramienta a este servidor; es lo mismo que <code>brasa connect</code>.</p>
+      </header>
+      <section class="panel">
+        <form id="agents-form" class="form-row">
+          <label>Contexto <input id="agents-ctx" type="number" min="256" step="256" placeholder="el del servidor" inputmode="numeric"></label>
+          <button type="submit" class="btn primary">Generar</button>
+        </form>
+      </section>
+      <div id="agents-out" class="agents"></div>
+    </section>
+  </main>
+</div>
 
 <script src="/ui/app.js"></script>
 </body>

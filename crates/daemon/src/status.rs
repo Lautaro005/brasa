@@ -43,3 +43,7 @@ pub async fn status(State(s): State<Shared>) -> Response {
 pub async fn metrics(State(s): State<Shared>) -> Response {
     axum::Json(s.metrics.snapshot()).into_response()
 }
+
+pub async fn activity(State(s): State<Shared>) -> Response {
+    axum::Json(s.metrics.activity()).into_response()
+}
