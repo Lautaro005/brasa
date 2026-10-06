@@ -146,19 +146,58 @@ impl Sampler {
     }
 }
 
+/// Índice del primer máximo (los NaN no cuentan; 0 si no hay ningún valor mayor que -∞).
+/// En dos pasadas sin saltos dependientes de los datos, para que se vectorice: con el
+/// vocabulario de Qwen3 (151 936) baja de ~210 a ~30 µs por token en M1 Pro (T3.5).
 pub fn argmax(v: &[f32]) -> u32 {
-    let mut best = (0usize, f32::NEG_INFINITY);
-    for (i, x) in v.iter().enumerate() {
-        if *x > best.1 {
-            best = (i, *x);
+    const L: usize = 16;
+    let mut lanes = [f32::NEG_INFINITY; L];
+    let chunks = v.chunks_exact(L);
+    let tail = chunks.remainder();
+    for c in chunks {
+        for (m, x) in lanes.iter_mut().zip(c) {
+            *m = m.max(*x);
         }
     }
-    best.0 as u32
+    let m = lanes
+        .iter()
+        .chain(tail)
+        .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    if m == f32::NEG_INFINITY {
+        return 0;
+    }
+    v.iter().position(|&x| x == m).unwrap_or(0) as u32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn argmax_igual_a_la_version_escalar() {
+        let escalar = |v: &[f32]| {
+            let mut best = (0usize, f32::NEG_INFINITY);
+            for (i, x) in v.iter().enumerate() {
+                if *x > best.1 {
+                    best = (i, *x);
+                }
+            }
+            best.0 as u32
+        };
+        let (inf, nan) = (f32::NEG_INFINITY, f32::NAN);
+        let casos: Vec<Vec<f32>> = vec![
+            vec![],
+            vec![inf, inf],
+            vec![nan, inf, nan],
+            vec![nan, 1.0, nan, 1.0],
+            vec![-3.0, -1.0, -1.0, -2.0],
+            (0..151_936).map(|i| ((i * 7919) % 1000) as f32).collect(),
+            (0..37).map(|i| ((i * 13) % 5) as f32 - 2.0).collect(),
+        ];
+        for v in &casos {
+            assert_eq!(argmax(v), escalar(v), "{:?}", &v[..v.len().min(8)]);
+        }
+    }
 
     #[test]
     fn greedy_es_argmax() {
