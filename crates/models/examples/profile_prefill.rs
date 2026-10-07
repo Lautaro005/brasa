@@ -4,6 +4,7 @@
 //! El contexto se fija en `n` redondeado a 128 (como `brasa benchmark` con ctx = n + 128).
 //! Con PP_DEPTHS=0,1536,7680,15872 mide en cambio un solo bloque de `chunk` tokens en cada
 //! posición (como `llama-bench -p 512 -d ...`); el tiempo no depende del contenido de la KV.
+//! Con PP_VERBOSE=1 imprime el tiempo de GPU de cada bloque.
 
 use std::path::Path;
 use std::time::Instant;
@@ -77,6 +78,13 @@ fn main() {
             .unwrap()
             .gpu_seconds;
         gpu += g;
+        if std::env::var("PP_VERBOSE").is_ok() {
+            println!(
+                "  bloque {i:>3} (pos {:>6}): GPU {:>8.1} ms",
+                i * chunk,
+                g * 1e3
+            );
+        }
         q_gpu[(i * chunk * quarters / n).min(quarters - 1)] += g;
     }
     let wall = t0.elapsed().as_secs_f64();

@@ -615,7 +615,7 @@ impl Kernels {
     }
 
     /// GEMM para prefill con el tipo de entradas `input`. Usa el kernel tiled (simdgroup matrix)
-    /// si `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple (siempre en f32).
+    /// si `rows % 64 == 0` y `cols % 64 == 0`; si no, la versión simple (siempre en f32).
     pub fn gemm_with<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -625,7 +625,7 @@ impl Kernels {
         tokens: usize,
         input: GemmInput,
     ) {
-        if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
+        if w.rows % 64 != 0 || w.cols % 64 != 0 || w.qtype == WeightType::Q6_0 {
             return self.gemm_naive(cmd, w, x, y, tokens);
         }
         let qi = match w.qtype {

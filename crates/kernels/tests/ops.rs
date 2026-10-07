@@ -163,7 +163,7 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
     };
     let x = rng.vec(tokens * cols, 4.0);
     let mut expected = vec![0.0; tokens * rows];
-    // El kernel tiled solo se usa con filas % 64 == 0, columnas % 32 == 0 y pesos q4_0/q8_0; si
+    // El kernel tiled solo se usa con filas % 64 == 0, columnas % 64 == 0 y pesos q4_0/q8_0; si
     // no, `gemm` cae en la versión simple en f32.
     let tiled_f16 =
         path == Path::Tiled && rows % 64 == 0 && cols % 32 == 0 && qtype != WeightType::Q6_0;
