@@ -11,7 +11,7 @@ use crate::run::models_dir;
 #[derive(Debug, Args)]
 pub struct RmArgs {
     model: String,
-    /// Carpeta base de modelos.
+    /// Carpeta base de modelos (por defecto la efectiva; ver `brasa config show`).
     #[arg(long)]
     dir: Option<PathBuf>,
     /// No pedir confirmación.
@@ -23,7 +23,10 @@ pub struct RmArgs {
 }
 
 pub fn run(a: RmArgs) -> Result<(), String> {
-    let base = a.dir.unwrap_or_else(models_dir);
+    let base = match a.dir {
+        Some(d) => d,
+        None => models_dir()?,
+    };
     // Solo subcarpetas directas de `models_dir`, sin rutas, `..` ni symlinks: `rm` borra.
     // Si la base es (o pasa por) un symlink, se niega salvo --seguir-symlink-base.
     let dir = local::resolve_child_with(&base, &a.model, a.seguir_symlink_base).map_err(|e| e.0)?;

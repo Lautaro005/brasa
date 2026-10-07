@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta. Sin esto, el
-    /// del archivo de configuración.
+    /// Nombre del modelo (carpeta dentro de la carpeta de modelos; ver `brasa config show`) o ruta
+    /// a su carpeta. Sin esto, el del archivo de configuración.
     model: Option<String>,
     /// Mensaje del usuario; sin esto, modo interactivo.
     #[arg(long, short)]
@@ -51,9 +51,12 @@ pub struct RunArgs {
     seed: Option<u64>,
 }
 
-/// Carpeta base de modelos: `$BRASA_MODELS` o `./models`.
-pub fn models_dir() -> PathBuf {
-    PathBuf::from(std::env::var("BRASA_MODELS").unwrap_or_else(|_| "models".into()))
+/// Carpeta base de modelos (ADR 0031): `$BRASA_MODELS` > `models_dir` del archivo de
+/// configuración > `./models` si existe > `~/Library/Application Support/brasa/models`.
+pub fn models_dir() -> Result<PathBuf, String> {
+    brasa_catalog::dirs::models_dir(None)
+        .map(|m| m.path)
+        .map_err(|e| e.0)
 }
 
 pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
@@ -61,7 +64,7 @@ pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
     if direct.join("model.brasa").exists() {
         return Ok(direct.to_path_buf());
     }
-    let base = models_dir();
+    let base = models_dir()?;
     let p = base.join(name);
     if p.join("model.brasa").exists() {
         return Ok(p);
@@ -71,8 +74,8 @@ pub fn resolve_model(name: &str) -> Result<PathBuf, String> {
         .map_or_else(|_| format!("{name}-hf"), |m| m.hf_dir);
     Err(format!(
         "no se encontró el modelo {name:?} (buscado en {} y como ruta).\n\
-         Sugerencia: corré `brasa models` para ver los locales, o `brasa pull {name}` y \
-         `brasa convert {} {}` para bajarlo y convertirlo.",
+         Sugerencia: corré `brasa models` para ver los locales, o `brasa pull {name}` para \
+         bajarlo ya convertido (o `brasa pull --desde-fuente {name}` y `brasa convert {} {}`).",
         p.display(),
         base.join(&hf).display(),
         base.join(name).display()

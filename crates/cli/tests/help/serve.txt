@@ -4,7 +4,7 @@ Usage: serve [OPTIONS] [MODEL]
 
 Arguments:
   [MODEL]
-          Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta. Sin esto, el del archivo de configuración
+          Nombre del modelo (carpeta dentro de la carpeta de modelos; ver `brasa config show`) o ruta. Sin esto, el del archivo de configuración
 
 Options:
       --host <HOST>

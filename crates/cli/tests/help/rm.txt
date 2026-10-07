@@ -8,7 +8,7 @@ Arguments:
 
 Options:
       --dir <DIR>
-          Carpeta base de modelos
+          Carpeta base de modelos (por defecto la efectiva; ver `brasa config show`)
 
   -y, --yes
           No pedir confirmación

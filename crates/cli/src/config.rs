@@ -24,6 +24,8 @@ pub struct Config {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub kv: Option<String>,
+    /// Carpeta de modelos (ADR 0031). Ruta absoluta o con `~/`.
+    pub models_dir: Option<String>,
     #[serde(default)]
     pub run: Section,
     #[serde(default)]
@@ -79,10 +81,6 @@ pub fn pick<T>(flag: Option<T>, file: Option<T>, default: T) -> Value<T> {
     }
 }
 
-fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
-}
-
 /// Contexto efectivo de `serve`: flag > `[serve] ctx` > defecto.
 pub fn serve_ctx(flag: Option<usize>, cfg: &Config) -> Value<usize> {
     pick(flag, cfg.serve.ctx, DEFAULT_SERVE_CTX)
@@ -97,12 +95,7 @@ impl Config {
     /// Ruta del archivo: `$BRASA_CONFIG`, si no `$XDG_CONFIG_HOME/brasa/config.toml`, si no
     /// `~/.config/brasa/config.toml`.
     pub fn path() -> PathBuf {
-        if let Some(p) = std::env::var_os("BRASA_CONFIG") {
-            return PathBuf::from(p);
-        }
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map_or_else(|| home().join(".config"), PathBuf::from);
-        base.join("brasa").join("config.toml")
+        brasa_catalog::dirs::config_path()
     }
 
     pub fn load() -> Result<Self, String> {
@@ -155,6 +148,8 @@ fn show(json: bool) -> Result<(), String> {
     let ctx_run = run_ctx(None, &cfg);
     let ctx_serve = serve_ctx(None, &cfg);
     let kv = v(None, cfg.kv.clone(), DEFAULT_KV);
+    let md = brasa_catalog::dirs::models_dir(None).map_err(|e| e.0)?;
+    let md_path = md.path.display().to_string();
     if json {
         let item = |value: String, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
         let n = |value: usize, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
@@ -169,6 +164,10 @@ fn show(json: bool) -> Result<(), String> {
                 "run": {"ctx": n(ctx_run.value, ctx_run.source)},
                 "serve": {"ctx": n(ctx_serve.value, ctx_serve.source)},
                 "kv": item(kv.0, kv.1),
+                "models_dir": serde_json::json!({
+                    "value": md_path,
+                    "source": md.source.as_str(),
+                }),
             }))
             .unwrap()
         );
@@ -192,6 +191,7 @@ fn show(json: bool) -> Result<(), String> {
             ctx_serve.source.as_str()
         );
         println!("kv        {:>10}   ({})", kv.0, kv.1.as_str());
+        println!("models_dir {md_path}   ({})", md.source.as_str());
     }
     Ok(())
 }
@@ -232,6 +232,22 @@ mod tests {
         let missing = Config::load_from(&dir.join("nope.toml")).unwrap();
         assert_eq!(missing, Config::default());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn las_claves_coinciden_con_las_del_catalogo() {
+        // `brasa_catalog::dirs::save_models_dir` se niega a tocar archivos con claves que no
+        // conoce: su lista tiene que ser exactamente la de `Config`.
+        let text = "model = \"x\"\nhost = \"x\"\nport = 1\nkv = \"x\"\nmodels_dir = \"x\"\n\
+                    [run]\nctx = 1\n[serve]\nctx = 1\n";
+        let c: Config = toml::from_str(text).unwrap();
+        assert_eq!(c.models_dir.as_deref(), Some("x"));
+        let table: toml::Table = toml::from_str(text).unwrap();
+        let mut keys: Vec<&str> = table.keys().map(String::as_str).collect();
+        let mut want = brasa_catalog::dirs::CONFIG_KEYS.to_vec();
+        keys.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(keys, want);
     }
 
     #[test]

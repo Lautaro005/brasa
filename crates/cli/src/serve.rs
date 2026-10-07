@@ -11,8 +11,8 @@ use crate::run::resolve_model;
 
 #[derive(Debug, Args)]
 pub struct ServeArgs {
-    /// Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta. Sin esto, el del archivo
-    /// de configuración.
+    /// Nombre del modelo (carpeta dentro de la carpeta de modelos; ver `brasa config show`) o
+    /// ruta. Sin esto, el del archivo de configuración.
     model: Option<String>,
     /// Dirección a escuchar (por defecto 127.0.0.1).
     #[arg(long)]
@@ -96,6 +96,13 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
         },
         addr,
         commit: env!("BRASA_BUILD_COMMIT").to_string(),
+        models_dir: brasa_catalog::dirs::models_dir(None).map_err(|e| e.0)?,
+        config_path: brasa_catalog::dirs::config_path(),
+        // Un espejo o un servidor de prueba (ADR 0031); por defecto, Hugging Face.
+        hf_endpoint: std::env::var("BRASA_HF_ENDPOINT")
+            .ok()
+            .filter(|e| !e.is_empty())
+            .unwrap_or_else(|| brasa_catalog::pull::HF_ENDPOINT.to_string()),
     })
 }
 
