@@ -22,7 +22,12 @@ Options:
           [default: 512]
 
       --kv <KV>
-          Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009)
+          Tipo de la KV cache: f32, f16 o q8_0 (ADR 0009). Por defecto, el del perfil: q8_0 en 8 GB, f16 en 16 GB
+
+      --perfil <PERFIL>
+          Perfil de memoria: fija la KV por defecto y simula el presupuesto de esa Mac (el menor entre el del perfil y el de esta). Sin esto, el perfil de esta Mac según su RAM
+          
+          [possible values: 8gb, 16gb]
 
   -h, --help
           Print help

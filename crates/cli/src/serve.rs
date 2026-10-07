@@ -3,10 +3,11 @@
 use std::net::SocketAddr;
 
 use brasa_daemon::ServeConfig;
+use brasa_memory::planner::{Budget, Profile, simulated_budget};
 use brasa_runtime::{KvType, Limits};
 use clap::Args;
 
-use crate::config::{self, Config, DEFAULT_HOST, DEFAULT_KV, DEFAULT_MODEL, DEFAULT_PORT};
+use crate::config::{self, Config, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_PORT, Perfil};
 use crate::run::resolve_model;
 
 #[derive(Debug, Args)]
@@ -26,9 +27,14 @@ pub struct ServeArgs {
     /// Tokens por bloque de prefill.
     #[arg(long, default_value_t = 512)]
     chunk: usize,
-    /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
+    /// Tipo de la KV cache: f32, f16 o q8_0 (ADR 0009). Por defecto, el del perfil: q8_0 en
+    /// 8 GB, f16 en 16 GB.
     #[arg(long, value_parser = crate::parse_kv)]
     kv: Option<KvType>,
+    /// Perfil de memoria: fija la KV por defecto y simula el presupuesto de esa Mac (el menor
+    /// entre el del perfil y el de esta). Sin esto, el perfil de esta Mac según su RAM.
+    #[arg(long, value_enum)]
+    perfil: Option<Perfil>,
 }
 
 /// Valores efectivos de `serve`: flag > archivo > defecto, con su origen.
@@ -39,10 +45,14 @@ pub struct Effective {
     pub port: config::Value<u16>,
     pub ctx: config::Value<usize>,
     pub kv: config::Value<KvType>,
+    /// Perfil de memoria efectivo y si vino de `--perfil` (si no, de la RAM de esta Mac).
+    pub profile: config::Value<Profile>,
 }
 
-/// Resuelve la configuración efectiva de `serve` sin cargar nada (función pura).
-pub fn effective(a: &ServeArgs, cfg: &Config) -> Result<Effective, String> {
+/// Resuelve la configuración efectiva de `serve` sin cargar nada. `machine` es el perfil de esta
+/// Mac (se pasa para que la función sea pura).
+pub fn effective(a: &ServeArgs, cfg: &Config, machine: Profile) -> Result<Effective, String> {
+    let profile = config::pick(a.perfil.map(Perfil::profile), None, machine);
     let model = config::pick(
         a.model.clone(),
         cfg.model.clone(),
@@ -61,7 +71,7 @@ pub fn effective(a: &ServeArgs, cfg: &Config) -> Result<Effective, String> {
     let kv = config::pick(
         a.kv,
         cfg_kv,
-        KvType::parse(DEFAULT_KV).expect("kv por defecto"),
+        KvType::parse(profile.value.agent_kv()).expect("kv del perfil"),
     );
     Ok(Effective {
         model,
@@ -69,13 +79,17 @@ pub fn effective(a: &ServeArgs, cfg: &Config) -> Result<Effective, String> {
         port,
         ctx,
         kv,
+        profile,
     })
 }
 
 pub fn run(a: ServeArgs) -> Result<(), String> {
     let cfg = Config::load()?;
-    let e = effective(&a, &cfg)?;
+    let e = effective(&a, &cfg, Profile::this_machine())?;
     let (model, host, port, ctx, kv) = (e.model, e.host, e.port, e.ctx, e.kv);
+    // Con --perfil, el planner usa el presupuesto simulado; sin él, el de esta máquina.
+    let budget = (e.profile.source == config::Source::Flag)
+        .then(|| simulated_budget(e.profile.value, Budget::this_machine()));
 
     let dir = resolve_model(&model.value)?;
     let model_id = dir
@@ -84,7 +98,17 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
     let addr: SocketAddr = format!("{}:{}", host.value, port.value)
         .parse()
         .map_err(|e| format!("dirección inválida: {e}"))?;
-    eprintln!("cargando {} (contexto {}) ...", dir.display(), ctx.value);
+    eprintln!(
+        "cargando {} (contexto {}, KV {}, perfil {}{}) ...",
+        dir.display(),
+        ctx.value,
+        kv.value.name(),
+        e.profile.value.name(),
+        match &budget {
+            Some(b) => format!("; presupuesto {}", b.source),
+            None => String::new(),
+        }
+    );
     brasa_daemon::serve(ServeConfig {
         model_dir: dir,
         model_id,
@@ -96,6 +120,7 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
         },
         addr,
         commit: env!("BRASA_BUILD_COMMIT").to_string(),
+        budget,
     })
 }
 
@@ -112,6 +137,7 @@ mod tests {
             ctx,
             chunk: 512,
             kv: None,
+            perfil: None,
         }
     }
 
@@ -124,7 +150,7 @@ mod tests {
             ..Config::default()
         };
         // Sin flags: mandan el archivo y su [serve] ctx.
-        let e = effective(&args(None), &cfg).unwrap();
+        let e = effective(&args(None), &cfg, Profile::G16).unwrap();
         assert_eq!((e.port.value, e.port.source), (9123, Source::File));
         assert_eq!((e.ctx.value, e.ctx.source), (8192, Source::File));
         assert_eq!(e.kv.value.name(), "q8_0");
@@ -136,8 +162,41 @@ mod tests {
         // Con flags: mandan los flags.
         let mut a = args(Some(4096));
         a.port = Some(8080);
-        let e = effective(&a, &cfg).unwrap();
+        let e = effective(&a, &cfg, Profile::G16).unwrap();
         assert_eq!((e.port.value, e.port.source), (8080, Source::Flag));
         assert_eq!((e.ctx.value, e.ctx.source), (4096, Source::Flag));
+    }
+
+    #[test]
+    fn perfil_fija_la_kv_por_defecto_del_modo_agente() {
+        let vacio = Config::default();
+        // 8 GB (por RAM o por --perfil): 16K con KV Q8 (CLAUDE.md, perfil de agente).
+        let e = effective(&args(None), &vacio, Profile::G8).unwrap();
+        assert_eq!((e.ctx.value, e.kv.value.name()), (16384, "q8_0"));
+        assert_eq!(
+            (e.profile.value, e.profile.source),
+            (Profile::G8, Source::Default)
+        );
+        let mut a = args(None);
+        a.perfil = Some(Perfil::G8);
+        let e = effective(&a, &vacio, Profile::G16).unwrap();
+        assert_eq!((e.ctx.value, e.kv.value.name()), (16384, "q8_0"));
+        assert_eq!(
+            (e.profile.value, e.profile.source),
+            (Profile::G8, Source::Flag)
+        );
+        // 16 GB: 16K con KV f16.
+        let e = effective(&args(None), &vacio, Profile::G16).unwrap();
+        assert_eq!((e.ctx.value, e.kv.value.name()), (16384, "f16"));
+        // --kv y el archivo mandan sobre el perfil.
+        a.kv = KvType::parse("f16");
+        let e = effective(&a, &vacio, Profile::G16).unwrap();
+        assert_eq!((e.kv.value.name(), e.kv.source), ("f16", Source::Flag));
+        let cfg = Config {
+            kv: Some("f32".into()),
+            ..Config::default()
+        };
+        let e = effective(&args(None), &cfg, Profile::G8).unwrap();
+        assert_eq!((e.kv.value.name(), e.kv.source), ("f32", Source::File));
     }
 }

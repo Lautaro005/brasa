@@ -52,11 +52,12 @@ Las dependencias solo apuntan hacia abajo: `cli` y `daemon` dependen de `runtime
 cargo build --release
 cargo test --workspace
 cargo run -p brasa-cli -- doctor               # chip, núcleos CPU/GPU, RAM, macOS, Metal, presión
-cargo run -p brasa-cli -- doctor --json
+cargo run -p brasa-cli -- doctor --json                                  # incluye fingerprint y estado de la base de tuning
+cargo run --release -p brasa-cli -- tune [qwen3-4b-q4] [--full] [--dry-run]  # autotuner de decode (ADR 0029); quick < 1 min; BRASA_TUNING_DIR para otra carpeta
 cargo run --release -p brasa-cli -- run qwen3-4b-q4                      # chat interactivo
 cargo run --release -p brasa-cli -- run qwen3-4b-q4 --no-think -p "Hola"  # una respuesta
 cargo run --release -p brasa-cli -- plan qwen3-4b-q4 --ctx 16384 [--perfil 8gb]  # planner, sin cargar
-cargo run --release -p brasa-cli -- serve qwen3-4b-q4 --ctx 16384        # API OpenAI/Anthropic en :8080 (--kv f16 por defecto; q8_0 perfil agente; f32 para verificar)
+cargo run --release -p brasa-cli -- serve qwen3-4b-q4 --ctx 16384 [--perfil 8gb|16gb]  # API OpenAI/Anthropic en :8080; KV por defecto del perfil (8gb: q8_0, 16gb: f16; ADR 0029); --perfil simula ese presupuesto; BRASA_TUNING=off ignora la base de tuning
 cargo run --release -p brasa-cli -- connect codex|claude-code|cline|opencode  # config para agentes
 cargo run --release -p brasa-cli -- connect codex|claude-code|opencode --apply  # la escribe (ADR 0028; respaldo de lo que modifica)
 .venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
@@ -64,7 +65,7 @@ cargo run --release -p brasa-cli -- connect codex|claude-code|opencode --apply  
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
 cargo run --release -p brasa-kernels --example mma_peak   # techo de simdgroup MMA del chip (f32/f16)
-cargo run --release -p brasa-models --example profile_decode -- 16000 16064 q8_0   # decode: ms/token de GPU en una posición [ctx] [kv]
+cargo run --release -p brasa-models --example profile_decode -- 16000 16064 q8_0   # decode: ms/token de GPU en una posición [ctx] [kv] (usa la base de tuning; BRASA_TUNING=off para A/B)
 cargo run --release -p brasa-kernels --example decode_breakdown -- 2000  # decode: ms/token por kernel (×36 capas)
 cargo run --release -p brasa-kernels --example attn_decode_sweep -- [f16|q8_0|f32]  # atención de decode: µs/capa según la longitud de la caché
 cargo run --release -p brasa-kernels --example flash_sweep -- [f16|q8_0|f32]  # atención de prefill (T=512): ms y GFLOP/s por posición (FA_POS=15872 para una sola)
@@ -95,6 +96,7 @@ cargo test --release -p brasa-quant --test roundtrip -- --ignored --nocapture   
 cargo test --release -p brasa-models --test layers -- --ignored --nocapture     # T1.5
 cargo test --release -p brasa-models --test forward -- --ignored --nocapture --test-threads 1  # T1.6 con KV f32, f16 y q8_0
 cargo test --release -p brasa-models --test decode_alloc -- --ignored --nocapture  # regla 4
+cargo test --release -p brasa-models --test launch -- --ignored --nocapture        # ADR 0029: logits iguales con parámetros tuneados
 cargo test --release -p brasa-runtime --test session -- --ignored --nocapture   # T1.7 greedy y prefijo
 cargo test --release -p brasa-runtime --test planner -- --ignored --nocapture   # T1.8 plan vs real
 ```

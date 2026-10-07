@@ -58,6 +58,7 @@ fn state_with(engine: Engine) -> Arc<AppState> {
             overhead: 1_000_000,
             total: 2_002_500_000,
         },
+        tuning: "base 0123456789abcdef con 9 entradas".into(),
     };
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let meta = ServerMeta {
@@ -249,6 +250,7 @@ async fn status_informa_modelo_plan_y_cola() {
     assert_eq!(s["model"]["id"], "qwen3-4b-q4");
     assert_eq!(s["context"]["ctx"], 2048);
     assert_eq!(s["context"]["kv"], "f16");
+    assert_eq!(s["tuning"], "base 0123456789abcdef con 9 entradas");
     assert_eq!(s["plan"]["weights"], 2_000_000_000u64);
     assert_eq!(s["queue"], json!({"pending": 0, "running": 0}));
     assert!(s["uptime_s"].as_f64().unwrap() >= 0.0);

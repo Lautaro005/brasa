@@ -67,6 +67,49 @@ echo "==> T3.4 perfil de agente: 16K con KV Q8 (plan y benchmark sin swap crecie
 ./target/release/brasa benchmark --ctx 16384 --kv q8_0 --label kv-q8 --out-dir "$out" \
     2>&1 | tee "$out/bench-16k-q8.log"
 
+echo "==> Fase 4: autotuner (quick < 60 s) y perfil 8 GB de punta a punta"
+./target/release/brasa doctor | sed -n '/^Tuning/,/^$/p' | tee "$out/tuning-antes.txt"
+t0=$(date +%s)
+./target/release/brasa tune 2>&1 | tee "$out/tune.txt"
+echo "pared: $(( $(date +%s) - t0 )) s" | tee -a "$out/tune.txt"
+./target/release/brasa doctor --json > "$out/doctor-tuning.json"
+./target/release/brasa config show | tee "$out/config-show.txt"
+grep -q "serve kv.*q8_0" "$out/config-show.txt"
+# A/B del decode con y sin la base (mismo binario), 2K y 16K Q8.
+BRASA_TUNING=off ./target/release/brasa benchmark --ctx 2048 --label tuning-off --out-dir "$out" \
+    2>&1 | tee "$out/bench-2k-tuning-off.log"
+./target/release/brasa benchmark --ctx 2048 --label tuning-on --out-dir "$out" \
+    2>&1 | tee "$out/bench-2k-tuning-on.log"
+BRASA_TUNING=off ./target/release/brasa benchmark --ctx 16384 --kv q8_0 --label kv-q8-tuning-off \
+    --out-dir "$out" 2>&1 | tee "$out/bench-16k-q8-tuning-off.log"
+./target/release/brasa benchmark --ctx 16384 --kv q8_0 --label kv-q8-tuning-on --out-dir "$out" \
+    2>&1 | tee "$out/bench-16k-q8-tuning-on.log"
+# Presión con el contexto declarado: serve con los valores del perfil (16K, KV Q8) y una
+# conversación larga; memoria y swap antes y después.
+./target/release/brasa serve qwen3-4b-q4 --port 18080 > "$out/serve-perfil.log" 2>&1 &
+serve_pid=$!
+for _ in $(seq 1 120); do
+    curl -sf http://127.0.0.1:18080/api/status > /dev/null && break
+    sleep 1
+done
+curl -sf http://127.0.0.1:18080/api/status > "$out/serve-status-antes.json"
+python3 - "$out" <<'PY'
+import json, sys, urllib.request
+out = sys.argv[1]
+long = " ".join(f"linea {i}: el agente lee archivos y llama herramientas." for i in range(1500))
+body = {"model": "qwen3-4b-q4", "max_tokens": 64,
+        "messages": [{"role": "user", "content": long + "\nResumí en una oración."}]}
+req = urllib.request.Request("http://127.0.0.1:18080/v1/chat/completions",
+                             data=json.dumps(body).encode(), headers={"content-type": "application/json"})
+for i in range(3):
+    with urllib.request.urlopen(req, timeout=600) as r:
+        u = json.load(r)["usage"]
+    print("turno", i, u, flush=True)
+PY
+curl -sf http://127.0.0.1:18080/api/status > "$out/serve-status-despues.json"
+kill "$serve_pid"
+grep "tuning:" "$out/serve-perfil.log"
+
 {
     echo "commit: $commit"
     echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

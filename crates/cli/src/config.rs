@@ -17,6 +17,24 @@ pub const DEFAULT_SERVE_CTX: usize = 16384;
 pub const DEFAULT_RUN_CTX: usize = 4096;
 pub const DEFAULT_KV: &str = "f16";
 
+/// Perfil de memoria de la línea de comandos (`--perfil 8gb|16gb`, ADR 0007 y 0029).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Perfil {
+    #[value(name = "8gb")]
+    G8,
+    #[value(name = "16gb")]
+    G16,
+}
+
+impl Perfil {
+    pub fn profile(self) -> brasa_memory::planner::Profile {
+        match self {
+            Perfil::G8 => brasa_memory::planner::Profile::G8,
+            Perfil::G16 => brasa_memory::planner::Profile::G16,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -155,6 +173,9 @@ fn show(json: bool) -> Result<(), String> {
     let ctx_run = run_ctx(None, &cfg);
     let ctx_serve = serve_ctx(None, &cfg);
     let kv = v(None, cfg.kv.clone(), DEFAULT_KV);
+    // `serve` toma la KV por defecto del perfil de memoria de esta Mac (ADR 0029).
+    let profile = brasa_memory::planner::Profile::this_machine();
+    let kv_serve = v(None, cfg.kv.clone(), profile.agent_kv());
     if json {
         let item = |value: String, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
         let n = |value: usize, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
@@ -167,7 +188,11 @@ fn show(json: bool) -> Result<(), String> {
                 "host": item(host.0, host.1),
                 "port": serde_json::json!({"value": port.value, "source": port.source.as_str()}),
                 "run": {"ctx": n(ctx_run.value, ctx_run.source)},
-                "serve": {"ctx": n(ctx_serve.value, ctx_serve.source)},
+                "serve": {
+                    "ctx": n(ctx_serve.value, ctx_serve.source),
+                    "kv": item(kv_serve.0, kv_serve.1),
+                    "perfil": profile.name(),
+                },
                 "kv": item(kv.0, kv.1),
             }))
             .unwrap()
@@ -192,6 +217,12 @@ fn show(json: bool) -> Result<(), String> {
             ctx_serve.source.as_str()
         );
         println!("kv        {:>10}   ({})", kv.0, kv.1.as_str());
+        println!(
+            "serve kv  {:>10}   ({}; perfil {})",
+            kv_serve.0,
+            kv_serve.1.as_str(),
+            profile.name()
+        );
     }
     Ok(())
 }
