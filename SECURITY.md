@@ -32,8 +32,8 @@ mantenedores. No abras un issue público con detalles ni con una prueba de conce
 - **Componente:** `brasa serve` y su API, la GUI (`/ui`), el CLI, el catálogo
   (`brasa pull`/`brasa rm`) o el formato de pesos `.brasa`.
 - **Pasos para reproducir** con el pedido o el archivo de entrada mínimo.
-- **Impacto** esperado: por ejemplo, leer o escribir fuera de `models/`, tumbar el daemon, o
-  ejecutar código.
+- **Impacto** esperado: por ejemplo, leer o escribir fuera de la carpeta de modelos, tumbar el
+  daemon, o ejecutar código.
 - Si lo tenés, una **prueba de concepto**.
 
 ### Plazos (compromiso de buena fe, no un SLA)
@@ -57,16 +57,22 @@ socket de loopback. No hay servicio remoto, cuentas ni datos de usuario.
 - **Servidor local.** `brasa serve` escucha en `127.0.0.1` por defecto y **no tiene
   autenticación**: cualquiera con acceso a la máquina y al puerto puede hablar con la API. Cambiar
   la interfaz (`--host`) es decisión del usuario; el default no expone el puerto a la red. Es
-  vulnerabilidad, por ejemplo, que un pedido HTTP bien formado lea o escriba fuera de `models/` y
-  de la carpeta de reportes, o que tumbe el daemon.
+  vulnerabilidad, por ejemplo, que un pedido HTTP bien formado lea o escriba fuera de la carpeta de
+  modelos, de la carpeta de reportes y del archivo de configuración, o que tumbe el daemon.
 - **Pedidos desde el navegador.** Sin autenticación, una página web abierta en el navegador del
   usuario podría hacer que este envíe pedidos al daemon. Por eso:
   - los pedidos que modifican estado (cualquier método que no sea `GET`, `HEAD` u `OPTIONS`: `/v1/*`,
-    `/api/model/*` y `/api/agents/<herramienta>/connect`) que traen un `Origin` distinto del propio
-    daemon se rechazan con 403 (CSRF). Los SDKs y agentes no mandan `Origin`; la GUI de `/ui` es del
-    mismo origen. `/api/agents/<herramienta>/connect` escribe archivos de configuración en la carpeta
-    del usuario (ADR 0028): solo rutas fijas debajo de `HOME`, sin caminos que vengan del pedido, y
-    con respaldo de lo que modifica;
+    `/api/model/*`, `/api/agents/<herramienta>/connect`, `/api/models/pull` (y su cancelación) y
+    `/api/models/dir*`) que traen un `Origin` distinto del propio daemon se rechazan con 403 (CSRF).
+    Los SDKs y agentes no mandan `Origin`; la GUI de `/ui` es del mismo origen.
+    `/api/agents/<herramienta>/connect` escribe archivos de configuración en la carpeta del usuario
+    (ADR 0028): solo rutas fijas debajo de `HOME`, sin caminos que vengan del pedido, y con respaldo
+    de lo que modifica;
+  - `/api/models/pull` descarga solo modelos del catálogo: del pedido se usa el nombre, y repo,
+    revisión, rutas y sha256 salen del manifiesto (ADR 0031). `/api/models/dir` cambia la carpeta de
+    modelos a una ruta absoluta sin `..` que se pueda escribir y la guarda en `models_dir` del
+    archivo de configuración editando solo esa línea; `/api/models/dir/choose` y `/dir/open` no
+    reciben rutas del pedido (abren el selector de macOS y la carpeta efectiva en Finder);
   - escuchando en loopback, el `Host` tiene que ser `127.0.0.1`, `localhost` o `[::1]` (DNS
     rebinding).
 
@@ -76,9 +82,11 @@ socket de loopback. No hay servicio remoto, cuentas ni datos de usuario.
   encabezados manipulados (longitudes, offsets, `dtype` o `shape` mentidos) que provoque un pánico,
   un desborde o una lectura fuera del mmap es una vulnerabilidad en alcance.
 - **Catálogo y archivos.** Los manifiestos se validan (`name`, `hf_dir` y `path` no pueden salir de
-  `models/`), `brasa pull` rechaza rutas inseguras del manifiesto, y `brasa rm` se limita a
-  subcarpetas reales de la carpeta de modelos (rechaza `..`, rutas absolutas y symlinks). Un escape
-  de esas reglas es una vulnerabilidad.
+  la carpeta de modelos; en `[prebuilt]`, `repo` es `dueño/nombre`, `revision` un segmento sin `/`
+  y `subdir` una ruta relativa sin `..`), `brasa pull` rechaza rutas inseguras del manifiesto y
+  verifica el sha256 de cada archivo, y `brasa rm` se limita a subcarpetas reales de la carpeta de
+  modelos (rechaza `..`, rutas absolutas y symlinks). Un escape de esas reglas es una
+  vulnerabilidad.
 - **GUI embebida.** La GUI se sirve desde el binario (`include_str!`), sin recursos remotos, sin
   CDN y sin analytics; tampoco manda telemetría. Una fuga de datos a internet desde la GUI o el
   daemon es una vulnerabilidad.
@@ -113,22 +121,33 @@ Referencias del modelo de amenazas (archivo:línea):
 - Conectar agentes (rutas fijas, respaldo, sin pisar archivos ajenos): crates/daemon/src/connect_apply.rs
   (Paths, codex, claude_code, opencode) y sus tests con un HOME temporal; test de API
   `connect_rechaza_cline_y_herramientas_desconocidas` (incluye el 403 por origen).
+- Descarga y carpeta de modelos (ADR 0031): rutas en crates/daemon/src/lib.rs:164-174, detrás de la
+  misma capa de origen; crates/daemon/src/models_admin.rs:226 (pull_start: el nombre se busca en el
+  catálogo, nada más sale del pedido), :338 (pull_cancel), :364 (set_dir), :406 (choose_dir) y :419
+  (open_dir, sin rutas del pedido); :71 (osascript con la carpeta como argumento, no interpolada).
+  Validación de la carpeta: crates/catalog/src/dirs.rs:163 (prepare_models_dir: absoluta, sin `..`,
+  se prueba la escritura) y :202 (save_models_dir: edita una sola línea y verifica que el resto quede
+  igual). URL armada solo del manifiesto: crates/catalog/src/pull.rs:219. Tests de API
+  `descarga_y_carpeta_rechazan_otro_origen` (403 para los seis POST/DELETE, con un escritorio que
+  entra en pánico si se lo llama), `pull_baja_los_pesos_convertidos_del_catalogo` (un `url` en el
+  pedido se ignora) y `dir_cambia_la_carpeta_y_la_guarda` (rutas relativas y `..` dan 400; un
+  archivo con claves desconocidas no se reescribe).
 - `brasa serve` en 127.0.0.1 sin autenticación: crates/cli/src/config.rs:12 (DEFAULT_HOST),
-  crates/cli/src/serve.rs:17 (flag --host), crates/daemon/src/lib.rs:122 (router(), sin middleware
-  de autenticación) y crates/daemon/src/lib.rs:198 (TcpListener::bind(cfg.addr)).
+  crates/cli/src/serve.rs:19 (flag --host), crates/daemon/src/lib.rs:157 (router(), sin middleware
+  de autenticación) y crates/daemon/src/lib.rs:261 (TcpListener::bind(cfg.addr)).
 - sha256 por tensor y del bloque de datos: crates/quant/src/brasa_file.rs:98 (verify),
   crates/quant/src/brasa_file.rs:101 (sha256 por tensor), crates/quant/src/brasa_file.rs:110
-  (sha256 del conjunto); crates/catalog/src/verify.rs:19 (verify) y crates/cli/src/models.rs:130
+  (sha256 del conjunto); crates/catalog/src/verify.rs:19 (verify) y crates/cli/src/models.rs:133
   (`brasa models verify`).
-- Manifiestos validados y sin rutas fuera de models/: crates/catalog/src/manifest.rs:12
-  (safe_relative), crates/catalog/src/manifest.rs:30 (validate_component),
-  crates/catalog/src/manifest.rs:87 (validate); crates/catalog/src/pull.rs:122 (safe_relative del
-  path antes de descargar).
+- Manifiestos validados y sin rutas fuera de la carpeta de modelos: crates/catalog/src/manifest.rs:16
+  (safe_relative), crates/catalog/src/manifest.rs:34 (validate_component),
+  crates/catalog/src/manifest.rs:159 (validate, incluido `[prebuilt]`); crates/catalog/src/pull.rs:186
+  (safe_relative del path antes de descargar).
 - `rm` acotado: crates/catalog/src/local.rs:88 (resolve_child), crates/catalog/src/local.rs:95
-  (resolve_child_with, que rechaza una base con symlink) y crates/cli/src/rm.rs:29/48
+  (resolve_child_with, que rechaza una base con symlink) y crates/cli/src/rm.rs:32/51
   (resolve_child_with antes de remove_dir_all).
 - GUI embebida sin recursos remotos ni telemetría: crates/daemon/src/ui.rs:7-9 (include_str!),
-  crates/daemon/tests/api.rs:175-176 (test: ningún asset referencia http:// ni https://);
+  crates/daemon/tests/api.rs:211-212 (test: ningún asset referencia http:// ni https://);
   CLAUDE.md:23 (regla 9, sin telemetría saliente).
 - Archivos de pesos maliciosos: crates/quant/src/brasa_file.rs:64 (open valida magic, versión,
   límites y alineación), crates/quant/src/brasa_file.rs:67 (magic BRSA) y
@@ -136,5 +155,5 @@ Referencias del modelo de amenazas (archivo:línea):
 - Presupuesto de memoria del planner: crates/memory/src/planner.rs:82 (plan).
 - Prompt injection fuera de alcance: crates/daemon/src/openai.rs:131 (el daemon traduce el pedido a
   los tipos de brasa-core y sirve al modelo; no ejecuta herramientas).
-- `ctx` fuera de rango acotado: crates/daemon/src/lib.rs:106 (MAX_CTX).
+- `ctx` fuera de rango acotado: crates/daemon/src/lib.rs:141 (MAX_CTX).
 -->
