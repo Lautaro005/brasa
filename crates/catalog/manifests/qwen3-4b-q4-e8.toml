@@ -1,23 +1,24 @@
 # Manifiesto de modelo (ADR 0020). Repo y revisión de Hugging Face fijados; sha256 de cada
 # archivo verificado contra los oid LFS de la API de HF el 2026-10-05.
-name = "qwen3-4b-q4"
+name = "qwen3-4b-q4-e8"
 family = "qwen3"
 source_repo = "Qwen/Qwen3-4B"
 source_revision = "1cfa9a7208912126459214e8b04321603b3df60c"
 # Carpeta donde `brasa pull --desde-fuente` deja los safetensors (entrada de `brasa convert`).
 hf_dir = "qwen3-4b-hf"
-quant = "q4_0 g32 lineales + q6_0 embeddings (.brasa, ADR 0006, 0012)"
+quant = "q4_0 g32 lineales + q8_0 embeddings (.brasa, ADR 0006)"
+convertible = false
 max_context = 40960
 license = "Apache-2.0"
 
-# Pesos ya convertidos (ADR 0031): `brasa pull` baja estos archivos a <carpeta de modelos>/qwen3-4b-q4/.
+# Pesos ya convertidos (ADR 0031): `brasa pull` baja estos archivos a <carpeta de modelos>/qwen3-4b-q4-e8/.
 # sha256 y tamaños calculados sobre los archivos locales el 2026-10-06.
 # TODO(ADR 0031): fijar `revision` al commit de 40 hex del repo cuando esté publicado; mientras
 # tanto apunta a `main` y la integridad la garantiza el sha256 de cada archivo.
 [prebuilt]
 repo = "lautiss/brasa-v0.01-base"
 revision = "main"
-subdir = "qwen3-4b-q4"
+subdir = "qwen3-4b-q4-e8"
 
 [[prebuilt.files]]
 path = "tokenizer.json"
@@ -32,10 +33,11 @@ sha256 = "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
 # Último: la carpeta cuenta como modelo instalado recién cuando aparece model.brasa.
 [[prebuilt.files]]
 path = "model.brasa"
-size = 2362228736
-sha256 = "98a93252af5f76a427b6ff823151d8c4c801f9c3bbccede30dfe5d91ac827cc4"
+size = 2459467776
+sha256 = "997a3e9b246f990cfa2c828fcbaba85686847a5fe5be25d61f4f8a17ef8050ba"
 
-# Origen: safetensors de Qwen para `brasa pull --desde-fuente` + `brasa convert`.
+# Origen de los pesos. `brasa convert` produce embeddings q6_0, no q8_0: este modelo solo se
+# baja ya convertido.
 [[files]]
 path = "config.json"
 size = 726
