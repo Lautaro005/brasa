@@ -13,11 +13,10 @@ license = "Apache-2.0"
 
 # Pesos ya convertidos (ADR 0031): `brasa pull` baja estos archivos a <carpeta de modelos>/qwen3-4b-q4-e8/.
 # sha256 y tamaños calculados sobre los archivos locales el 2026-10-06.
-# TODO(ADR 0031): fijar `revision` al commit de 40 hex del repo cuando esté publicado; mientras
-# tanto apunta a `main` y la integridad la garantiza el sha256 de cada archivo.
+# Revisión fijada al commit del repo publicado el 2026-10-07 (los sha256 coinciden con el oid LFS).
 [prebuilt]
 repo = "lautiss/brasa-v0.01-base"
-revision = "main"
+revision = "c8b159a2ab1ad1163689cad5931add471cc3d882"
 subdir = "qwen3-4b-q4-e8"
 
 [[prebuilt.files]]

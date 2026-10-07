@@ -26,7 +26,7 @@ con `size` y `sha256`) y el campo `convertible` (por defecto `true`):
 ```toml
 [prebuilt]
 repo = "lautiss/brasa-v0.01-base"
-revision = "main"          # TODO: commit de 40 hex cuando el repo exista
+revision = "c8b159a2ab1ad1163689cad5931add471cc3d882"   # commit del repo publicado
 subdir = "qwen3-4b-q4"
 [[prebuilt.files]]         # tokenizers primero, model.brasa último
 path = "model.brasa"
@@ -38,9 +38,9 @@ sha256 = "98a9…"
   `dueño/nombre`, `revision` un segmento sin `/` (commit o rama), `subdir` y `path` rutas relativas
   sin `..` (validado al parsear).
 - Los sha256 y tamaños se calcularon sobre `models/qwen3-4b-q4/` y `models/qwen3-4b-q4-e8/` el
-  2026-10-06. Como el repo todavía no tiene un commit, `revision = "main"`; la integridad la da el
-  sha256 de cada archivo, y `brasa pull` avisa que la revisión no está fijada. Fijarla es cambiar
-  esa línea por el commit de 40 hex en los dos manifiestos (`Prebuilt::is_pinned` lo reconoce).
+  2026-10-06. El repo se publicó el 2026-10-07 y la revisión quedó fijada en los dos manifiestos al
+  commit `c8b159a2`; los sha256 coinciden con los `oid` LFS de la API de Hugging Face. Con una
+  revisión sin fijar (una rama), `brasa pull` avisa (`Prebuilt::is_pinned`).
 - `model.brasa` va último: `local::scan` reconoce un modelo por `model.brasa`, que aparece (por el
   `rename` del `.part`) solo cuando todo lo demás ya está.
 - Nuevo manifiesto `qwen3-4b-q4-e8` (q8_0 embeddings). `brasa convert` solo produce q6_0, así que
@@ -118,8 +118,8 @@ dispararon en esa prueba para no abrir ventanas; en los tests van inyectados.
 
 - Instalar un modelo pasa de ≈7,6 GiB de safetensors más una conversión a 2,2–2,3 GiB ya
   convertidos, verificados por sha256.
-- Mientras el repo no exista, `brasa pull` y el botón Descargar fallan con HTTP 404 de Hugging
-  Face. Queda pendiente fijar `revision` y probar una descarga real.
+- Descarga real verificada el 2026-10-07: `brasa pull qwen3-4b-q4` bajó los 2,21 GiB de
+  huggingface.co en 1 min 48 s a una carpeta temporal y `brasa models verify` dio ok.
 - Un `serve` arrancado fuera del checkout ya no busca en `./models`, sino en `Application Support`
   (o lo que diga la configuración); en el checkout no cambia nada porque `./models` existe.
 - `brasa-catalog` suma `libc` (ya estaba en el workspace) para `statvfs`.

@@ -59,7 +59,7 @@ cargo run --release -p brasa-cli -- plan qwen3-4b-q4 --ctx 16384 [--perfil 8gb] 
 cargo run --release -p brasa-cli -- serve qwen3-4b-q4 --ctx 16384        # API OpenAI/Anthropic en :8080 (--kv f16 por defecto; q8_0 perfil agente; f32 para verificar)
 cargo run --release -p brasa-cli -- connect codex|claude-code|cline|opencode  # config para agentes
 cargo run --release -p brasa-cli -- connect codex|claude-code|opencode --apply  # la escribe (ADR 0028; respaldo de lo que modifica)
-cargo run --release -p brasa-cli -- pull qwen3-4b-q4 [--dry-run]         # pesos convertidos de HF a la carpeta de modelos (ADR 0031; hasta publicar el repo, solo --dry-run)
+cargo run --release -p brasa-cli -- pull qwen3-4b-q4 [--dry-run]         # pesos convertidos de HF (lautiss/brasa-v0.01-base) a la carpeta de modelos (ADR 0031)
 cargo run --release -p brasa-cli -- pull --desde-fuente qwen3-4b-q4      # safetensors de Qwen para `brasa convert` (ADR 0020)
 cargo run --release -p brasa-cli -- config show                          # config efectiva, incluida la carpeta de modelos y su origen
 .venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
