@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use brasa_metal::Context;
-use brasa_models::qwen3::{KvType, Limits, Qwen3};
+use brasa_models::qwen3::{GemvOp, KvType, Launch, Limits, Qwen3};
 
 struct Counting;
 
@@ -58,6 +58,19 @@ fn decode_sin_asignaciones() {
         };
         let mut model =
             Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();
+        // Con parámetros de lanzamiento tuneados (ADR 0029): la consulta tampoco asigna.
+        let c = &model.cfg;
+        let mut launch = Launch::default();
+        launch
+            .set_gemv(GemvOp::Scaled3, c.q_dim() + 2 * c.kv_dim(), c.hidden, 8)
+            .unwrap();
+        launch
+            .set_attn_lanes(kv, c.heads / c.kv_heads, 64, 1)
+            .unwrap();
+        launch
+            .set_attn_lanes(kv, c.heads / c.kv_heads, 4096, 8)
+            .unwrap();
+        model.set_launch(&ctx, launch).unwrap();
         let mut logits = vec![0f32; model.cfg.vocab];
         let prompt: Vec<u32> = (0..40).map(|i| 1000 + i).collect();
         model.forward(&ctx, &prompt, 0, 1, &mut logits).unwrap();

@@ -8,8 +8,9 @@ pub mod session;
 use std::fmt;
 
 pub use brasa_models::qwen3::{KvType, Limits};
+pub use brasa_tuner::TuningStatus;
 pub use sampler::{Sampler, SamplingParams};
-pub use session::{GenStats, Session, StopReason};
+pub use session::{GenStats, Session, StopReason, tune_dims};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);

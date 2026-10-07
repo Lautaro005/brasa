@@ -147,6 +147,7 @@ pub fn run(args: RunArgs) -> Result<(), String> {
     };
     eprintln!("cargando {} (contexto {}) ...", dir.display(), ctx.value);
     let mut session = Session::load(&dir, limits).map_err(|e| e.to_string())?;
+    eprintln!("tuning: {}", session.tuning());
     let params = sampling(&args);
     let mut sampler = Sampler::new(params, session.vocab());
     let opts = RenderOptions {

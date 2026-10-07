@@ -8,8 +8,9 @@ use std::time::{Instant, SystemTime};
 
 use brasa_memory::planner::{self, Budget, Fit, MemoryPlan};
 use brasa_metal::Context;
-use brasa_models::qwen3::{Allocated, Limits, Qwen3, model_shape};
+use brasa_models::qwen3::{Allocated, Limits, Qwen3, model_shape, weight_types};
 use brasa_tokenizer::{StreamDecoder, Tokenizer};
+use brasa_tuner::{Resolved, TuningStatus};
 
 use crate::sampler::Sampler;
 use crate::{Error, Result};
@@ -80,6 +81,40 @@ fn shared_tokenizer(dir: &Path) -> Result<Arc<Tokenizer>> {
     Ok(tok)
 }
 
+/// Dimensiones de decode del modelo de `model_dir` para el autotuner (ADR 0029). Solo lee el
+/// encabezado de `model.brasa`.
+pub fn tune_dims(model_dir: &Path) -> Result<brasa_tuner::tune::ModelDims> {
+    let path = model_dir.join("model.brasa");
+    let (shape, _) = model_shape(&path)?;
+    let (layer_type, head_type) = weight_types(&path)?;
+    Ok(brasa_tuner::tune::ModelDims {
+        layers: shape.layers,
+        hidden: shape.hidden,
+        heads: shape.heads,
+        kv_heads: shape.kv_heads,
+        head_dim: shape.head_dim,
+        ffn: shape.ffn,
+        vocab: shape.vocab,
+        layer_type,
+        head_type,
+    })
+}
+
+/// Aplica los parámetros resueltos al modelo. Si el pipeline no admite alguno (una base escrita
+/// por otro binario con los mismos kernels no debería traerlo), quedan los valores por defecto.
+fn apply_tuning(ctx: &Context, model: &mut Qwen3, r: Resolved) -> TuningStatus {
+    match model.set_launch(ctx, r.launch) {
+        Ok(()) => r.status,
+        Err(e) => TuningStatus::Invalid {
+            fingerprint_id: match &r.status {
+                TuningStatus::Tuned { fingerprint_id, .. } => fingerprint_id.clone(),
+                _ => String::new(),
+            },
+            error: e.0,
+        },
+    }
+}
+
 #[derive(Debug)]
 pub struct Session {
     ctx: Context,
@@ -90,6 +125,8 @@ pub struct Session {
     cached: Vec<u32>,
     /// Si es `true`, los tokens de parada se bloquean (benchmarks: generar siempre `max_new`).
     pub ignore_stop: bool,
+    /// De dónde salieron los parámetros de lanzamiento de decode (ADR 0029).
+    tuning: TuningStatus,
 }
 
 impl Session {
@@ -125,7 +162,9 @@ impl Session {
         };
         let ctx = Context::new()?;
         let tok = shared_tokenizer(model_dir)?;
-        let model = Qwen3::load(&ctx, &model_dir.join("model.brasa"), limits)?;
+        let mut model = Qwen3::load(&ctx, &model_dir.join("model.brasa"), limits)?;
+        // Base de tuning del fingerprint actual; sin base o inválida, los valores por defecto.
+        let tuning = apply_tuning(&ctx, &mut model, brasa_tuner::resolve_current());
         let vocab = model.cfg.vocab;
         let session = Self {
             ctx,
@@ -133,6 +172,7 @@ impl Session {
             logits: vec![0.0; vocab],
             cached: Vec::with_capacity(limits.ctx),
             ignore_stop: false,
+            tuning,
             model,
         };
         Ok((session, plan))
@@ -141,6 +181,11 @@ impl Session {
     /// Olvida la secuencia en caché (el próximo `generate` hace prefill completo).
     pub fn reset(&mut self) {
         self.cached.clear();
+    }
+
+    /// Origen de los parámetros de lanzamiento de decode: base de tuning o valores por defecto.
+    pub fn tuning(&self) -> &TuningStatus {
+        &self.tuning
     }
 
     /// Memoria reservada en buffers Metal por el modelo.
