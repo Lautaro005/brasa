@@ -190,6 +190,7 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
                            constant uint& pos0   [[buffer(6)]],
                            constant float& scale [[buffer(7)]],
                            uint2 tg   [[threadgroup_position_in_grid]],
+                           uint2 ntg  [[threadgroups_per_grid]],
                            ushort sg   [[simdgroup_index_in_threadgroup]],
                            ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup q_t   sq[FR * D];    // Q escalada; fila j: query j % FQ de la cabeza h0 + j / FQ
@@ -199,7 +200,9 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
     const uint h0 = tg.y * FH;
     const uint hq = hkv * GQA_G;
     const uint kh = h0 / GQA_G;
-    const uint q0 = tg.x * FQ;
+    // Los bloques de queries con más claves (los últimos) se despachan primero: menos cola de
+    // threadgroups largos al final (medido en M1 Pro: −30 % de tiempo en pos0 = 0, ~1 % después).
+    const uint q0 = (ntg.x - 1 - tg.x) * FQ;
     constexpr ushort RPS = FR / NSGF;   // filas por simdgroup en el softmax
 
 #pragma unroll
