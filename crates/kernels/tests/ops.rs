@@ -2,7 +2,7 @@
 //! (tolerancias en `brasa_kernels`). Formas de Qwen3-4B: H = 2560, FFN = 9728, head_dim = 128.
 
 use brasa_kernels::testutil::{Rng, max_rel};
-use brasa_kernels::{GemmInput, Kernels, QMatrix, RopeTable, WeightType, reference};
+use brasa_kernels::{Kernels, PrefillPrecision, QMatrix, RopeTable, WeightType, reference};
 use brasa_metal::{Arg, Context};
 use brasa_quant::QType;
 
@@ -192,7 +192,7 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
             Arg::buf(&gx),
             Arg::buf(&y),
             tokens,
-            GemmInput::F32,
+            PrefillPrecision::F32,
         ),
     }
     cmd.commit_and_wait().unwrap();

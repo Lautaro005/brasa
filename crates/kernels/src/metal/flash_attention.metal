@@ -130,25 +130,36 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
     }
 }
 
-// Variante GQA (la de la ruta caliente, ADR 0030). Threadgroup = 8 queries de una cabeza, 4
-// simdgroups, bloques de BC = 64 claves (como el kernel de llama.cpp, mismo reparto):
-//   1. S = Q·Kᵀ: simdgroup s calcula los tiles de claves s y s + 4 (8 × 8 cada uno). Q (escalada)
-//      está en memoria threadgroup en f32; K se lee directo de la caché como fragmento (en f16
-//      sin convertir: el producto mixto f32 × f16 acumula en f32);
-//   2. softmax online: simdgroup s atiende las filas s y s + 4, cada lane 2 claves; P queda en
-//      memoria threadgroup y O (en memoria threadgroup, f32) se reescala por fila;
-//   3. O[:, 32·s ..) += P · V, con V leído directo de la caché.
-// Toda la aritmética en f32: los únicos redondeos son los de la caché. Medido en M1 Pro (T = 512,
-// KV f16): ~2,0 TFLOPS contra ~1,2 del kernel anterior (16 filas de 4 cabezas con O en
-// registros). Guardar O en registros en lugar de memoria threadgroup rinde ~25 % menos, y Q en
-// half no cambia la velocidad. La caché debe poder leerse hasta el múltiplo de 64 siguiente con
-// valores finitos (KV_ALIGN; las posiciones fuera de rango se enmascaran).
+// Variante GQA (la de la ruta caliente, ADR 0030). Threadgroup = 8 queries de FH cabezas del
+// mismo grupo GQA (FH = 2, o 1 sin GQA): 4 simdgroups, bloques de 64 claves (el reparto de
+// trabajo de `kernel_flash_attn_ext` de llama.cpp, con K y V compartidos entre cabezas):
+//   1. S = Q·Kᵀ: cada simdgroup, los tiles de claves s y s + 4 para las FH cabezas (cada
+//      fragmento de K se usa FH veces). Q (escalada) está en memoria threadgroup en half (float
+//      con FA_Q_F32, la variante exacta); K se
+//      lee directo de la caché como fragmento (half con KV f16, float con f32 y Q8); el producto
+//      acumula en f32;
+//   2. softmax online en f32: cada simdgroup atiende FH·2 filas y cada lane 2 claves; P queda en
+//      memoria threadgroup (f32) y O (en memoria threadgroup, f32) se reescala por fila;
+//   3. O[:, 32·s ..) += P · V para las FH cabezas, cada fragmento de V leído una vez.
+// Redondeos: los de la caché y Q a f16 (ADR 0030: ~2e-4 · max|o| contra Q en f32). Medido en
+// M1 Pro, T = 512, KV f16 a 16K: 2,48 TFLOPS (Q en f32: 2,21; una cabeza por threadgroup y Q en
+// f32: 2,08; el kernel de ADR 0010: ~1,2). Guardar O en registros rinde ~25 % menos que en
+// memoria threadgroup; 4 cabezas por threadgroup (32 KiB de memoria threadgroup), ~20 % menos.
+// La caché debe poder leerse hasta el múltiplo de 64 siguiente con valores finitos (KV_ALIGN;
+// las posiciones fuera de rango se enmascaran).
 #ifndef GQA_G
 #define GQA_G 4
 #endif
-constant ushort FQ = 8;      // queries por threadgroup
-constant ushort BC = 64;     // claves por bloque
-constant ushort NSGF = 4;    // simdgroups
+constant ushort FH = GQA_G >= 2 ? 2 : 1;   // cabezas por threadgroup
+constant ushort FQ = 8;                   // queries por threadgroup
+constant ushort FR = FQ * FH;             // filas
+constant ushort BC = 64;                  // claves por bloque
+constant ushort NSGF = 4;                 // simdgroups
+#if defined(FA_Q_F32)
+typedef float q_t;                        // variante exacta (PrefillPrecision::F32)
+#else
+typedef half q_t;
+#endif
 
 #if defined(KV_F16)
 typedef simdgroup_half8x8 kv_frag;
@@ -177,27 +188,29 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
                            uint2 tg   [[threadgroup_position_in_grid]],
                            ushort sg   [[simdgroup_index_in_threadgroup]],
                            ushort lane [[thread_index_in_simdgroup]]) {
-    threadgroup float sq[FQ * D];    // Q escalada
-    threadgroup float ss[FQ * BC];   // S y luego P del bloque
-    threadgroup float so[FQ * D];    // O sin normalizar
+    threadgroup q_t   sq[FR * D];    // Q escalada; fila j: query j % FQ de la cabeza h0 + j / FQ
+    threadgroup float ss[FR * BC];   // S y luego P del bloque
+    threadgroup float so[FR * D];    // O sin normalizar
 
-    const uint h = tg.y;
+    const uint h0 = tg.y * FH;
     const uint hq = hkv * GQA_G;
-    const uint kh = h / GQA_G;
+    const uint kh = h0 / GQA_G;
     const uint q0 = tg.x * FQ;
-    constexpr ushort RPS = FQ / NSGF;   // filas por simdgroup en el softmax
+    constexpr ushort RPS = FR / NSGF;   // filas por simdgroup en el softmax
 
+#pragma unroll
     for (ushort jj = 0; jj < RPS; ++jj) {
         const ushort j = jj * NSGF + sg;
-        const uint t = q0 + j;
+        const uint t = q0 + j % FQ, h = h0 + j / FQ;
         for (ushort i = lane; i < D; i += 32) {
-            sq[j * D + i] = t < tokens ? q[(t * hq + h) * D + i] * scale : 0.0f;
+            sq[j * D + i] = t < tokens ? q_t(q[(t * hq + h) * D + i] * scale) : q_t(0);
             so[j * D + i] = 0.0f;
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     float M[RPS], L[RPS];
+#pragma unroll
     for (ushort jj = 0; jj < RPS; ++jj) {
         M[jj] = -FLT_MAX / 2;
         L[jj] = 0.0f;
@@ -206,30 +219,37 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
     const uint kend = pos0 + min(q0 + FQ, tokens);   // claves visibles: [0, kend)
     for (uint j0 = 0; j0 < kend; j0 += BC) {
         // 1. S = Q · Kᵀ
+#pragma unroll
         for (ushort cc = 0; cc < BC / 8 / NSGF; ++cc) {
             const ushort tile = cc * NSGF + sg;
-            simdgroup_float8x8 mqk = make_filled_simdgroup_matrix<float, 8>(0.0f);
-#pragma unroll(8)
+            simdgroup_float8x8 mqk[FH];
+#pragma unroll
+            for (ushort r = 0; r < FH; ++r) mqk[r] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+#pragma unroll(4)
             for (ushort i = 0; i < D / 16; ++i) {
-                simdgroup_float8x8 mq[2];
                 kv_frag mk[2];
                 simdgroup_barrier(mem_flags::mem_none);
-                simdgroup_load(mq[0], sq + 16 * i, D);
-                simdgroup_load(mq[1], sq + 16 * i + 8, D);
                 mk[0] = load_frag(k, j0 + tile * 8, hkv, kh, 16 * i, true, lane);
                 mk[1] = load_frag(k, j0 + tile * 8, hkv, kh, 16 * i + 8, true, lane);
-                simdgroup_barrier(mem_flags::mem_none);
-                simdgroup_multiply_accumulate(mqk, mq[0], mk[0], mqk);
-                simdgroup_multiply_accumulate(mqk, mq[1], mk[1], mqk);
+#pragma unroll
+                for (ushort r = 0; r < FH; ++r) {
+                    simdgroup_matrix<q_t, 8, 8> mq[2];
+                    simdgroup_load(mq[0], sq + r * FQ * D + 16 * i, D);
+                    simdgroup_load(mq[1], sq + r * FQ * D + 16 * i + 8, D);
+                    simdgroup_multiply_accumulate(mqk[r], mq[0], mk[0], mqk[r]);
+                    simdgroup_multiply_accumulate(mqk[r], mq[1], mk[1], mqk[r]);
+                }
             }
-            simdgroup_store(mqk, ss + 8 * tile, BC);
+#pragma unroll
+            for (ushort r = 0; r < FH; ++r) simdgroup_store(mqk[r], ss + r * FQ * BC + 8 * tile, BC);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // 2. Softmax online de las filas sg y sg + 4; el lane atiende las claves 2·lane y 2·lane + 1.
+        // 2. Softmax online; el lane atiende las claves 2·lane y 2·lane + 1 de cada fila.
+#pragma unroll
         for (ushort jj = 0; jj < RPS; ++jj) {
             const ushort j = jj * NSGF + sg;
-            const uint qpos = pos0 + q0 + j;
+            const uint qpos = pos0 + q0 + j % FQ;
             threadgroup float2* s2 = (threadgroup float2*)(ss + j * BC) + lane;
             float2 s = *s2;
             const uint key = j0 + 2 * lane;
@@ -246,14 +266,21 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // 3. O[:, 32·sg ..) += P · V
-        simdgroup_float8x8 lo[4];
-        for (ushort i = 0; i < 4; ++i) simdgroup_load(lo[i], so + 32 * sg + 8 * i, D);
-#pragma unroll(4)
+        simdgroup_float8x8 lo[FH][4];
+#pragma unroll
+        for (ushort r = 0; r < FH; ++r)
+#pragma unroll
+            for (ushort i = 0; i < 4; ++i) simdgroup_load(lo[r][i], so + r * FQ * D + 32 * sg + 8 * i, D);
+#pragma unroll(2)
         for (ushort cc = 0; cc < BC / 16; ++cc) {
-            simdgroup_float8x8 ps[2];
-            simdgroup_load(ps[0], ss + 16 * cc, BC);
-            simdgroup_load(ps[1], ss + 16 * cc + 8, BC);
+            simdgroup_float8x8 ps[FH][2];
+#pragma unroll
+            for (ushort r = 0; r < FH; ++r) {
+                simdgroup_load(ps[r][0], ss + r * FQ * BC + 16 * cc, BC);
+                simdgroup_load(ps[r][1], ss + r * FQ * BC + 16 * cc + 8, BC);
+            }
             const uint jv = j0 + 16 * cc;
+#pragma unroll
             for (ushort ii = 0; ii < 2; ++ii) {
                 const uint d0 = 32 * sg + 16 * ii;
                 kv_frag mv[4];
@@ -261,21 +288,29 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
                 mv[1] = load_frag(v, jv, hkv, kh, d0 + 8, false, lane);
                 mv[2] = load_frag(v, jv + 8, hkv, kh, d0, false, lane);
                 mv[3] = load_frag(v, jv + 8, hkv, kh, d0 + 8, false, lane);
-                simdgroup_multiply_accumulate(lo[2 * ii], ps[0], mv[0], lo[2 * ii]);
-                simdgroup_multiply_accumulate(lo[2 * ii + 1], ps[0], mv[1], lo[2 * ii + 1]);
-                simdgroup_multiply_accumulate(lo[2 * ii], ps[1], mv[2], lo[2 * ii]);
-                simdgroup_multiply_accumulate(lo[2 * ii + 1], ps[1], mv[3], lo[2 * ii + 1]);
+#pragma unroll
+                for (ushort r = 0; r < FH; ++r) {
+                    simdgroup_multiply_accumulate(lo[r][2 * ii], ps[r][0], mv[0], lo[r][2 * ii]);
+                    simdgroup_multiply_accumulate(lo[r][2 * ii + 1], ps[r][0], mv[1], lo[r][2 * ii + 1]);
+                    simdgroup_multiply_accumulate(lo[r][2 * ii], ps[r][1], mv[2], lo[r][2 * ii]);
+                    simdgroup_multiply_accumulate(lo[r][2 * ii + 1], ps[r][1], mv[3], lo[r][2 * ii + 1]);
+                }
             }
         }
-        for (ushort i = 0; i < 4; ++i) simdgroup_store(lo[i], so + 32 * sg + 8 * i, D);
+#pragma unroll
+        for (ushort r = 0; r < FH; ++r)
+#pragma unroll
+            for (ushort i = 0; i < 4; ++i) simdgroup_store(lo[r][i], so + r * FQ * D + 32 * sg + 8 * i, D);
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
+#pragma unroll
     for (ushort jj = 0; jj < RPS; ++jj) {
         const ushort j = jj * NSGF + sg;
-        const uint t = q0 + j;
-        if (t >= tokens) break;
-        const float inv = 1.0f / L[jj];
-        ((device float4*)(o + (t * hq + h) * D))[lane] = ((threadgroup float4*)(so + j * D))[lane] * inv;
+        const uint t = q0 + j % FQ, h = h0 + j / FQ;
+        if (t < tokens) {
+            const float inv = 1.0f / L[jj];
+            ((device float4*)(o + (t * hq + h) * D))[lane] = ((threadgroup float4*)(so + j * D))[lane] * inv;
+        }
     }
 }

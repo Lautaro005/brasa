@@ -69,7 +69,7 @@ pub fn round_f16(v: f32) -> f32 {
 }
 
 /// Como [`matmul`], pero con los pesos decuantizados y las activaciones redondeados a f16 antes
-/// del producto, como el GEMM de prefill con `GemmInput::F16` (ADR 0030).
+/// del producto, como el GEMM de prefill con `PrefillPrecision::F16` (ADR 0030).
 pub fn matmul_f16_inputs(
     q: QType,
     w: &[u8],
@@ -126,6 +126,24 @@ pub fn embed(q: QType, table: &[u8], h: usize, ids: &[u32], out: &mut [f32]) {
     }
 }
 
+/// Como [`attention`], pero con Q · escala redondeada a f16 (calculada en f32), como la atención
+/// de prefill (ADR 0030).
+#[allow(clippy::too_many_arguments)]
+pub fn attention_q16(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    tokens: usize,
+    hq: usize,
+    hkv: usize,
+    dim: usize,
+    pos0: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let scale = 1.0 / (dim as f32).sqrt();
+    let qs: Vec<f32> = q.iter().map(|x| round_f16(x * scale)).collect();
+    attention_scaled(&qs, k, v, tokens, hq, hkv, dim, pos0, 1.0)
+}
+
 /// Atención causal con GQA en f64. `q: [T, hq, dim]`; `k`, `v`: `[pos0 + T, hkv, dim]`.
 /// Devuelve `o: [T, hq, dim]` y `max_j |v[j, kh, d]|` por componente (escala de la tolerancia).
 #[allow(clippy::too_many_arguments)]
@@ -139,8 +157,32 @@ pub fn attention(
     dim: usize,
     pos0: usize,
 ) -> (Vec<f32>, Vec<f32>) {
+    attention_scaled(
+        q,
+        k,
+        v,
+        tokens,
+        hq,
+        hkv,
+        dim,
+        pos0,
+        1.0 / (dim as f64).sqrt(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attention_scaled(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    tokens: usize,
+    hq: usize,
+    hkv: usize,
+    dim: usize,
+    pos0: usize,
+    scale: f64,
+) -> (Vec<f32>, Vec<f32>) {
     let group = hq / hkv;
-    let scale = 1.0 / (dim as f64).sqrt();
     let mut o = vec![0f32; tokens * hq * dim];
     let mut vmax = vec![0f32; tokens * hq * dim];
     for t in 0..tokens {

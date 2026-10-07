@@ -4,7 +4,8 @@
 //!   h = RMSNorm(x); q, k, v = W·h (k y v se escriben directo en la caché de la capa)
 //!   q, k = RMSNorm por cabeza (QK-norm); q, k = RoPE; o = atención(q, K, V)
 //!   x += Wo·o; h = RMSNorm(x); x += Wdown·(silu(Wgate·h) · Wup·h)
-//! Activaciones en f32 (el GEMM de prefill las redondea a f16 en memoria threadgroup, ADR 0030);
+//! Activaciones en f32 (el GEMM de prefill las redondea a f16 en memoria threadgroup y la atención
+//! de prefill redondea Q a f16, ADR 0030);
 //! KV cache en f32, f16 o Q8 (`Limits.kv`, ADR 0009): K y V se calculan en un
 //! scratch f32 y `qk_norm_rope_store` aplica QK-norm y RoPE y las escribe en la caché, en un solo
 //! dispatch. Todos los buffers se asignan en `Qwen3::load`; el forward solo encola dispatches.
@@ -19,7 +20,7 @@ use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
 use brasa_quant::{BrasaFile, QType};
 
-pub use brasa_kernels::{GemmInput, KvType};
+pub use brasa_kernels::{KvType, PrefillPrecision};
 
 use crate::{Error, Result};
 
@@ -262,8 +263,9 @@ pub struct Qwen3 {
     rope: RopeTable,
     kv: KvCache,
     ws: Workspace,
-    /// Tipo de las entradas del GEMM de prefill (ADR 0030): f16 por defecto; f32 para verificar.
-    pub prefill_gemm: GemmInput,
+    /// Precisión de las entradas del GEMM y de Q en la atención de prefill (ADR 0030): f16 por
+    /// defecto; f32 para verificar.
+    pub prefill_precision: PrefillPrecision,
 }
 
 fn load_f32(ctx: &Context, f: &BrasaFile, name: &str) -> Result<Buffer<f32>> {
@@ -380,7 +382,7 @@ impl Qwen3 {
             layers,
             rope,
             ws,
-            prefill_gemm: GemmInput::F16,
+            prefill_precision: PrefillPrecision::F16,
         })
     }
 
@@ -434,7 +436,7 @@ impl Qwen3 {
             self.kernels.gemv(cmd, w.q(), x, y, tokens);
         } else {
             self.kernels
-                .gemm_with(cmd, w.q(), x, y, tokens, self.prefill_gemm);
+                .gemm_with(cmd, w.q(), x, y, tokens, self.prefill_precision);
         }
     }
 
@@ -519,7 +521,15 @@ impl Qwen3 {
                 shape,
             );
         } else {
-            k.flash_attention(cmd, Arg::buf(&ws.q), kc, vc, Arg::buf(&ws.attn), shape);
+            k.flash_attention_with(
+                cmd,
+                Arg::buf(&ws.q),
+                kc,
+                vc,
+                Arg::buf(&ws.attn),
+                shape,
+                self.prefill_precision,
+            );
         }
         self.matmul(cmd, &l.wo, Arg::buf(&ws.attn), Arg::buf(&ws.h), tokens);
         if decode {

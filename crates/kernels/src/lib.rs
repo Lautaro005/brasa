@@ -175,12 +175,13 @@ pub struct Kernels {
     gemv_fast_q4_0: Pipeline,
     gemv_fast_q8_0: Pipeline,
     /// GEMM tiled por bloque de tokens (64: bloques completos; 32: el resto), tipo de peso
-    /// (q4_0, q8_0) y tipo de las entradas ([`GemmInput`]).
+    /// (q4_0, q8_0) y tipo de las entradas ([`PrefillPrecision`]).
     gemm_tiled: [[[Pipeline; 2]; 2]; 2],
     /// Variantes por [`KvType`] (índice `KvType as usize`).
     flash_attn: [Pipeline; 3],
-    /// `flash_attn_gqa` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
-    flash_attn_gqa: [[Pipeline; 3]; 4],
+    /// `flash_attn_gqa` por precisión de Q ([`PrefillPrecision`]), tamaño de grupo GQA
+    /// ([`GQA_GROUPS`]) y tipo de KV.
+    flash_attn_gqa: [[[Pipeline; 3]; 4]; 2],
     attn_decode_partial: [Pipeline; 3],
     /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
     attn_decode_lanes: [[Pipeline; 3]; 4],
@@ -261,7 +262,14 @@ impl Kernels {
             flash_attn: kv_variants(ctx, FLASH_ATTENTION, "flash_attn_f32")?,
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
-            flash_attn_gqa: gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
+            flash_attn_gqa: [
+                gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
+                gqa_variants(
+                    ctx,
+                    &format!("#define FA_Q_F32 1\n{FLASH_ATTENTION}"),
+                    "flash_attn_gqa",
+                )?,
+            ],
             qk_norm_rope_store: kv_variants(ctx, QKV, "qk_norm_rope_store")?,
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
@@ -623,7 +631,7 @@ impl Kernels {
         y: Arg<'a>,
         tokens: usize,
     ) {
-        self.gemm_with(cmd, w, x, y, tokens, GemmInput::F16);
+        self.gemm_with(cmd, w, x, y, tokens, PrefillPrecision::F16);
     }
 
     /// GEMM para prefill con el tipo de entradas `input`. Usa el kernel tiled (simdgroup matrix)
@@ -635,7 +643,7 @@ impl Kernels {
         x: Arg<'a>,
         y: Arg<'a>,
         tokens: usize,
-        input: GemmInput,
+        input: PrefillPrecision,
     ) {
         if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
             return self.gemm_naive(cmd, w, x, y, tokens);
@@ -883,9 +891,8 @@ impl Kernels {
         );
     }
 
-    /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes).
-    /// `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN` posiciones
-    /// más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
+    /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes),
+    /// con Q redondeada a f16 en la variante GQA (ADR 0030). Ver [`Kernels::flash_attention_with`].
     pub fn flash_attention<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -894,6 +901,23 @@ impl Kernels {
         v: Arg<'a>,
         o: Arg<'a>,
         shape: AttnShape,
+    ) {
+        self.flash_attention_with(cmd, q, k, v, o, shape, PrefillPrecision::F16);
+    }
+
+    /// Atención causal de prefill con Q en la precisión `precision` (la variante sin GQA es
+    /// siempre f32). `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN`
+    /// posiciones más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attention_with<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        q: Arg<'a>,
+        k: Arg<'a>,
+        v: Arg<'a>,
+        o: Arg<'a>,
+        shape: AttnShape,
+        precision: PrefillPrecision,
     ) {
         let AttnShape {
             tokens,
@@ -907,9 +931,11 @@ impl Kernels {
         assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
         let scale = 1.0 / (dim as f32).sqrt();
         if let Some(gi) = gqa_index(hq, hkv) {
-            // Variante GQA (ADR 0030): FA_QUERIES queries de una cabeza por threadgroup.
+            // Variante GQA (ADR 0030): FA_QUERIES queries de 2 cabezas del grupo (1 sin GQA) por
+            // threadgroup.
+            let heads = if GQA_GROUPS[gi] >= 2 { 2 } else { 1 };
             cmd.dispatch_groups(
-                &self.flash_attn_gqa[gi][kv.idx()],
+                &self.flash_attn_gqa[precision as usize][gi][kv.idx()],
                 &[
                     q,
                     k,
@@ -920,7 +946,7 @@ impl Kernels {
                     Arg::u32(pos0 as u32),
                     Arg::f32(scale),
                 ],
-                [groups(tokens, FA_QUERIES), hq, 1],
+                [groups(tokens, FA_QUERIES), hq / heads, 1],
                 [128, 1, 1],
             );
             return;
@@ -998,13 +1024,14 @@ impl Kernels {
 
 /// Tamaños de grupo GQA (`hq / hkv`) para los que se compilan `decode_attention_lanes` y la
 /// variante GQA de `flash_attention`.
-/// Tipo al que se redondean pesos y activaciones dentro del GEMM de prefill (ADR 0030). La
-/// acumulación es siempre f32.
+/// Precisión de las entradas de los kernels de prefill (ADR 0030): tipo al que se redondean
+/// pesos y activaciones dentro del GEMM y Q en la atención. La acumulación y el softmax son
+/// siempre f32.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GemmInput {
-    /// Ruta caliente: ~1,35× más rápida que f32 en M1 Pro.
+pub enum PrefillPrecision {
+    /// Ruta caliente (medido en M1 Pro: GEMM ~1,4× y atención ~1,1× más rápidos que en f32).
     F16 = 0,
-    /// Exacta: mismo resultado que el producto en f32.
+    /// Exacta: mismo resultado que con las entradas en f32.
     F32 = 1,
 }
 
