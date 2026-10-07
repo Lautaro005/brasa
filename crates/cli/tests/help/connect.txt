@@ -1,4 +1,4 @@
-Imprime la configuración para Codex, Claude Code, Cline u OpenCode
+Imprime (o con --apply escribe) la configuración para Codex, Claude Code, Cline u OpenCode
 
 Usage: connect [OPTIONS] <TOOL>
 
@@ -18,6 +18,9 @@ Options:
 
       --ctx <CTX>
           Contexto real del daemon (`brasa serve --ctx`), por defecto `[serve] ctx`
+
+      --apply
+          Escribe la configuración en vez de imprimirla (Codex, Claude Code y OpenCode; ADR 0028)
 
   -h, --help
           Print help

@@ -4,6 +4,8 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use axum::http::HeaderMap;
+use axum::http::header::USER_AGENT;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use brasa_core::chat::{ChatEvent, ChatRequest, ErrorKind, FinishReason, ToolCall, Usage};
 use serde_json::Value;
@@ -31,6 +33,28 @@ pub fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Producto del `User-Agent` (`claude-cli/2.1.274`, `codex_cli_rs/0.153.4`, `OpenAI/Python …`),
+/// recortado y solo con caracteres imprimibles, para mostrar qué agente hizo el pedido.
+/// La GUI marca sus pedidos con `X-Brasa-Client` (los navegadores no dejan cambiar el `User-Agent`).
+pub fn client_name(headers: &HeaderMap) -> Option<String> {
+    let ua = headers
+        .get("x-brasa-client")
+        .or_else(|| headers.get(USER_AGENT))?
+        .to_str()
+        .ok()?;
+    let first = ua.split_whitespace().next()?;
+    // Los navegadores (la GUI incluida) mandan todos `Mozilla/5.0 …`.
+    if first.starts_with("Mozilla/") {
+        return Some("navegador".into());
+    }
+    let clean: String = first
+        .chars()
+        .filter(|c| c.is_ascii_graphic())
+        .take(48)
+        .collect();
+    (!clean.is_empty()).then_some(clean)
+}
+
 /// Generación en curso: primer evento ya recibido y el resto por canal.
 pub struct Running {
     pub first: ChatEvent,
@@ -43,9 +67,10 @@ pub struct Running {
 pub async fn start(
     state: &Shared,
     endpoint: &'static str,
+    headers: &HeaderMap,
     req: ChatRequest,
 ) -> Result<Running, (ErrorKind, String)> {
-    let timer = state.metrics.begin(endpoint);
+    let timer = state.metrics.begin(endpoint, client_name(headers));
     let (tx, mut rx) = mpsc::unbounded_channel();
     if let Err(e) = state.engine.submit(Job {
         req,
@@ -87,7 +112,7 @@ pub async fn collect(state: &Shared, mut run: Running) -> Collected {
     let mut usage = None;
     let mut ev = Some(run.first);
     while let Some(e) = ev {
-        run.timer.on_event(&e);
+        state.metrics.event(&mut run.timer, &e);
         match e {
             ChatEvent::Text(t) => c.text.push_str(&t),
             ChatEvent::Reasoning(t) => c.reasoning.push_str(&t),
@@ -147,7 +172,7 @@ pub fn sse(state: Shared, run: Running, mut enc: impl SseEncoder) -> axum::respo
         let mut usage = None;
         let mut error = None;
         while let Some(e) = next {
-            timer.on_event(&e);
+            state.metrics.event(&mut timer, &e);
             let done = matches!(e, ChatEvent::Done { .. } | ChatEvent::Error(..));
             match &e {
                 ChatEvent::Done { usage: u, .. } => usage = Some(*u),

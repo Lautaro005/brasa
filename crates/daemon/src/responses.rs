@@ -246,7 +246,11 @@ struct Base {
     tool_choice: Value,
 }
 
-pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Response {
+pub async fn create(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let b: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -280,7 +284,7 @@ pub async fn create(State(s): State<Shared>, body: axum::body::Bytes) -> Respons
         },
     };
     let stream = b["stream"].as_bool().unwrap_or(false);
-    let run = match start(&s, "/v1/responses", req).await {
+    let run = match start(&s, "/v1/responses", &headers, req).await {
         Ok(r) => r,
         Err((k, m)) => {
             let st = if k == ErrorKind::Internal {

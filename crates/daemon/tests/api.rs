@@ -456,3 +456,71 @@ async fn rechaza_pedidos_de_otro_origen() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn activity_informa_el_pedido_reciente_y_su_cliente() {
+    let s = state();
+    let app = brasa_daemon::router(s.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .header("user-agent", "claude-cli/2.1.274 (external, cli)")
+        .header("anthropic-version", "2023-06-01")
+        .body(Body::from(
+            json!({"model": "qwen3-4b-q4", "max_tokens": 16,
+                   "messages": [{"role": "user", "content": "hola"}]})
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let a = json_body(get(app, "/api/activity").await).await;
+    assert_eq!(a["active"].as_array().unwrap().len(), 0);
+    assert_eq!(a["recent"][0]["client"], "claude-cli/2.1.274");
+    assert_eq!(a["recent"][0]["endpoint"], "/v1/messages");
+    assert_eq!(a["recent"][0]["outcome"], "ok");
+    assert_eq!(a["recent"][0]["output_tokens"], 3);
+    let secs = a["seconds"].as_array().unwrap();
+    assert_eq!(secs.len() as u64, a["history_s"].as_u64().unwrap());
+    let total: f64 = secs.iter().map(|s| s["tokens"].as_f64().unwrap()).sum();
+    assert!((total - 3.0).abs() < 1e-6, "{total}");
+}
+
+#[tokio::test]
+async fn models_lista_disco_y_catalogo() {
+    let app = brasa_daemon::router(state());
+    let m = json_body(get(app, "/api/models").await).await;
+    assert_eq!(m["ctx"], 2048);
+    assert_eq!(m["kv"], "f16");
+    let names: Vec<&str> = m["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(m["catalog"].as_array().unwrap())
+        .filter_map(|x| x["name"].as_str())
+        .collect();
+    assert!(names.contains(&"qwen3-4b-q4"), "{names:?}");
+}
+
+#[tokio::test]
+async fn connect_rechaza_cline_y_herramientas_desconocidas() {
+    let app = brasa_daemon::router(state());
+    let resp = post(app.clone(), "/api/agents/cline/connect", json!({})).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = post(app.clone(), "/api/agents/nope/connect", json!({})).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Una página de otro origen no puede disparar la escritura de configs.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agents/codex/connect")
+        .header("origin", "https://evil.example")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+}

@@ -1,5 +1,6 @@
 //! Configuración de agentes que usa el daemon (una sola fuente para `brasa connect` y para la
-//! GUI en `/api/agents`). No escribe archivos del usuario: solo genera el texto.
+//! GUI en `/api/agents`). Este módulo solo genera el texto; escribir la configuración (botón
+//! Conectar, `brasa connect --apply`) vive en `connect_apply` (ADR 0028).
 
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
@@ -75,7 +76,7 @@ replacement over rewriting the file.
 /// `apply_patch` al modelo y este edita los archivos con comandos de shell (`shell_type =
 /// unified_exec`). Un modelo de 4B no genera parches `apply_patch` válidos; editar por shell sí le
 /// sale. Los campos son los que Codex exige para parsear la entrada.
-fn codex_catalog(model: &str, ctx: usize) -> String {
+pub(crate) fn codex_catalog(model: &str, ctx: usize) -> String {
     let entry = json!({
         "slug": model,
         "display_name": model,
@@ -98,6 +99,15 @@ fn codex_catalog(model: &str, ctx: usize) -> String {
         "base_instructions": CODEX_INSTRUCTIONS
     });
     serde_json::to_string_pretty(&json!({"models": [entry]})).expect("catálogo serializable")
+}
+
+/// Host al que se conectan los clientes: si el daemon escucha en todas las interfaces, loopback.
+pub fn client_host(addr: std::net::SocketAddr) -> String {
+    if addr.ip().is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        addr.ip().to_string()
+    }
 }
 
 /// Texto que imprime `brasa connect <tool>` y que muestra la GUI.
@@ -180,7 +190,7 @@ pub async fn agents(State(s): State<Shared>, Query(q): Query<AgentsQuery>) -> Re
                 .into_response();
         }
     };
-    let host = s.addr.ip().to_string();
+    let host = client_host(s.addr);
     let port = s.addr.port();
     let mut tools = serde_json::Map::new();
     for t in AgentTool::ALL {

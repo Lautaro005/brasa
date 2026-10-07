@@ -1,6 +1,7 @@
 //! `brasa doctor`: diagnóstico del hardware y del estado de memoria.
 
 use brasa_memory::system::{PressureLevel, SystemMemory, system_memory};
+use brasa_tuner::fingerprint::{Fingerprint, kernels_version};
 use brasa_tuner::hardware::{HardwareInfo, hardware_info};
 use serde::Serialize;
 
@@ -9,13 +10,27 @@ struct Report {
     brasa_version: &'static str,
     hardware: HardwareInfo,
     memory: SystemMemory,
+    /// Fingerprint de la base de tuning (ADR 0026): local, sin identificadores de la unidad.
+    tuning: Tuning,
+}
+
+#[derive(Debug, Serialize)]
+struct Tuning {
+    fingerprint_id: String,
+    fingerprint: Fingerprint,
 }
 
 pub fn run(json: bool) {
+    let hardware = hardware_info();
+    let fingerprint = Fingerprint::from_hardware(&hardware, &kernels_version());
     let report = Report {
         brasa_version: env!("CARGO_PKG_VERSION"),
-        hardware: hardware_info(),
+        hardware,
         memory: system_memory(),
+        tuning: Tuning {
+            fingerprint_id: fingerprint.id(),
+            fingerprint,
+        },
     };
     if json {
         println!(
@@ -76,6 +91,10 @@ fn print_text(r: &Report) {
         }
         None => println!("  no se encontró un dispositivo Metal"),
     }
+    println!();
+    println!("Tuning");
+    println!("  fingerprint     {}", r.tuning.fingerprint_id);
+    println!("  kernels         {}", r.tuning.fingerprint.kernels_version);
     println!();
     println!("Memoria del sistema");
     let pressure = match mem.pressure {
