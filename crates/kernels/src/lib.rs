@@ -906,9 +906,10 @@ impl Kernels {
                 Arg::u32(hkv as u32),
                 Arg::u32(pos0 as u32),
                 Arg::f32(eps),
+                Arg::u32((tokens * (hq + 2 * hkv)) as u32),
             ],
-            [tokens * (hq + 2 * hkv), 1, 1],
-            [dim, 1, 1],
+            [groups(tokens * (hq + 2 * hkv), 4), 1, 1],
+            [128, 1, 1],
         );
     }
 
