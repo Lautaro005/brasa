@@ -99,6 +99,7 @@ async function pollStatus() {
     const [st, me] = await Promise.all([getJSON('/api/status'), getJSON('/api/metrics')]);
     state.status = st;
     state.metrics = me;
+    if (!state.planSeeded && st.context) seedPlan(st.context);
     setOffline(false);
     renderRail();
     if (state.view === 'monitor') { renderMemory(); renderModel(); renderTotals(); }
@@ -957,6 +958,19 @@ async function loadBench() {
 }
 
 /* ---------- Plan ---------- */
+// El formulario arranca con el contexto, el chunk y la KV de este servidor; una sola vez, para no
+// pisar lo que el usuario cambie.
+function seedPlan(c) {
+  state.planSeeded = true;
+  $('#plan-ctx').value = c.ctx;
+  $('#plan-chunk').value = c.chunk;
+  const kv = $('#plan-kv');
+  if ([...kv.options].some((o) => o.value === c.kv)) {
+    kv.value = c.kv;
+    if (kv._refresh) kv._refresh();
+  }
+}
+
 $('#plan-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = new URLSearchParams({

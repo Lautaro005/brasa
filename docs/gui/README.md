@@ -97,7 +97,15 @@ chat de la GUI), a 390 px de ancho:
 - [Chat en un teléfono](chat-movil.jpg): una respuesta con lista y negrita renderizadas, el turno
   anterior cancelado a mitad y la barra con el último pedido de este chat.
 
-Pendiente: capturas de escritorio (claro y oscuro) a 1440 px.
+De escritorio, tomadas el 2026-10-06 en la misma máquina con
+`brasa serve qwen3-4b-q4 --ctx 16384` (KV f16) y pedidos reales desde el chat, a 1440 × 900
+(WebKit, `prefers-color-scheme` claro y oscuro):
 
-Las capturas de la primera versión (`chat-dos-turnos.jpg`, `chat-cancelado.jpg`, `estado.jpg`)
-quedan como referencia de la GUI anterior.
+- [Monitor](monitor.jpg) y [Monitor, oscuro](monitor-oscuro.jpg): los pedidos del chat (uno
+  cancelado por captura) en la tira de actividad y en la tabla.
+- [Chat](chat.jpg): dos turnos sobre el mismo contexto, con el panel del último pedido.
+- [Chat con un pedido cancelado](chat-cancelado.jpg) y [en oscuro](chat-oscuro.jpg).
+- [Modelos](modelos.jpg) y [Plan de memoria](plan.jpg) (el formulario arranca con el contexto, el
+  chunk y la KV del servidor).
+
+La landing (`site/img/`) usa las mismas capturas.

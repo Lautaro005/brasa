@@ -6,8 +6,8 @@ paso de build ni dependencias.
 ## Archivos
 
 - `index.html`: la página (HTML + CSS + JS mínimo, todo embebido).
-- `img/`: capturas reales de la GUI, copiadas de `docs/gui/` (`chat-dos-turnos.jpg`,
-  `chat-cancelado.jpg`, `estado.jpg`).
+- `img/`: capturas reales de la GUI (rediseño del 2026-10-06), las mismas de `docs/gui/` a 1600 px:
+  `chat-dos-turnos.jpg` (`docs/gui/chat.jpg`), `chat-cancelado.jpg` y `monitor.jpg`.
 
 ## Sin red
 
