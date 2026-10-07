@@ -15,12 +15,15 @@ use crate::{Error, Result};
 /// Endpoint por defecto de Hugging Face.
 pub const HF_ENDPOINT: &str = "https://huggingface.co";
 
-/// Agente `ureq` con timeouts de conexión y de lectura (evita colgarse en una red lenta).
+/// Agente `ureq` con timeouts de conexión y de espera de la respuesta (evita colgarse en una red
+/// lenta). En ureq 3, `timeout_recv_body` es un presupuesto total para el cuerpo y no se reinicia
+/// en cada lectura: no se usa, porque cortaría la descarga de archivos de varios GB.
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(60))
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
         .build()
+        .into()
 }
 
 /// URL de un archivo en una revisión fija (layout de HF).
@@ -65,25 +68,24 @@ fn hex(bytes: &[u8]) -> String {
 
 fn net_err(e: ureq::Error) -> Error {
     match e {
-        ureq::Error::Status(code, r) => {
-            let body = r.into_string().unwrap_or_default();
-            Error(format!("HTTP {code}: {}", body.trim()))
-        }
-        ureq::Error::Transport(t) => Error(format!("error de red: {t}")),
+        ureq::Error::StatusCode(code) => Error(format!("HTTP {code}")),
+        e => Error(format!("error de red: {e}")),
     }
 }
 
+type Response = ureq::http::Response<ureq::Body>;
+
 /// Pide el archivo; si `have > 0`, con `Range`. Si el servidor responde 416 (no acepta
 /// reanudar), se vuelve a pedir completo.
-fn call(agent: &ureq::Agent, url: &str, have: u64) -> Result<ureq::Response> {
+fn call(agent: &ureq::Agent, url: &str, have: u64) -> Result<Response> {
     let req = if have > 0 {
-        agent.get(url).set("Range", &format!("bytes={have}-"))
+        agent.get(url).header("Range", &format!("bytes={have}-"))
     } else {
         agent.get(url)
     };
     match req.call() {
         Ok(r) => Ok(r),
-        Err(ureq::Error::Status(416, _)) if have > 0 => agent.get(url).call().map_err(net_err),
+        Err(ureq::Error::StatusCode(416)) if have > 0 => agent.get(url).call().map_err(net_err),
         Err(e) => Err(net_err(e)),
     }
 }
@@ -143,20 +145,22 @@ pub fn download_file(
     let url = file_url(endpoint, repo, revision, &spec.path);
     let agent = agent();
     let mut resp = call(&agent, &url, have)?;
-    let status = resp.status();
+    let status = resp.status().as_u16();
     let mut file;
     if status == 206 {
         // Con 206, el servidor tiene que empezar en lo que ya tenemos; si no, se descarta.
         let expect = format!("bytes {have}-");
         let cont = resp
-            .header("Content-Range")
+            .headers()
+            .get("Content-Range")
+            .and_then(|v| v.to_str().ok())
             .is_some_and(|cr| cr.starts_with(&expect));
         if !cont {
             hasher = Sha256::new();
             have = 0;
             std::fs::remove_file(&part).ok();
             let fresh = agent.get(&url).call().map_err(net_err)?;
-            if fresh.status() == 206 {
+            if fresh.status().as_u16() == 206 {
                 return Err(Error(format!(
                     "{url}: el servidor no respondió el archivo completo"
                 )));
@@ -175,7 +179,7 @@ pub fn download_file(
         have = 0;
         file = File::create(&part).map_err(|e| io_err(&part, e))?;
     }
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     let mut buf = vec![0u8; 1 << 20];
     loop {
         let n = reader
