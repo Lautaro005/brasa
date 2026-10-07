@@ -2,7 +2,8 @@
 //! contra `gemm_tiled` con las formas de Qwen3-4B (T tokens), verificando el resultado.
 //!   cargo run --release -p brasa-kernels --example gemm_lab -- <archivo.metal> <kernel> [T]
 //! Variables: LAB_BM / LAB_BN (filas y tokens por threadgroup, 64 / 32), LAB_NT (hilos, 128),
-//! LAB_ORDER=t (eje x de la grilla = tokens en lugar de filas).
+//! LAB_ORDER=t (eje x de la grilla = tokens en lugar de filas), LAB_MULTI=1 (argumentos de
+//! `gemm_multi`: w0..w2, x, y0..y2, r0..r2, cols, tokens).
 use brasa_kernels::testutil::{Rng, median};
 use brasa_kernels::{Kernels, QMatrix, WeightType};
 use brasa_metal::{Arg, Command, Context};
@@ -58,20 +59,34 @@ fn main() {
         let t0 = time(&ctx, |c| k.gemm(c, m, Arg::buf(&x), Arg::buf(&y0), tokens));
         let (gr, gt) = (rows.div_ceil(bm), tokens.div_ceil(bn));
         let grid = if tok_x { [gt, gr, 1] } else { [gr, gt, 1] };
+        let multi = std::env::var("LAB_MULTI").is_ok();
         let t1 = time(&ctx, |c| {
-            c.dispatch_groups(
-                &p,
-                &[
+            let args = if multi {
+                vec![
+                    Arg::buf(&w),
+                    Arg::buf(&w),
+                    Arg::buf(&w),
+                    Arg::buf(&x),
+                    Arg::buf(&y1),
+                    Arg::buf(&y1),
+                    Arg::buf(&y1),
+                    Arg::u32(rows as u32),
+                    Arg::u32(0),
+                    Arg::u32(0),
+                    Arg::u32(cols as u32),
+                    Arg::u32(tokens as u32),
+                ]
+            } else {
+                vec![
                     Arg::buf(&w),
                     Arg::buf(&x),
                     Arg::buf(&y1),
                     Arg::u32(rows as u32),
                     Arg::u32(cols as u32),
                     Arg::u32(tokens as u32),
-                ],
-                grid,
-                [nt, 1, 1],
-            )
+                ]
+            };
+            c.dispatch_groups(&p, &args, grid, [nt, 1, 1])
         });
         let (r0, r1) = (y0.as_slice(), y1.as_slice());
         let scale = r0.iter().fold(0f32, |m, v| m.max(v.abs()));
