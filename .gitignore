@@ -8,3 +8,8 @@ __pycache__/
 *.brasa
 /.qwen
 /.impeccable
+
+# Planificación y encargos internos: se mantienen solo en local.
+PLAN.md
+QWEN-DEEPSEEK.md
+QWEN-TAREAS-2.md

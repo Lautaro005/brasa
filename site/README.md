@@ -36,7 +36,6 @@ ancho.
 
 ## Cómo publicarla (no está hecha)
 
-No se publica desde este repo. Para publicarla con GitHub Pages, en **Settings → Pages** elegí como
-origen la rama y la carpeta `site/` (o mové los archivos a `docs/` y elegí esa carpeta). Es un
-cambio de configuración del repositorio: está anotado en "Pedidos al usuario" de `QWEN-TAREAS-2.md`
-y no lo hace el agente.
+Se publica sola con GitHub Pages: el workflow `.github/workflows/sitio.yml` sube esta carpeta tal
+cual en cada push a `main` que toque `site/` (también se puede lanzar a mano desde Actions). El
+repositorio tiene Pages con origen "GitHub Actions"; la URL es https://lautaro005.github.io/brasa/.
