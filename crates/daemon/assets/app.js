@@ -126,13 +126,14 @@ function route() {
   const view = VIEWS.includes(name) ? name : 'monitor';
   state.view = view;
   for (const v of VIEWS) $('#v-' + v).hidden = v !== view;
+  $('.main').classList.toggle('fill', view === 'chat');
   document.querySelectorAll('.nav a').forEach((a) => {
     if (a.dataset.view === view) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
   document.title = (view === 'monitor' ? '' : $('#v-' + view + ' h1').textContent + ' · ') + 'brasa';
   if (view === 'monitor') { renderAllMonitor(); }
-  if (view === 'chat') { renderChat(); renderChatStats(); }
+  if (view === 'chat') { renderChatList(); renderChat(); renderChatStats(); applySide(); }
   if (view === 'modelos') loadModels();
   if (view === 'benchmarks') loadBench();
   if (view === 'agentes') loadAgents();
@@ -366,17 +367,213 @@ document.querySelectorAll('#controls [data-op]').forEach((b) => {
   });
 });
 
+/* ---------- Preferencias y conversaciones (solo en este navegador) ---------- */
+// localStorage puede no estar disponible (modo privado, cuota): leer y escribir sin romper la UI.
+const store = {
+  load(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (_) { return d; } },
+  save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* ignorar */ } },
+};
+const UI_KEY = 'brasa.ui.v1';
+const ui = Object.assign({ railCollapsed: false, sideOpen: true, sideW: 320 }, store.load(UI_KEY, {}));
+const saveUi = () => store.save(UI_KEY, ui);
+
+/* ---------- Barra lateral principal ---------- */
+function applyRail() {
+  $('.shell').classList.toggle('rail-collapsed', ui.railCollapsed);
+  const b = $('#rail-toggle');
+  b.setAttribute('aria-expanded', String(!ui.railCollapsed));
+  const t = ui.railCollapsed ? 'Desplegar la barra lateral' : 'Plegar la barra lateral';
+  b.title = t;
+  b.setAttribute('aria-label', t);
+}
+$('#rail-toggle').addEventListener('click', () => { ui.railCollapsed = !ui.railCollapsed; saveUi(); applyRail(); });
+
 /* ---------- Chat ---------- */
-const CHAT_KEY = 'brasa.chat.v1';
-let messages = [];
-try { messages = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]'); } catch (_) { messages = []; }
+const CHATS_KEY = 'brasa.chats.v1';
+let chats = store.load(CHATS_KEY, null);
 let controller = null;
 let streaming = false;
 
-function saveChat() {
-  // localStorage puede no estar disponible (modo privado, cuota): no romper la UI.
-  try { localStorage.setItem(CHAT_KEY, JSON.stringify(messages)); } catch (_) { /* ignorar */ }
+function newChat() {
+  const c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: '', updated: Date.now(), messages: [] };
+  chats.list.unshift(c);
+  chats.active = c.id;
+  return c;
 }
+if (!chats || !Array.isArray(chats.list)) {
+  // Migra la conversación única de la versión anterior.
+  const old = store.load('brasa.chat.v1', []);
+  chats = { active: null, list: [] };
+  if (Array.isArray(old) && old.length) newChat().messages = old;
+  try { localStorage.removeItem('brasa.chat.v1'); } catch (_) { /* ignorar */ }
+}
+function currentChat() {
+  let c = chats.list.find((x) => x.id === chats.active);
+  if (!c) c = chats.list[0] || newChat();
+  chats.active = c.id;
+  return c;
+}
+let messages = currentChat().messages;
+
+function titleOf(c) {
+  if (c.title) return c.title;
+  const first = c.messages.find((m) => m.role === 'user');
+  return first ? first.content.replace(/\s+/g, ' ').slice(0, 60) : 'Conversación nueva';
+}
+
+function whenOf(ts) {
+  const d = new Date(ts), now = new Date();
+  const hm = d.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return 'hoy ' + hm;
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return 'ayer ' + hm;
+  return d.toLocaleDateString('es', { day: 'numeric', month: 'short' }) + ' ' + hm;
+}
+
+function saveChat() {
+  const c = currentChat();
+  c.messages = messages;
+  c.updated = Date.now();
+  if (!c.title && messages.some((m) => m.role === 'user')) c.title = titleOf(c);
+  chats.list.sort((a, b) => b.updated - a.updated);
+  store.save(CHATS_KEY, chats);
+  renderChatList();
+}
+
+function openChat(id) {
+  if (streaming || id === chats.active) return;
+  chats.active = id;
+  messages = currentChat().messages;
+  store.save(CHATS_KEY, chats);
+  renderChatList();
+  renderChat();
+  closeListOverlay();
+  $('#input').focus();
+}
+
+function deleteChat(id) {
+  if (streaming && id === chats.active) return;
+  chats.list = chats.list.filter((c) => c.id !== id);
+  if (chats.active === id) {
+    chats.active = chats.list.length ? chats.list[0].id : null;
+    messages = currentChat().messages;
+    renderChat();
+  }
+  store.save(CHATS_KEY, chats);
+  renderChatList();
+}
+
+function renderChatList() {
+  const ul = $('#chat-items');
+  ul.replaceChildren();
+  for (const c of chats.list) {
+    const li = el('li', 'chat-item');
+    if (c.id === chats.active) li.setAttribute('aria-current', 'true');
+    const open = el('button', 'open');
+    open.type = 'button';
+    open.disabled = streaming && c.id !== chats.active;
+    open.append(el('span', 't', titleOf(c)), el('span', 'd', c.messages.length ? whenOf(c.updated) : 'vacía'));
+    open.addEventListener('click', () => openChat(c.id));
+    const del = el('button', 'btn ghost icon del');
+    del.type = 'button';
+    del.setAttribute('aria-label', 'Borrar «' + titleOf(c) + '»');
+    del.title = 'Borrar conversación';
+    del.innerHTML = '<svg class="ic"><use href="#i-clear"/></svg>';
+    let armed = null;
+    del.addEventListener('click', () => {
+      // Dos pasos: el primer clic arma, el segundo borra.
+      if (!armed) {
+        del.classList.add('confirm');
+        del.title = 'Clic de nuevo para borrar';
+        del.setAttribute('aria-label', 'Confirmar: borrar «' + titleOf(c) + '»');
+        armed = setTimeout(() => { del.classList.remove('confirm'); del.title = 'Borrar conversación'; armed = null; }, 3000);
+        return;
+      }
+      clearTimeout(armed);
+      deleteChat(c.id);
+    });
+    li.append(open, del);
+    ul.appendChild(li);
+  }
+  $('#chat-title').textContent = titleOf(currentChat());
+}
+
+$('#chat-new').addEventListener('click', () => {
+  if (streaming) return;
+  const c = currentChat();
+  if (c.messages.length) { newChat(); messages = currentChat().messages; store.save(CHATS_KEY, chats); }
+  renderChatList();
+  renderChat();
+  closeListOverlay();
+  $('#input').focus();
+});
+
+/* Lista como panel superpuesto en pantallas angostas. */
+function closeListOverlay() {
+  $('#chat-list').classList.remove('open');
+  $('#list-toggle').setAttribute('aria-expanded', 'false');
+}
+$('#list-toggle').addEventListener('click', () => {
+  const open = !$('#chat-list').classList.contains('open');
+  $('#chat-list').classList.toggle('open', open);
+  $('#list-toggle').setAttribute('aria-expanded', String(open));
+});
+
+/* Panel de parámetros: se cierra, se abre y se le cambia el ancho. */
+const SIDE_MIN = 240, SIDE_MAX = 520;
+const narrow = () => matchMedia('(max-width: 820px)').matches;
+function applySide() {
+  const open = narrow() ? ui.sideOpenNarrow === true : ui.sideOpen;
+  $('#chat-layout').classList.toggle('side-closed', !open);
+  $('#chat-layout').style.setProperty('--side-w', ui.sideW + 'px');
+  const t = $('#side-toggle');
+  t.setAttribute('aria-expanded', String(open));
+  t.setAttribute('aria-label', open ? 'Ocultar el panel de parámetros' : 'Mostrar el panel de parámetros');
+  $('#chat-resizer').setAttribute('aria-valuenow', String(ui.sideW));
+}
+function setSide(open) {
+  if (narrow()) ui.sideOpenNarrow = open; else ui.sideOpen = open;
+  saveUi();
+  applySide();
+}
+$('#side-toggle').addEventListener('click', () => setSide($('#chat-layout').classList.contains('side-closed')));
+$('#side-close').addEventListener('click', () => { setSide(false); $('#side-toggle').focus(); });
+addEventListener('resize', applySide);
+
+(function resizer() {
+  const r = $('#chat-resizer');
+  const setW = (w) => {
+    ui.sideW = Math.round(Math.min(SIDE_MAX, Math.max(SIDE_MIN, w)));
+    applySide();
+  };
+  r.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    try { r.setPointerCapture(e.pointerId); } catch (_) { /* sin captura, alcanza con window */ }
+    r.classList.add('dragging');
+    document.body.classList.add('resizing');
+    const right = $('#chat-layout').getBoundingClientRect().right;
+    const move = (ev) => setW(right - ev.clientX - 4);
+    const up = () => {
+      r.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      removeEventListener('pointercancel', up);
+      saveUi();
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
+  });
+  r.addEventListener('dblclick', () => { setW(320); saveUi(); });
+  r.addEventListener('keydown', (e) => {
+    const d = { ArrowLeft: 16, ArrowRight: -16 }[e.key];
+    if (d) { e.preventDefault(); setW(ui.sideW + d); saveUi(); }
+    if (e.key === 'Home') { e.preventDefault(); setW(SIDE_MAX); saveUi(); }
+    if (e.key === 'End') { e.preventDefault(); setW(SIDE_MIN); saveUi(); }
+  });
+})();
 
 function renderThink(text) {
   const d = el('details', 'think');
@@ -391,7 +588,7 @@ function renderChat() {
   if (!messages.length) {
     const e = el('div', 'chat-empty');
     e.appendChild(el('strong', null, 'Probá el modelo que está sirviendo este servidor.'));
-    e.appendChild(document.createTextNode('Los parámetros de este panel van en cada pedido. La conversación queda solo en este navegador.'));
+    e.appendChild(document.createTextNode('Cada mensaje es un pedido real al servidor, con los parámetros del panel.'));
     box.appendChild(e);
     return;
   }
@@ -503,8 +700,9 @@ function setComposer(busy) {
   $('#send').hidden = busy;
   $('#cancel').hidden = !busy;
   $('#input').disabled = busy;
-  $('#clear').disabled = busy;
+  $('#chat-new').disabled = busy;
   $('#composer-state').textContent = busy ? 'Generando…' : '';
+  renderChatList();
   if (!busy) $('#input').focus();
 }
 
@@ -576,7 +774,11 @@ async function send() {
 
 $('#composer').addEventListener('submit', (e) => { e.preventDefault(); send(); });
 $('#cancel').addEventListener('click', () => { if (controller) controller.abort(); });
-$('#clear').addEventListener('click', () => { messages = []; saveChat(); renderChat(); });
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if ($('#chat-list').classList.contains('open')) closeListOverlay();
+  else if (narrow() && state.view === 'chat' && !$('#chat-layout').classList.contains('side-closed')) setSide(false);
+});
 $('#input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
@@ -602,7 +804,7 @@ function renderChatStats() {
       ['Salida', int(r.output_tokens) + ' tok'],
     ]);
   } else {
-    kvList($('#chat-stats'), [['Todavía no mandaste nada desde este chat.', '']]);
+    kvList($('#chat-stats'), [['Sin pedidos del chat desde que arrancó el servidor.', '']]);
   }
   const cells = fillLane($('#mini-heat'), 60);
   const secs = a.seconds.slice(-60);
@@ -815,7 +1017,16 @@ async function loadAgents() {
   try {
     const data = await getJSON(url);
     out.replaceChildren();
-    for (const key of Object.keys(data.tools)) {
+    const sel = $('#agents-tool');
+    const keys = Object.keys(data.tools);
+    if (sel.options.length !== keys.length + 1) {
+      const keep = sel.value;
+      sel.replaceChildren(new Option('Todas', ''));
+      keys.forEach((k) => sel.appendChild(new Option(k, k)));
+      sel.value = keys.includes(keep) ? keep : '';
+      if (sel._refresh) sel._refresh();
+    }
+    for (const key of keys.filter((k) => !sel.value || k === sel.value)) {
       const card = el('section', 'panel agent');
       const head = el('div', 'panel-head');
       head.appendChild(el('h2', null, key));
@@ -832,9 +1043,133 @@ async function loadAgents() {
   }
 }
 $('#agents-form').addEventListener('submit', (e) => { e.preventDefault(); loadAgents(); });
+$('#agents-tool').addEventListener('change', loadAgents);
+
+/* ---------- Campos propios ---------- */
+/* Número con botones − y + (los nativos del navegador quedan ocultos por CSS). */
+function enhanceNumber(input) {
+  const wrap = el('div', 'num');
+  input.parentNode.insertBefore(wrap, input);
+  const mk = (icon, dir, label) => {
+    const b = el('button');
+    b.type = 'button';
+    b.tabIndex = -1;
+    b.setAttribute('aria-label', label);
+    b.innerHTML = '<svg class="ic"><use href="#' + icon + '"/></svg>';
+    b.addEventListener('click', () => {
+      if (input.value === '' && input.min !== '') input.value = input.min;
+      else if (dir > 0) input.stepUp(); else input.stepDown();
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    return b;
+  };
+  wrap.append(mk('i-minus', -1, 'Bajar'), input, mk('i-plus', 1, 'Subir'));
+}
+
+/* Lista desplegable accesible sobre un <select> que queda oculto y guarda el valor. */
+let openSelect = null;
+function enhanceSelect(select) {
+  const wrap = el('div', 'select');
+  select.parentNode.insertBefore(wrap, select);
+  select.classList.add('native');
+  select.tabIndex = -1;
+  select.setAttribute('aria-hidden', 'true');
+  const btn = el('button', 'select-btn');
+  btn.type = 'button';
+  btn.id = select.id + '-btn';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  const val = el('span', 'val');
+  btn.append(val);
+  btn.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-chevron"/></svg>');
+  const list = el('ul', 'select-list');
+  list.id = select.id + '-list';
+  list.setAttribute('role', 'listbox');
+  list.tabIndex = -1;
+  list.hidden = true;
+  btn.setAttribute('aria-controls', list.id);
+  const label = document.querySelector('label[for="' + select.id + '"]');
+  if (label) { label.htmlFor = btn.id; label.id = label.id || select.id + '-lbl'; list.setAttribute('aria-labelledby', label.id); }
+  wrap.append(btn, list, select);
+  let active = 0;
+  const items = () => Array.from(list.children);
+  const render = () => {
+    list.replaceChildren();
+    Array.from(select.options).forEach((o, i) => {
+      const li = el('li');
+      li.id = list.id + '-' + i;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', String(o.selected));
+      li.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-check"/></svg>');
+      li.append(el('span', null, o.text));
+      if (o.dataset.hint) li.append(el('span', 'hint', o.dataset.hint));
+      li.addEventListener('mousedown', (e) => e.preventDefault());
+      li.addEventListener('click', () => choose(i));
+      li.addEventListener('mousemove', () => setActive(i));
+      list.appendChild(li);
+    });
+    const o = select.options[select.selectedIndex];
+    val.textContent = o ? o.text : '';
+  };
+  const setActive = (i) => {
+    const it = items();
+    if (!it.length) return;
+    active = (i + it.length) % it.length;
+    it.forEach((li, k) => li.classList.toggle('active', k === active));
+    list.setAttribute('aria-activedescendant', it[active].id);
+    it[active].scrollIntoView({ block: 'nearest' });
+  };
+  const close = (focus) => {
+    list.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    if (openSelect === close) openSelect = null;
+    if (focus) btn.focus();
+  };
+  const open = () => {
+    if (openSelect && openSelect !== close) openSelect(false);
+    render();
+    list.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    openSelect = close;
+    setActive(Math.max(0, select.selectedIndex));
+    list.focus();
+  };
+  const choose = (i) => {
+    if (select.selectedIndex !== i) {
+      select.selectedIndex = i;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    render();
+    close(true);
+  };
+  btn.addEventListener('click', () => (list.hidden ? open() : close(true)));
+  btn.addEventListener('keydown', (e) => {
+    if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); open(); }
+  });
+  list.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(active + 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
+    else if (e.key === 'Home') { e.preventDefault(); setActive(0); }
+    else if (e.key === 'End') { e.preventDefault(); setActive(items().length - 1); }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(active); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
+    else if (e.key === 'Tab') close(false);
+  });
+  list.addEventListener('blur', () => setTimeout(() => { if (!wrap.contains(document.activeElement)) close(false); }, 0));
+  select._refresh = render;
+  render();
+}
+document.addEventListener('mousedown', (e) => {
+  if (openSelect && !e.target.closest('.select')) openSelect(false);
+});
+document.querySelectorAll('input[type="number"]').forEach(enhanceNumber);
+document.querySelectorAll('select').forEach(enhanceSelect);
 
 /* ---------- Arranque ---------- */
 (async function init() {
+  applyRail();
+  applySide();
   await pollStatus();
   const ac = $('#agents-ctx');
   if (ac && state.status && state.status.context) ac.value = state.status.context.ctx;

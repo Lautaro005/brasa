@@ -23,21 +23,30 @@
   <symbol id="i-send" viewBox="0 0 20 20"><path d="M3.5 10h12M11 5.5l4.5 4.5-4.5 4.5"/></symbol>
   <symbol id="i-copy" viewBox="0 0 20 20"><path d="M7 7h9.5v9.5H7zM13 7V3.5H3.5V13H7"/></symbol>
   <symbol id="i-clear" viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4h4v2M6 6l.75 10h6.5L14 6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 20 20"><path d="M4.5 10h11"/></symbol>
+  <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+  <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 20 20"><path d="M6 8l4 4 4-4"/></symbol>
+  <symbol id="i-rail" viewBox="0 0 20 20"><path d="M3.5 4.5h13v11h-13zM8 4.5v11"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 20 20"><path d="M3.5 4.5h13v11h-13zM12 4.5v11"/></symbol>
+  <symbol id="i-list" viewBox="0 0 20 20"><path d="M4 6h12M4 10h12M4 14h8"/></symbol>
 </svg>
 
 <div class="shell">
-  <aside class="rail">
+  <aside class="rail" id="rail">
     <div class="brand">
       <span class="wordmark">brasa</span>
       <span id="version" class="brand-meta"></span>
+      <button id="rail-toggle" class="btn ghost icon rail-toggle" type="button" aria-expanded="true" aria-controls="rail" title="Plegar la barra lateral" aria-label="Plegar la barra lateral"><svg class="ic"><use href="#i-rail"/></svg></button>
     </div>
     <nav class="nav" aria-label="Secciones">
-      <a href="#monitor" data-view="monitor"><svg class="ic"><use href="#i-monitor"/></svg>Monitor</a>
-      <a href="#chat" data-view="chat"><svg class="ic"><use href="#i-chat"/></svg>Chat</a>
-      <a href="#modelos" data-view="modelos"><svg class="ic"><use href="#i-models"/></svg>Modelos</a>
-      <a href="#benchmarks" data-view="benchmarks"><svg class="ic"><use href="#i-bench"/></svg>Benchmarks</a>
-      <a href="#plan" data-view="plan"><svg class="ic"><use href="#i-plan"/></svg>Plan de memoria</a>
-      <a href="#agentes" data-view="agentes"><svg class="ic"><use href="#i-agents"/></svg>Agentes</a>
+      <a href="#monitor" data-view="monitor" title="Monitor"><svg class="ic"><use href="#i-monitor"/></svg><span class="lbl">Monitor</span></a>
+      <a href="#chat" data-view="chat" title="Chat"><svg class="ic"><use href="#i-chat"/></svg><span class="lbl">Chat</span></a>
+      <a href="#modelos" data-view="modelos" title="Modelos"><svg class="ic"><use href="#i-models"/></svg><span class="lbl">Modelos</span></a>
+      <a href="#benchmarks" data-view="benchmarks" title="Benchmarks"><svg class="ic"><use href="#i-bench"/></svg><span class="lbl">Benchmarks</span></a>
+      <a href="#plan" data-view="plan" title="Plan de memoria"><svg class="ic"><use href="#i-plan"/></svg><span class="lbl">Plan de memoria</span></a>
+      <a href="#agentes" data-view="agentes" title="Agentes"><svg class="ic"><use href="#i-agents"/></svg><span class="lbl">Agentes</span></a>
     </nav>
     <div class="rail-state" aria-live="polite">
       <span id="rail-led" class="led" data-state="unknown"></span>
@@ -149,26 +158,43 @@
     </section>
 
     <!-- Chat -->
-    <section id="v-chat" class="view" aria-labelledby="h-chat" hidden>
-      <div class="chat-layout">
-        <div class="chat-main">
-          <header class="view-head">
+    <section id="v-chat" class="view view-fill" aria-labelledby="h-chat" hidden>
+      <div class="chat-layout" id="chat-layout">
+        <nav class="chat-list" id="chat-list" aria-labelledby="h-chat">
+          <div class="chat-list-head">
             <h1 id="h-chat">Chat</h1>
-            <p class="view-sub">Pedidos reales a <code>/v1/chat/completions</code> con streaming.</p>
+            <button id="chat-new" class="btn" type="button"><svg class="ic"><use href="#i-plus"/></svg>Nuevo</button>
+          </div>
+          <ul id="chat-items" class="chat-items"></ul>
+          <p class="chat-list-note">Las conversaciones quedan solo en este navegador.</p>
+        </nav>
+
+        <div class="chat-main">
+          <header class="chat-head">
+            <button id="list-toggle" class="btn ghost icon only-narrow" type="button" aria-controls="chat-list" aria-expanded="false" aria-label="Mostrar las conversaciones"><svg class="ic"><use href="#i-list"/></svg></button>
+            <h2 id="chat-title" class="chat-title">Conversación nueva</h2>
+            <span id="composer-state" class="composer-state" role="status"></span>
+            <button id="side-toggle" class="btn ghost icon" type="button" aria-controls="chat-side" aria-expanded="true" aria-label="Ocultar el panel de parámetros" title="Panel de parámetros"><svg class="ic"><use href="#i-panel"/></svg></button>
           </header>
           <div id="messages" class="messages" aria-live="polite"></div>
           <form id="composer" class="composer">
             <label class="sr-only" for="input">Mensaje</label>
             <textarea id="input" rows="3" placeholder="Escribí un mensaje. Enter envía; Shift+Enter agrega una línea."></textarea>
             <div class="composer-bar">
-              <span id="composer-state" class="composer-state"></span>
-              <button id="clear" type="button" class="btn ghost"><svg class="ic"><use href="#i-clear"/></svg>Borrar conversación</button>
+              <span class="composer-hint">Pedidos reales a <code>/v1/chat/completions</code></span>
               <button id="cancel" type="button" class="btn" hidden><svg class="ic"><use href="#i-stop"/></svg>Cancelar</button>
               <button id="send" type="submit" class="btn primary"><svg class="ic"><use href="#i-send"/></svg>Enviar</button>
             </div>
           </form>
         </div>
-        <aside class="chat-side" aria-label="Estadísticas y parámetros">
+
+        <div class="resizer" id="chat-resizer" role="separator" aria-orientation="vertical" aria-controls="chat-side" aria-label="Ancho del panel de parámetros" aria-valuemin="240" aria-valuemax="520" aria-valuenow="320" tabindex="0"></div>
+
+        <aside class="chat-side" id="chat-side" aria-label="Estadísticas y parámetros">
+          <div class="side-head">
+            <h2>Panel</h2>
+            <button id="side-close" class="btn ghost icon" type="button" aria-label="Cerrar el panel"><svg class="ic"><use href="#i-x"/></svg></button>
+          </div>
           <section class="panel">
             <div class="panel-head"><h2>Último pedido</h2></div>
             <dl class="kv" id="chat-stats"></dl>
@@ -177,13 +203,13 @@
           <section class="panel">
             <div class="panel-head"><h2>Parámetros</h2></div>
             <div class="form-grid">
-              <label>max_tokens <input id="p-max" type="number" min="1" value="512" inputmode="numeric"></label>
-              <label>temperature <input id="p-temp" type="number" step="0.05" min="0" value="0.7"></label>
-              <label>top_p <input id="p-topp" type="number" step="0.05" min="0" max="1" value="0.95"></label>
-              <label>top_k <input id="p-topk" type="number" min="0" value="20" inputmode="numeric"></label>
-              <label>seed <input id="p-seed" type="number" min="0" placeholder="aleatoria" inputmode="numeric"></label>
+              <div class="field"><label for="p-max">max_tokens</label><input id="p-max" type="number" min="16" step="16" value="512" inputmode="numeric"></div>
+              <div class="field"><label for="p-temp">temperature</label><input id="p-temp" type="number" step="0.05" min="0" max="2" value="0.7"></div>
+              <div class="field"><label for="p-topp">top_p</label><input id="p-topp" type="number" step="0.05" min="0" max="1" value="0.95"></div>
+              <div class="field"><label for="p-topk">top_k</label><input id="p-topk" type="number" min="0" value="20" inputmode="numeric"></div>
+              <div class="field wide"><label for="p-seed">seed</label><input id="p-seed" type="number" min="0" placeholder="aleatoria" inputmode="numeric"></div>
             </div>
-            <label class="check"><input id="p-think" type="checkbox"> Razonamiento (<code>&lt;think&gt;</code>)</label>
+            <label class="switch"><input id="p-think" type="checkbox" role="switch"><span class="track" aria-hidden="true"></span>Razonamiento (<code>&lt;think&gt;</code>)</label>
           </section>
         </aside>
       </div>
@@ -257,23 +283,23 @@
         <p class="view-sub">El mismo planner que <code>brasa plan</code>: calcula sin cargar el modelo.</p>
       </header>
       <section class="panel">
-        <form id="plan-form" class="form-row">
-          <label>Contexto <input id="plan-ctx" type="number" min="256" step="256" value="16384" inputmode="numeric"></label>
-          <label>Chunk <input id="plan-chunk" type="number" min="64" step="64" value="128" inputmode="numeric"></label>
-          <label>KV
+        <form id="plan-form" class="form-row" novalidate>
+          <div class="field"><label for="plan-ctx">Contexto</label><input id="plan-ctx" type="number" min="256" step="256" value="16384" inputmode="numeric"></div>
+          <div class="field"><label for="plan-chunk">Chunk de prefill</label><input id="plan-chunk" type="number" min="64" step="64" value="128" inputmode="numeric"></div>
+          <div class="field"><label for="plan-kv">Caché KV</label>
             <select id="plan-kv">
-              <option value="f16" selected>f16</option>
-              <option value="q8_0">q8_0</option>
-              <option value="f32">f32</option>
+              <option value="f16" selected data-hint="por defecto">f16</option>
+              <option value="q8_0" data-hint="perfil de agente">q8_0</option>
+              <option value="f32" data-hint="para verificar">f32</option>
             </select>
-          </label>
-          <label>Perfil
+          </div>
+          <div class="field"><label for="plan-perfil">Perfil</label>
             <select id="plan-perfil">
-              <option value="esta" selected>esta máquina</option>
+              <option value="esta" selected data-hint="presupuesto medido">Esta máquina</option>
               <option value="16gb">16 GB</option>
               <option value="8gb">8 GB</option>
             </select>
-          </label>
+          </div>
           <button type="submit" class="btn primary">Calcular</button>
         </form>
         <div id="plan-out" class="plan-out">
@@ -289,8 +315,13 @@
         <p class="view-sub">Configuración para apuntar cada herramienta a este servidor; es lo mismo que <code>brasa connect</code>.</p>
       </header>
       <section class="panel">
-        <form id="agents-form" class="form-row">
-          <label>Contexto <input id="agents-ctx" type="number" min="256" step="256" placeholder="el del servidor" inputmode="numeric"></label>
+        <form id="agents-form" class="form-row" novalidate>
+          <div class="field"><label for="agents-ctx">Contexto</label><input id="agents-ctx" type="number" min="256" step="256" placeholder="el del servidor" inputmode="numeric"></div>
+          <div class="field"><label for="agents-tool">Herramienta</label>
+            <select id="agents-tool">
+              <option value="" selected>Todas</option>
+            </select>
+          </div>
           <button type="submit" class="btn primary">Generar</button>
         </form>
       </section>

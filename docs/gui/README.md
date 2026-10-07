@@ -38,10 +38,17 @@ Ninguna cifra sale de la GUI: todo viene de `/api/*` o de `/v1/*`.
    - el modelo y los botones del Model Manager (cargar, descargar, pausar, reanudar, detener;
      detener pide confirmación);
    - los contadores desde el arranque.
-2. **Chat.** Streaming por `/v1/chat/completions`, razonamiento plegable, cancelar (corta la
-   conexión y el daemon cancela) e historial en `localStorage`. La barra lateral muestra el último
-   pedido (TTFT, decode, prompt, prefix cache, salida) con su tira de actividad, y los parámetros
-   de muestreo.
+2. **Chat.** La pantalla no se desplaza: solo el historial de mensajes. Tres columnas:
+   - **Conversaciones**: lista de chats guardados en `localStorage` (título del primer mensaje y
+     fecha), botón "Nuevo" y, en cada uno, un botón ícono para borrarlo (pide un segundo clic).
+     La conversación única de la versión anterior se migra a la lista.
+   - **Conversación**: streaming por `/v1/chat/completions`, markdown mínimo (sin `innerHTML`),
+     razonamiento plegable y cancelar (corta la conexión y el daemon cancela).
+   - **Panel**: el último pedido de este chat (los pedidos de la GUI llevan
+     `X-Brasa-Client: brasa-gui`) y los parámetros de muestreo. Se cierra con ✕, se vuelve a abrir
+     desde la cabecera y se le cambia el ancho arrastrando el divisor (o con las flechas; doble
+     clic vuelve a 320 px). El ancho y el estado se recuerdan.
+   En pantallas angostas la lista y el panel se abren superpuestos (Esc los cierra).
 3. **Modelos.** Los `.brasa` de la carpeta del modelo servido, con tamaño en disco, si entran con
    el contexto y la KV de este servidor (planner), y la huella y memoria residente del cargado. Las
    entradas del catálogo que no están en disco aparecen con su comando `brasa pull`.
@@ -49,8 +56,13 @@ Ninguna cifra sale de la GUI: todo viene de `/api/*` o de `/v1/*`.
    y variante) y la tabla completa de `docs/bench/`, desde `GET /api/bench`.
 5. **Plan de memoria.** El planner de `brasa plan` (`GET /api/plan`), con el veredicto, la barra del
    plan contra el presupuesto y el desglose.
-6. **Agentes.** Lo que imprime `brasa connect` para cada herramienta (`GET /api/agents`), con
-   botón de copiar.
+6. **Agentes.** Lo que imprime `brasa connect` para cada herramienta (`GET /api/agents`), con filtro
+   por herramienta y botón de copiar.
+
+Los formularios usan campos propios de la app, no los controles nativos del navegador: números
+con botones − y +, listas desplegables accesibles (teclado: flechas, Enter, Esc) e interruptores,
+todos de la misma altura y alineados. La barra lateral principal se pliega a solo íconos con el
+botón junto a la marca.
 
 ## API que usa
 

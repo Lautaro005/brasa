@@ -83,6 +83,7 @@ rounded:
   gui-code: "4px"
   gui-control: "6px"
   gui-composer: "10px"
+  gui-popover: "8px"
   gui-pill: "999px"
   landing-panel: "7px"
 spacing:
@@ -375,6 +376,17 @@ Plana. No hay sombras de elevación: la profundidad es tonal (riel más oscuro q
 detrás de código y mensajes del usuario) y estructural (líneas de 1px). Las únicas `box-shadow` son
 anillos `inset` de 1–2px que dibujan un borde: el ítem actual de la nav, el contorno del LED y el
 casillero del segundo actual en la tira de calor.
+
+**Excepción: lo que se superpone.** Lo que flota sobre la hoja necesita separarse de ella, así que
+es lo único con sombra de elevación:
+- la lista desplegable de los campos propios: radio 8px, sombra
+  `0 2px 4px rgb(30 20 10 / 0.08), 0 8px 24px rgb(30 20 10 / 0.14)`;
+- la lista de conversaciones y el panel del chat cuando se abren superpuestos en pantallas angostas:
+  sombra lateral `±4px 0 24px rgb(0 0 0 / 0.18)`;
+- la perilla del interruptor: `0 1px 2px rgb(0 0 0 / 0.25)`.
+
+En la nav angosta, una máscara (`#000` → transparente en los últimos 28px) avisa que hay más
+pestañas.
 
 #### Named Rules
 **The Una Hoja Rule.** Una sola hoja: las zonas se separan con una línea de 1px, sin tarjetas, sin
