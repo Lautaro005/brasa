@@ -19,7 +19,7 @@ Options:
       --chunk <CHUNK>
           Tokens por bloque de prefill
           
-          [default: 512]
+          [default: 1024]
 
       --kv <KV>
           Tipo de la KV cache: f32, f16 o q8_0 (ADR 0009). Por defecto, el del perfil: q8_0 en 8 GB, f16 en 16 GB

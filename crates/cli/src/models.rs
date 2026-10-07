@@ -53,7 +53,7 @@ fn fits(dir: &Path) -> Option<bool> {
     let budget = Budget::this_machine()?;
     let limits = Limits {
         ctx: DEFAULT_CTX,
-        max_tokens: 128,
+        max_tokens: brasa_runtime::DEFAULT_CHUNK,
         max_logit_rows: 1,
         kv: KvType::F16,
     };

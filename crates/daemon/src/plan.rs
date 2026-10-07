@@ -29,7 +29,7 @@ pub async fn plan(State(s): State<Shared>, Query(q): Query<PlanQuery>) -> Respon
         Ok(v) => v,
         Err(e) => return bad(e),
     };
-    let chunk = match crate::parse_ctx(q.chunk.as_deref(), 128) {
+    let chunk = match crate::parse_ctx(q.chunk.as_deref(), brasa_runtime::DEFAULT_CHUNK) {
         Ok(v) => v,
         Err(e) => return bad(e),
     };

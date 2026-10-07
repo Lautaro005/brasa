@@ -12,6 +12,10 @@ pub use brasa_tuner::TuningStatus;
 pub use sampler::{Sampler, SamplingParams};
 pub use session::{GenStats, Session, StopReason, tune_dims};
 
+/// Tokens por bloque de prefill por defecto (`--chunk`; ADR 0030). Con 1024 el prefill rinde
+/// ~1–3 % más que con 512 en M1 Pro y el workspace crece ~90 MB (medido con `brasa plan`).
+pub const DEFAULT_CHUNK: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
 

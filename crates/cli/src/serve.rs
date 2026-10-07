@@ -25,7 +25,7 @@ pub struct ServeArgs {
     #[arg(long)]
     ctx: Option<usize>,
     /// Tokens por bloque de prefill.
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = brasa_runtime::DEFAULT_CHUNK)]
     chunk: usize,
     /// Tipo de la KV cache: f32, f16 o q8_0 (ADR 0009). Por defecto, el del perfil: q8_0 en
     /// 8 GB, f16 en 16 GB.
@@ -142,7 +142,7 @@ mod tests {
             host: None,
             port: None,
             ctx,
-            chunk: 512,
+            chunk: brasa_runtime::DEFAULT_CHUNK,
             kv: None,
             perfil: None,
         }
