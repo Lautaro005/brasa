@@ -32,7 +32,7 @@ pub struct RunArgs {
     #[arg(long)]
     ctx: Option<usize>,
     /// Tokens por bloque de prefill.
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = brasa_runtime::DEFAULT_CHUNK)]
     chunk: usize,
     /// Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009).
     #[arg(long, value_parser = crate::parse_kv)]
@@ -239,7 +239,7 @@ mod tests {
             system: None,
             no_think: false,
             max_tokens: 1024,
-            chunk: 128,
+            chunk: brasa_runtime::DEFAULT_CHUNK,
             ctx: None,
             kv: None,
             greedy: false,
