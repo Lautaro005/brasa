@@ -65,15 +65,20 @@ inline void dequant16(device const block_q8_0* b, ushort il, threadgroup TA* As,
 // completos (sin código de borde: ver el comentario del encabezado). BN = 32: 8 acumuladores
 // (32 × 16) y bloque de tokens incompleto; el host lo usa para los tokens que sobran del
 // múltiplo de 64.
-template <ushort BN, typename TA, typename Block>
+// SWIGLU (solo BN = 64): w = gate y w2 = up; el threadgroup calcula 32 filas de gate (filas 0..31
+// del bloque, simdgroups pares) y las mismas 32 de up (filas 32..63, impares), y escribe
+// silu(gate) · up en f16 en yh [tokens, rows] (la entrada del GEMM de down) sin pasar gate ni up
+// por memoria del dispositivo. Mismos bits que gemm + swiglu_f16.
+template <ushort BN, typename TA, typename Block, bool SWIGLU = false>
 void gemm_tiled(device const Block* w, device const TA* x, device float* y,
                 uint rows, uint cols, uint tokens,
                 threadgroup TA* As, threadgroup TA* Bs,
-                uint2 tg, ushort tid, ushort sg) {
+                uint2 tg, ushort tid, ushort sg,
+                device const Block* w2 = nullptr, device half* yh = nullptr) {
     typedef TA TA8 __attribute__((ext_vector_type(8)));
     constexpr ushort FN = BN / 16;           // fragmentos de tokens por simdgroup
     constexpr ushort VPT = BN * BK / 128;    // valores de x por hilo (8 o 16)
-    const uint r0 = tg.x * BM;
+    const uint r0 = tg.x * (SWIGLU ? BM / 2 : BM);
     const uint t0 = tg.y * BN;
     const uint nb = cols / BK;
 
@@ -81,7 +86,8 @@ void gemm_tiled(device const Block* w, device const TA* x, device float* y,
     // (k = VPT·bh ..) del token bt.
     const ushort ar = tid / 2, il = tid % 2;
     const ushort bt = tid / (BK / VPT), bh = tid % (BK / VPT);
-    device const Block* wp = w + (r0 + ar) * nb;
+    device const Block* wp = SWIGLU ? (ar < BM / 2 ? w + (r0 + ar) * nb : w2 + (r0 + ar - BM / 2) * nb)
+                                    : w + (r0 + ar) * nb;
     device const TA* xp = x + min(t0 + bt, tokens - 1) * cols + VPT * bh;
     // Bs: fragmentos [k/8][t/8] guardados como [t][k].
     threadgroup TA* bdst = Bs + 64 * ((VPT / 8) * bh * (BN / 8) + bt / 8) + 8 * (bt % 8);
@@ -125,6 +131,33 @@ void gemm_tiled(device const Block* w, device const TA* x, device float* y,
     }
 
     // mc[i]: tokens (BN/2)·(sg / 2) + 8·(i / 4) .. + 8, filas 32·(sg % 2) + 8·(i % 4) .. + 8.
+    if (SWIGLU) {
+        // Los simdgroups de up dejan sus fragmentos en memoria threadgroup (4 KiB por par) y los
+        // de gate los combinan con los suyos.
+        threadgroup float* cu = (threadgroup float*)As + 1024 * (sg / 2);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sg % 2 == 1) {
+#pragma unroll
+            for (ushort i = 0; i < 4 * FN; i++) simdgroup_store(mc[i], cu + 64 * i, 8);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sg % 2 == 0) {
+            device half* c = yh + (t0 + (BN / 2) * (sg / 2)) * rows + r0;
+#pragma unroll
+            for (ushort i = 0; i < 4 * FN; i++) {
+                simdgroup_float8x8 u;
+                simdgroup_load(u, cu + 64 * i, 8);
+                simdgroup_half8x8 hf;
+                for (ushort e = 0; e < 2; ++e) {
+                    const float g = mc[i].thread_elements()[e];
+                    hf.thread_elements()[e] =
+                        half((g / (1.0f + precise::exp(-g))) * u.thread_elements()[e]);
+                }
+                simdgroup_store(hf, c + 8 * (i % 4) + 8 * rows * (i / 4), rows);
+            }
+        }
+        return;
+    }
     if (BN == 64 || t0 + BN <= tokens) {
         device float* c = y + (t0 + (BN / 2) * (sg / 2)) * rows + r0 + 32 * (sg % 2);
 #pragma unroll
@@ -191,3 +224,22 @@ GEMM_KERNEL(gemm32_q4_0_f16, 32, half, block_q4_0)
 GEMM_KERNEL(gemm32_q8_0_f16, 32, half, block_q8_0)
 GEMM_KERNEL(gemm32_q4_0_f32, 32, float, block_q4_0)
 GEMM_KERNEL(gemm32_q8_0_f32, 32, float, block_q8_0)
+
+// gate + up + SwiGLU (q4_0, entradas f16, bloques completos de 64 tokens): yh = silu(Wg·x) · Wu·x
+// en f16. Grilla: [rows / 32, tokens / 64].
+kernel void gemm64_swiglu_q4_0_f16(device const block_q4_0* wg [[buffer(0)]],
+                                   device const block_q4_0* wu [[buffer(1)]],
+                                   device const half*       x  [[buffer(2)]],
+                                   device half*             yh [[buffer(3)]],
+                                   constant uint& rows   [[buffer(4)]],
+                                   constant uint& cols   [[buffer(5)]],
+                                   constant uint& tokens [[buffer(6)]],
+                                   uint2 tg [[threadgroup_position_in_grid]],
+                                   ushort tid [[thread_index_in_threadgroup]],
+                                   ushort sg  [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float tgm[(BM + 64) * BK * sizeof(half) / 4 < 2048 ? 2048
+                          : (BM + 64) * BK * sizeof(half) / 4];
+    threadgroup half* As = (threadgroup half*)tgm;
+    gemm_tiled<64, half, block_q4_0, true>(wg, x, nullptr, rows, cols, tokens, As, As + BM * BK,
+                                           tg, tid, sg, wu, yh);
+}

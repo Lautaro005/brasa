@@ -622,19 +622,32 @@ impl Qwen3 {
         } else {
             k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
             let h = self.prefill_norm(cmd, &l.ffn_norm, tokens);
-            self.matmul_multi(
-                cmd,
-                [&l.gate, &l.up],
-                h,
-                [Arg::buf(&ws.gate), Arg::buf(&ws.up)],
-                tokens,
-            );
+            if half_io {
+                // gate, up y SwiGLU juntos; la salida (f16) queda en ws.xh.
+                k.gemm_swiglu(
+                    cmd,
+                    l.gate.q(),
+                    l.up.q(),
+                    h,
+                    Arg::buf(&ws.gate),
+                    Arg::buf(&ws.up),
+                    Arg::buf(&ws.xh),
+                    tokens,
+                );
+            } else {
+                self.matmul_multi(
+                    cmd,
+                    [&l.gate, &l.up],
+                    h,
+                    [Arg::buf(&ws.gate), Arg::buf(&ws.up)],
+                    tokens,
+                );
+            }
         }
-        // Entrada de down: SwiGLU (en prefill f16, en `ws.xh`); en decode ya está en ws.gate.
+        // Entrada de down: SwiGLU (en prefill f16, ya en `ws.xh`); en decode ya está en ws.gate.
         let act = if decode {
             Arg::buf(&ws.gate)
         } else if half_io {
-            k.swiglu_f16(cmd, &ws.gate, &ws.up, &ws.xh, tokens * c.ffn);
             Arg::buf(&ws.xh)
         } else {
             k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);

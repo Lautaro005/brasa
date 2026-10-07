@@ -352,7 +352,7 @@ fn salidas_f16_de_prefill_iguales_a_f32_redondeado() {
         1e-6,
     );
     k.swiglu(&mut cmd, &g, &u, &s32, m);
-    k.swiglu_f16(&mut cmd, &g, &u, &s16, m);
+    k.swiglu_f16(&mut cmd, Arg::buf(&g), Arg::buf(&u), Arg::buf(&s16), m);
     cmd.commit_and_wait().unwrap();
     let r = |v: &mut [f32]| v.iter().map(|x| f32_to_f16(*x)).collect::<Vec<u16>>();
     assert_eq!(
@@ -416,5 +416,68 @@ fn gemm_multi_igual_a_gemm_por_matriz() {
                 assert_eq!(a.as_slice(), b.as_slice(), "{input:?} {shapes:?}");
             }
         }
+    }
+}
+
+#[test]
+fn gemm_swiglu_igual_a_gemm_y_swiglu() {
+    // gate + up + SwiGLU fusionados (ADR 0030): mismos bits que gemm_multi + swiglu_f16, con
+    // bloques completos de 64 tokens, resto y pocos tokens.
+    let (ctx, k) = setup();
+    let mut rng = Rng::new(91);
+    let (rows, cols) = (640, 2560);
+    let wg = ctx.buffer_from(&rng.q4_0(rows, cols)).unwrap();
+    let wu = ctx.buffer_from(&rng.q4_0(rows, cols)).unwrap();
+    let m = |data| QMatrix {
+        data,
+        qtype: WeightType::Q4_0,
+        rows,
+        cols,
+    };
+    for tokens in [70usize, 128, 200, 256] {
+        let xh: Vec<u16> = rng
+            .vec(tokens * cols, 2.0)
+            .iter()
+            .map(|v| f32_to_f16(*v))
+            .collect();
+        let x = ctx.buffer_from(&xh).unwrap();
+        let (g, u) = (
+            ctx.buffer::<f32>(tokens * rows).unwrap(),
+            ctx.buffer::<f32>(tokens * rows).unwrap(),
+        );
+        let mut fused = ctx.buffer::<u16>(tokens * rows).unwrap();
+        let mut sep = ctx.buffer::<u16>(tokens * rows).unwrap();
+        let (g2, u2) = (
+            ctx.buffer::<f32>(tokens * rows).unwrap(),
+            ctx.buffer::<f32>(tokens * rows).unwrap(),
+        );
+        let mut cmd = ctx.command().unwrap();
+        k.gemm_swiglu(
+            &mut cmd,
+            m(&wg),
+            m(&wu),
+            Arg::buf(&x),
+            Arg::buf(&g),
+            Arg::buf(&u),
+            Arg::buf(&fused),
+            tokens,
+        );
+        k.gemm_multi(
+            &mut cmd,
+            &[m(&wg), m(&wu)],
+            Arg::buf(&x),
+            &[Arg::buf(&g2), Arg::buf(&u2)],
+            tokens,
+            PrefillPrecision::F16,
+        );
+        k.swiglu_f16(
+            &mut cmd,
+            Arg::buf(&g2),
+            Arg::buf(&u2),
+            Arg::buf(&sep),
+            tokens * rows,
+        );
+        cmd.commit_and_wait().unwrap();
+        assert_eq!(fused.as_mut_slice(), sep.as_mut_slice(), "T = {tokens}");
     }
 }

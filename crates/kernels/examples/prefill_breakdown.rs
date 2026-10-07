@@ -129,14 +129,33 @@ fn main() {
         k.gemm(c, m(&wu, ffn, h), Arg::buf(&xh), Arg::buf(&up), t);
     });
     rep!("swiglu (salida f16)", c => {
-        k.swiglu_f16(c, &gate, &up, &xh, t * ffn);
+        k.swiglu_f16(c, Arg::buf(&gate), Arg::buf(&up), Arg::buf(&xh), t * ffn);
     });
     rep!("gemm down", c => {
         k.gemm(c, m(&wd, h, ffn), Arg::buf(&xh), Arg::buf(&hb), t);
     });
     let total: f64 = rows.iter().map(|r| r.1).sum();
+    let fused = time(&ctx, |c| {
+        for _ in 0..LAYERS {
+            k.gemm_swiglu(
+                c,
+                m(&wg, ffn, h),
+                m(&wu, ffn, h),
+                Arg::buf(&xh),
+                Arg::buf(&gate),
+                Arg::buf(&up),
+                Arg::buf(&hb),
+                t,
+            );
+        }
+    });
     for (name, v) in &rows {
         println!("{name:<34} {:>9.1} {:>6.1}%", v * 1e3, v / total * 100.0);
     }
     println!("{:<34} {:>9.1}", "suma", total * 1e3);
+    println!(
+        "{:<34} {:>9.1}   (reemplaza gemm gate, up + swiglu)",
+        "gemm_swiglu",
+        fused * 1e3
+    );
 }

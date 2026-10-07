@@ -179,6 +179,8 @@ pub struct Kernels {
     /// GEMM tiled por bloque de tokens (64: bloques completos; 32: el resto), tipo de peso
     /// (q4_0, q8_0) y tipo de las entradas ([`PrefillPrecision`]).
     gemm_tiled: [[[Pipeline; 2]; 2]; 2],
+    /// gate + up + SwiGLU en un kernel (q4_0, entradas f16, bloques de 64 tokens).
+    gemm64_swiglu: Pipeline,
     /// Variantes por [`KvType`] (índice `KvType as usize`).
     flash_attn: [Pipeline; 3],
     /// `flash_attn_gqa` por precisión de Q ([`PrefillPrecision`]), tamaño de grupo GQA
@@ -250,6 +252,7 @@ impl Kernels {
             attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
             gemv_fast_q4_0: ctx.pipeline(MATMUL, "gemv_fast_q4_0_f32")?,
             gemv_fast_q8_0: ctx.pipeline(MATMUL, "gemv_fast_q8_0_f32")?,
+            gemm64_swiglu: ctx.pipeline(MATMUL_TILED, "gemm64_swiglu_q4_0_f16")?,
             gemm_tiled: {
                 let p = |n: &str| ctx.pipeline(MATMUL_TILED, n);
                 [
@@ -333,23 +336,76 @@ impl Kernels {
     pub fn swiglu_f16<'a>(
         &self,
         cmd: &mut Command<'a>,
-        gate: &'a Buffer<f32>,
-        up: &'a Buffer<f32>,
-        out: &'a Buffer<u16>,
+        gate: Arg<'a>,
+        up: Arg<'a>,
+        out: Arg<'a>,
         n: usize,
     ) {
-        assert!(gate.len() >= n && up.len() >= n && out.len() >= n);
         cmd.dispatch(
             &self.swiglu_f16,
-            &[
-                Arg::buf(gate),
-                Arg::buf(up),
-                Arg::buf(out),
-                Arg::u32(n as u32),
-            ],
+            &[gate, up, out, Arg::u32(n as u32)],
             [n, 1, 1],
             [ELEMENTWISE_TG, 1, 1],
         );
+    }
+
+    /// gate, up y SwiGLU de prefill con entradas f16: `out[t, :] = silu(Wg · x[t, :]) · Wu · x[t, :]`
+    /// en f16 (bits en `u16`), mismos bits que [`Kernels::gemm_multi`] + [`Kernels::swiglu_f16`].
+    /// Los bloques completos de 64 tokens van a un kernel que no escribe gate ni up; el resto (y
+    /// todo si hay menos de 128 tokens o las matrices no son q4_0 alineadas) pasa por `gate` y
+    /// `up` (`[tokens, filas]` en f32).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_swiglu<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        wg: QMatrix<'a>,
+        wu: QMatrix<'a>,
+        x: Arg<'a>,
+        gate: Arg<'a>,
+        up: Arg<'a>,
+        out: Arg<'a>,
+        tokens: usize,
+    ) {
+        let (rows, cols) = (wg.rows, wg.cols);
+        let fused_ok = wg.qtype == WeightType::Q4_0
+            && wu.qtype == WeightType::Q4_0
+            && (wu.rows, wu.cols) == (rows, cols)
+            && rows % 32 == 0
+            && cols % 32 == 0;
+        let full = if fused_ok && tokens >= 128 {
+            tokens / 64 * 64
+        } else {
+            0
+        };
+        if full > 0 {
+            cmd.dispatch_groups(
+                &self.gemm64_swiglu,
+                &[
+                    Arg::buf(wg.data),
+                    Arg::buf(wu.data),
+                    x,
+                    out,
+                    Arg::u32(rows as u32),
+                    Arg::u32(cols as u32),
+                    Arg::u32(full as u32),
+                ],
+                [rows / 32, full / 64, 1],
+                [128, 1, 1],
+            );
+        }
+        let rest = tokens - full;
+        if rest > 0 {
+            let (g, u) = (offset(gate, full * rows * 4), offset(up, full * rows * 4));
+            self.gemm_multi(
+                cmd,
+                &[wg, wu],
+                offset(x, full * cols * 2),
+                &[g, u],
+                rest,
+                PrefillPrecision::F16,
+            );
+            self.swiglu_f16(cmd, g, u, offset(out, full * rows * 2), rest * rows);
+        }
     }
 
     /// Como [`Kernels::rms_norm`], con `out` en f16, para el GEMM de prefill
