@@ -1,25 +1,30 @@
 # Brasa
 
-Engine de inferencia local propio para Apple Silicon. Se opera desde la terminal (`brasa`),
-expone una API local compatible con OpenAI y Anthropic, y trae una GUI web embebida. Su uso
-principal es servir **agentes con herramientas** (Claude Code, Codex, Cline, OpenCode), no chat
-general.
+A local inference engine for Apple Silicon, written from scratch in Rust on Metal. You run it from
+the terminal (`brasa`), it serves a local API compatible with OpenAI and Anthropic, and it ships an
+embedded web GUI. It is built mainly to serve **agents with tools** (Claude Code, Codex, Cline,
+OpenCode), not general chat.
 
-- Primer modelo: **Qwen3-4B** (transformer denso, GQA, Apache-2.0), cuantización Q4 por grupos
-  de 32 en el formato nativo `.brasa`.
-- Sin dependencias de Python ni de Ollama, llama.cpp o MLX en el camino caliente.
-- Sin telemetría saliente: la GUI no carga nada de internet.
+- First model: **Qwen3-4B** (dense transformer, GQA, Apache-2.0), quantized to Q4 in groups of 32
+  in the native `.brasa` format. The converted weights are on Hugging Face:
+  [lautiss/brasa-v0.01-base](https://huggingface.co/lautiss/brasa-v0.01-base).
+- No Python, and no Ollama, llama.cpp or MLX in the hot path.
+- No outbound telemetry: the GUI loads nothing from the internet. The only network traffic is the
+  model download you start.
 
-Las cifras de velocidad y memoria medidas están en
-[docs/bench/baseline.md](docs/bench/baseline.md); este README solo las cita.
+The measured speed and memory figures, with chip, RAM, macOS and commits, are in
+[docs/bench/baseline.md](docs/bench/baseline.md); this README only quotes them.
 
-## Requisitos
+The project's working language is Spanish: the CLI, the GUI, the ADRs and the commit messages are
+in Spanish.
 
-- macOS sobre Apple Silicon (Metal). Perfiles objetivo: 16 GB y 8 GB.
-- Toolchain de Rust (`rustup`); la versión la fija `rust-toolchain.toml`.
-- Los pesos se bajan aparte (no van en el repo).
+## Requirements
 
-## Instalación desde fuente
+- macOS on Apple Silicon (Metal). Target profiles: 16 GB and 8 GB of RAM.
+- A Rust toolchain (`rustup`); `rust-toolchain.toml` pins the version.
+- About 2.5 GB of disk for the default model.
+
+## Install from source
 
 ```bash
 git clone https://github.com/lautaro005/brasa
@@ -28,94 +33,104 @@ cargo build --release -p brasa-cli
 ./target/release/brasa --version
 ```
 
-También se puede instalar en el `PATH` con:
+Or install it in your `PATH`:
 
 ```bash
 cargo install --path crates/cli
 ```
 
-## Primeros pasos
+## Getting started
 
-1. Diagnóstico del hardware y la memoria:
+1. Check the hardware and memory:
 
 ```bash
 brasa doctor
-brasa doctor --json
 ```
 
-2. Bajá y convertí el modelo (o usá uno ya presente en `models/`). El manifiesto con el repo, la
-   revisión y los sha256 viene embebido:
+2. Download the model. `brasa pull` fetches the already-converted weights from Hugging Face and
+   checks every file's sha256 against the manifest embedded in the binary:
 
 ```bash
 brasa pull qwen3-4b-q4
-brasa convert models/qwen3-4b-hf models/qwen3-4b-q4
 brasa models
-brasa models verify qwen3-4b-q4
 ```
 
-3. Chat en la terminal:
+   Models go to `~/Library/Application Support/brasa/models` unless you choose another folder
+   (`models_dir` in `~/.config/brasa/config.toml`, `BRASA_MODELS`, or **Cambiar…** in the GUI's
+   Models screen). `brasa config show` prints the folder in use and where it comes from.
+
+3. Chat in the terminal:
 
 ```bash
 brasa run qwen3-4b-q4
-brasa run qwen3-4b-q4 --no-think -p "Hola"
+brasa run qwen3-4b-q4 --no-think -p "Hello"
 ```
 
-4. Servidor local (API OpenAI/Anthropic + GUI en `/ui`):
+4. Local server (OpenAI/Anthropic API and the GUI at `http://127.0.0.1:8080/ui`):
 
 ```bash
 brasa serve qwen3-4b-q4 --ctx 16384
 ```
 
-5. Estado de un servidor corriendo:
+5. Connect an agent. `brasa connect` prints the configuration; `--apply` writes it (with a backup
+   of anything it changes), and so does the **Conectar** button in the GUI:
 
 ```bash
-brasa ps
+brasa connect claude-code --apply
+brasa connect codex --apply
 ```
 
-6. Configuración para un agente:
+Other commands:
 
 ```bash
-brasa connect claude-code
-brasa connect codex
-```
-
-El resto de los subcomandos:
-
-```bash
-brasa plan qwen3-4b-q4 --ctx 16384
+brasa ps                            # status of a running server
+brasa plan qwen3-4b-q4 --ctx 16384  # memory plan without loading the model
+brasa benchmark --ctx 2048          # comparable benchmark report
 brasa config show
 brasa completions zsh
 brasa rm qwen3-4b-q4
 ```
 
-## Guías
+## The GUI
 
-- [Uso con agentes](docs/guia/agentes.md): Claude Code, Codex, Cline y OpenCode.
-- [GUI web](docs/guia/gui.md).
-- [Memoria y KV](docs/guia/memoria-y-kv.md): perfiles y `--kv`.
-- [Solución de problemas](docs/guia/problemas.md).
+`brasa serve` also serves a web GUI at `/ui`: a live monitor of requests and memory, a chat with
+history, the models on disk and their download, benchmarks, the memory planner and agent
+connection. Screenshots and the API it uses are in [docs/gui/](docs/gui/README.md).
 
-## Estructura
+![Brasa's monitor: live activity, requests per client, memory and model](docs/gui/monitor.jpg)
+
+## Guides (in Spanish)
+
+- [Using it with agents](docs/guia/agentes.md): Claude Code, Codex, Cline and OpenCode.
+- [Web GUI](docs/guia/gui.md).
+- [Memory and KV cache](docs/guia/memoria-y-kv.md): profiles and `--kv`.
+- [Troubleshooting](docs/guia/problemas.md).
+
+## Layout
 
 ```text
-crates/core        tipos comunes
-crates/metal       dispositivo, buffers y pipelines de Metal
-crates/kernels     kernels .metal y variantes por chip
-crates/quant       formato nativo .brasa, cuantización y conversión
-crates/tokenizer   BPE y chat template
-crates/models      adaptadores por familia (qwen3) y forward
-crates/memory      planner de memoria y presupuesto por perfil
-crates/tuner       fingerprint y autotuning
-crates/runtime     sesión: prefill, decode, sampling, prefix cache
-crates/catalog     manifiestos, descarga y verificación
-crates/bench       harness y reportes de benchmark
-crates/daemon      API HTTP, GUI embebida y estado
-crates/cli         binario `brasa`
-tools/             Python offline (referencias y utilidades)
-docs/adr/          decisiones de arquitectura
+crates/core        shared types
+crates/metal       Metal device, buffers and pipelines
+crates/kernels     .metal kernels and per-chip variants
+crates/quant       native .brasa format, quantization and conversion
+crates/tokenizer   BPE and chat template
+crates/models      per-family adapters (qwen3) and forward pass
+crates/memory      memory planner and per-profile budget
+crates/tuner       hardware fingerprint and autotuning
+crates/runtime     session: prefill, decode, sampling, prefix cache
+crates/catalog     manifests, downloads and verification
+crates/bench       benchmark harness and reports
+crates/daemon      HTTP API, embedded GUI and status
+crates/cli         the `brasa` binary
+tools/             offline Python (references and utilities)
+docs/adr/          architecture decision records
 ```
 
-## Licencia
+## Contributing and security
 
-Apache-2.0 (ver [LICENSE](LICENSE)). Los pesos de Qwen3-4B se distribuyen bajo su propia
-licencia.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
+## License
+
+Apache-2.0 (see [LICENSE](LICENSE)). The Qwen3-4B weights are distributed under their own
+license (Apache-2.0).
