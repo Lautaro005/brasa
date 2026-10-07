@@ -112,7 +112,7 @@ connection. Screenshots and the API it uses are in [docs/gui/](docs/gui/README.m
 crates/core        shared types
 crates/metal       Metal device, buffers and pipelines
 crates/kernels     .metal kernels and per-chip variants
-crates/quant       native .brasa format, quantization and conversion
+crates/quant       weights format (.brasa), quantization and conversion
 crates/tokenizer   BPE and chat template
 crates/models      per-family adapters (qwen3) and forward pass
 crates/memory      memory planner and per-profile budget

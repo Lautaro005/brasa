@@ -286,6 +286,7 @@ dependencies = [
  "brasa-metal",
  "brasa-quant",
  "brasa-tokenizer",
+ "brasa-tuner",
  "serde_json",
  "sha2",
 ]
@@ -334,6 +335,7 @@ dependencies = [
  "brasa-core",
  "brasa-kernels",
  "brasa-metal",
+ "brasa-quant",
  "serde",
  "serde_json",
  "sha2",

@@ -66,6 +66,9 @@ pub struct LoadedModel {
     pub chunk: usize,
     /// Plan de memoria: pesos + KV + workspace + overhead.
     pub plan: MemoryPlan,
+    /// Origen de los parámetros de lanzamiento de decode (base de tuning o valores por defecto,
+    /// ADR 0029).
+    pub tuning: String,
 }
 
 /// Estado del modelo (ADR 0025). Lo informa `/api/status` y lo cambian las operaciones del
@@ -185,12 +188,23 @@ pub struct Queue {
 impl Engine {
     /// Carga el modelo en un hilo nuevo. Devuelve error si no se puede cargar (por ejemplo, si
     /// el planner rechaza el contexto) o si no hay dispositivo Metal.
-    pub fn start(model_dir: PathBuf, limits: Limits) -> Result<(Self, LoadedModel), String> {
+    /// `budget`: presupuesto de memoria para el planner; `None` es el de esta máquina (con
+    /// `serve --perfil`, el del perfil simulado).
+    pub fn start(
+        model_dir: PathBuf,
+        limits: Limits,
+        budget: Option<Budget>,
+    ) -> Result<(Self, LoadedModel), String> {
         let make: Factory = Box::new(move || {
-            let budget =
-                Budget::this_machine().ok_or_else(|| "no hay dispositivo Metal".to_string())?;
+            let budget = match &budget {
+                Some(b) => b.clone(),
+                None => {
+                    Budget::this_machine().ok_or_else(|| "no hay dispositivo Metal".to_string())?
+                }
+            };
             let (session, plan) =
                 Session::load_with_budget(&model_dir, limits, &budget).map_err(|e| e.0)?;
+            let tuning = session.tuning().to_string();
             let file = BrasaFile::open(&model_dir.join("model.brasa"));
             let loaded = LoadedModel {
                 path: model_dir.display().to_string(),
@@ -215,6 +229,7 @@ impl Engine {
                 kv: limits.kv.name().to_string(),
                 chunk: limits.max_tokens,
                 plan,
+                tuning,
             };
             // El encabezado ya se leyó: no hace falta retener el mmap de los pesos.
             drop(file);
@@ -370,6 +385,7 @@ fn fake_model() -> LoadedModel {
             overhead: 0,
             total: 0,
         },
+        tuning: "valores por defecto (engine simulado)".into(),
     }
 }
 

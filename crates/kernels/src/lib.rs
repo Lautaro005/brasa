@@ -20,8 +20,11 @@
 use brasa_metal::{Arg, Buffer, Command, Context, MetalError, Pipeline};
 use brasa_quant::{KV_Q8_DIM, KV_Q8_ROW};
 
+pub mod launch;
 pub mod reference;
 pub mod testutil;
+
+pub use launch::{GEMV_NR, GEMV_SG_DEFAULT, GemvOp, LANES_SG_DEFAULT, Launch, LaunchError};
 
 /// Fuentes MSL embebidas en el binario.
 pub mod sources {
@@ -187,6 +190,13 @@ pub struct Kernels {
     /// `qk_norm_rope_store` por tipo de KV (T3.5).
     qk_norm_rope_store: [Pipeline; 3],
     attn_decode_reduce: Pipeline,
+    /// Parámetros de lanzamiento de decode (ADR 0029); por defecto, los fijados a mano.
+    launch: Launch,
+    /// Variantes de los GEMV de decode con otros simdgroups por threadgroup (compiladas por
+    /// `set_launch`).
+    gemv_variants: Vec<(GemvOp, usize, Pipeline)>,
+    /// Variantes de `attn_decode_lanes` (índice de grupo GQA, KV, simdgroups).
+    lanes_variants: Vec<(usize, KvType, usize, Pipeline)>,
 }
 
 /// Compila `function` para cada tamaño de grupo de [`GQA_GROUPS`] (`#define GQA_G n`) y tipo de KV.
@@ -252,7 +262,94 @@ impl Kernels {
                 &kv_source(KvType::F32, DECODE_ATTENTION),
                 "attn_decode_reduce",
             )?,
+            launch: Launch::default(),
+            gemv_variants: Vec::new(),
+            lanes_variants: Vec::new(),
         })
+    }
+
+    /// Reemplaza los parámetros de lanzamiento de decode (ADR 0029). Se llama al cargar, nunca
+    /// en el loop de decode: compila las variantes que falten (`#define GEMV_SG n` o
+    /// `#define LANES_SG n`). Ningún parámetro cambia los resultados. Si una variante no compila o
+    /// pide más hilos por threadgroup de los que admite su pipeline, devuelve error y deja los
+    /// parámetros anteriores.
+    pub fn set_launch(&mut self, ctx: &Context, launch: Launch) -> Result<(), LaunchError> {
+        let err = |e: MetalError| LaunchError(e.to_string());
+        for (op, sg) in launch.gemv_entries() {
+            if sg == GEMV_SG_DEFAULT || self.gemv_variant(op, sg).is_some() {
+                continue;
+            }
+            let src = format!("#define GEMV_SG {sg}\n{}", sources::MATMUL);
+            let p = ctx.pipeline(&src, op.kernel_name()).map_err(err)?;
+            if p.max_threads_per_threadgroup() < 32 * sg {
+                return Err(LaunchError(format!(
+                    "{}: {sg} simdgroups por threadgroup, el pipeline admite {}",
+                    op.kernel_name(),
+                    p.max_threads_per_threadgroup() / 32
+                )));
+            }
+            self.gemv_variants.push((op, sg, p));
+        }
+        for (kv, group, sg) in launch.lanes_entries() {
+            let gi = GQA_GROUPS.iter().position(|&g| g == group).ok_or_else(|| {
+                LaunchError(format!("attn_decode_lanes: grupo GQA {group} no compilado"))
+            })?;
+            if sg == LANES_SG_DEFAULT || self.lanes_variant(gi, kv, sg).is_some() {
+                continue;
+            }
+            let src = format!(
+                "#define GQA_G {group}\n#define LANES_SG {sg}\n{}",
+                sources::DECODE_ATTENTION
+            );
+            let p = ctx
+                .pipeline(&kv_source(kv, &src), "attn_decode_lanes")
+                .map_err(err)?;
+            if p.max_threads_per_threadgroup() < 32 * sg {
+                return Err(LaunchError(format!(
+                    "attn_decode_lanes kv {} g {group}: {sg} simdgroups por threadgroup, el \
+                     pipeline admite {}",
+                    kv.name(),
+                    p.max_threads_per_threadgroup() / 32
+                )));
+            }
+            self.lanes_variants.push((gi, kv, sg, p));
+        }
+        self.launch = launch;
+        Ok(())
+    }
+
+    fn gemv_variant(&self, op: GemvOp, sg: usize) -> Option<&Pipeline> {
+        self.gemv_variants
+            .iter()
+            .find(|(o, s, _)| *o == op && *s == sg)
+            .map(|v| &v.2)
+    }
+
+    fn lanes_variant(&self, gi: usize, kv: KvType, sg: usize) -> Option<&Pipeline> {
+        self.lanes_variants
+            .iter()
+            .find(|(g, k, s, _)| *g == gi && *k == kv && *s == sg)
+            .map(|v| &v.3)
+    }
+
+    /// Pipeline y simdgroups por threadgroup del GEMV `op` `[rows, cols]` según el `Launch`
+    /// (`base` es la variante por defecto). Sin asignaciones: corre en cada paso de decode.
+    fn gemv_pick<'p>(
+        &'p self,
+        op: GemvOp,
+        rows: usize,
+        cols: usize,
+        base: &'p Pipeline,
+    ) -> (&'p Pipeline, usize) {
+        let sg = self.launch.gemv_sg(op, rows, cols);
+        match self.gemv_variant(op, sg) {
+            Some(p) if sg != GEMV_SG_DEFAULT => (p, sg),
+            _ => (base, GEMV_SG_DEFAULT),
+        }
+    }
+
+    pub fn launch(&self) -> &Launch {
+        &self.launch
     }
 
     /// `out = a + b` sobre los primeros `n` elementos.
@@ -445,6 +542,7 @@ impl Kernels {
             WeightType::Q6_0 => &self.gemv_scaled_q6_0,
             WeightType::Q8_0 => panic!("gemv_scaled: q4_0 o q6_0"),
         };
+        let (p, sg) = self.gemv_pick(GemvOp::Scaled(w.qtype), w.rows, w.cols, p);
         cmd.dispatch_groups(
             p,
             &[
@@ -457,8 +555,8 @@ impl Kernels {
                 Arg::u32(norm_partials(w.cols) as u32),
                 Arg::f32(eps),
             ],
-            [w.rows / 8, 1, 1],
-            [64, 1, 1],
+            [w.rows / (GEMV_NR * sg), 1, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -480,9 +578,15 @@ impl Kernels {
             assert_eq!(m.rows % 8, 0, "gemv_scaled3: filas % 8");
         }
         let total = w[0].rows + w[1].rows + w[2].rows;
+        // Cada threadgroup trabaja sobre una sola matriz: las filas de cada una, múltiplo del
+        // bloque de filas del threadgroup.
+        let (mut p, mut sg) = self.gemv_pick(GemvOp::Scaled3, total, cols, &self.gemv_scaled3_q4_0);
+        if w.iter().any(|m| m.rows % (GEMV_NR * sg) != 0) {
+            (p, sg) = (&self.gemv_scaled3_q4_0, GEMV_SG_DEFAULT);
+        }
         let [y0, y1, y2] = y;
         cmd.dispatch_groups(
-            &self.gemv_scaled3_q4_0,
+            p,
             &[
                 Arg::buf(w[0].data),
                 Arg::buf(w[1].data),
@@ -498,8 +602,8 @@ impl Kernels {
                 Arg::u32(norm_partials(cols) as u32),
                 Arg::f32(eps),
             ],
-            [total / 8, 1, 1],
-            [64, 1, 1],
+            [total / (GEMV_NR * sg), 1, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -518,8 +622,14 @@ impl Kernels {
     ) {
         assert!(gate.qtype == WeightType::Q4_0 && up.qtype == WeightType::Q4_0);
         assert!(gate.rows == up.rows && gate.cols == up.cols && gate.rows % 8 == 0);
-        cmd.dispatch_groups(
+        let (p, sg) = self.gemv_pick(
+            GemvOp::ScaledSwiglu,
+            gate.rows,
+            gate.cols,
             &self.gemv_scaled_swiglu_q4_0,
+        );
+        cmd.dispatch_groups(
+            p,
             &[
                 Arg::buf(gate.data),
                 Arg::buf(up.data),
@@ -530,8 +640,8 @@ impl Kernels {
                 Arg::u32(norm_partials(gate.cols) as u32),
                 Arg::f32(eps),
             ],
-            [gate.rows / 8, 1, 1],
-            [64, 1, 1],
+            [gate.rows / (GEMV_NR * sg), 1, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -551,6 +661,7 @@ impl Kernels {
             WeightType::Q8_0 => &self.gemv_fast_q8_0,
             WeightType::Q6_0 => &self.gemv_fast_q6_0,
         };
+        let (p, sg) = self.gemv_pick(GemvOp::Fast(w.qtype), w.rows, w.cols, p);
         cmd.dispatch_groups(
             p,
             &[
@@ -560,8 +671,8 @@ impl Kernels {
                 Arg::u32(w.rows as u32),
                 Arg::u32(w.cols as u32),
             ],
-            [w.rows / 8, tokens, 1],
-            [64, 1, 1],
+            [w.rows / (GEMV_NR * sg), tokens, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -817,9 +928,16 @@ impl Kernels {
             "scratch de decode chico"
         );
         let gi = gqa_index(hq, hkv).expect("decode_attention_lanes: grupo GQA no compilado");
+        let base = &self.attn_decode_lanes[gi][kv.idx()];
+        let (p, sg) = match self.launch.attn_lanes_sg(kv, GQA_GROUPS[gi], lk) {
+            LANES_SG_DEFAULT => (base, LANES_SG_DEFAULT),
+            sg => self
+                .lanes_variant(gi, kv, sg)
+                .map_or((base, LANES_SG_DEFAULT), |p| (p, sg)),
+        };
         let scale = 1.0 / (dim as f32).sqrt();
         cmd.dispatch_groups(
-            &self.attn_decode_lanes[gi][kv.idx()],
+            p,
             &[
                 q,
                 k,
@@ -829,8 +947,8 @@ impl Kernels {
                 Arg::u32(lk as u32),
                 Arg::f32(scale),
             ],
-            [groups(groups(lk, DECODE_CHUNK), DECODE_LANES_SG), hkv, 1],
-            [32 * DECODE_LANES_SG, 1, 1],
+            [groups(groups(lk, DECODE_CHUNK), sg), hkv, 1],
+            [32 * sg, 1, 1],
         );
         cmd.dispatch_groups(
             &self.attn_decode_reduce,
@@ -970,9 +1088,6 @@ fn gqa_index(hq: usize, hkv: usize) -> Option<usize> {
     }
     GQA_GROUPS.iter().position(|&g| g == hq / hkv)
 }
-
-/// Simdgroups (tramos) por threadgroup de `decode_attention_lanes` (`SG_PER_TG` en MSL).
-const DECODE_LANES_SG: usize = 4;
 
 /// Claves por tramo de `decode_attention` (`CHUNK` en MSL).
 pub const DECODE_CHUNK: usize = 128;

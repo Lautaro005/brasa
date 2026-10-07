@@ -55,6 +55,9 @@ pub struct ServeConfig {
     pub config_path: PathBuf,
     /// Endpoint de Hugging Face para `POST /api/models/pull`.
     pub hf_endpoint: String,
+    /// Presupuesto de memoria del planner; `None` es el de esta máquina. `serve --perfil` pasa el
+    /// del perfil simulado (ADR 0029).
+    pub budget: Option<Budget>,
 }
 
 /// Estado compartido por los handlers.
@@ -236,8 +239,13 @@ async fn models(State(s): State<Shared>, headers: HeaderMap) -> Response {
 /// Carga el modelo y sirve hasta que llegue Ctrl-C.
 pub fn serve(cfg: ServeConfig) -> Result<(), String> {
     let tok = Tokenizer::from_dir(&cfg.model_dir).map_err(|e| e.0)?;
-    let (engine, model) = Engine::start(cfg.model_dir.clone(), cfg.limits)?;
-    let budget = Budget::this_machine().unwrap_or_else(|| Budget::profile(16));
+    let (engine, model) = Engine::start(cfg.model_dir.clone(), cfg.limits, cfg.budget.clone())?;
+    eprintln!("tuning: {}", model.tuning);
+    let budget = cfg
+        .budget
+        .clone()
+        .or_else(Budget::this_machine)
+        .unwrap_or_else(|| Budget::profile(16));
     let meta = ServerMeta {
         model_id: cfg.model_id.clone(),
         model_dir: cfg.model_dir.clone(),

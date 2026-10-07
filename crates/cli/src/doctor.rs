@@ -1,8 +1,11 @@
 //! `brasa doctor`: diagnóstico del hardware y del estado de memoria.
 
 use brasa_memory::system::{PressureLevel, SystemMemory, system_memory};
+use brasa_tuner::apply::disabled_by_env;
+use brasa_tuner::db::default_dir;
 use brasa_tuner::fingerprint::{Fingerprint, kernels_version};
 use brasa_tuner::hardware::{HardwareInfo, hardware_info};
+use brasa_tuner::{TuningDb, TuningStatus, resolve};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -18,6 +21,48 @@ struct Report {
 struct Tuning {
     fingerprint_id: String,
     fingerprint: Fingerprint,
+    /// Base de tuning de este fingerprint (ADR 0029).
+    db: TuningDbInfo,
+}
+
+#[derive(Debug, Serialize)]
+struct TuningDbInfo {
+    /// `tuned`, `missing`, `invalid`, `disabled` o `nodir`.
+    status: &'static str,
+    /// Ruta del archivo de la base (exista o no).
+    path: Option<String>,
+    /// Entradas de la base (0 si no hay o es inválida).
+    entries: usize,
+    message: String,
+}
+
+fn db_info(fingerprint: &Fingerprint) -> TuningDbInfo {
+    let dir = default_dir();
+    let resolved = if disabled_by_env() {
+        brasa_tuner::Resolved {
+            launch: Default::default(),
+            status: TuningStatus::Disabled,
+        }
+    } else {
+        resolve(dir.as_deref(), fingerprint)
+    };
+    let (status, entries) = match &resolved.status {
+        TuningStatus::Tuned { entries, .. } => ("tuned", *entries),
+        TuningStatus::Missing { .. } => ("missing", 0),
+        TuningStatus::Invalid { .. } => ("invalid", 0),
+        TuningStatus::Disabled => ("disabled", 0),
+        TuningStatus::NoDir => ("nodir", 0),
+    };
+    TuningDbInfo {
+        status,
+        path: dir.map(|d| {
+            d.join(TuningDb::file_name(fingerprint))
+                .display()
+                .to_string()
+        }),
+        entries,
+        message: resolved.status.to_string(),
+    }
 }
 
 pub fn run(json: bool) {
@@ -29,6 +74,7 @@ pub fn run(json: bool) {
         memory: system_memory(),
         tuning: Tuning {
             fingerprint_id: fingerprint.id(),
+            db: db_info(&fingerprint),
             fingerprint,
         },
     };
@@ -95,6 +141,10 @@ fn print_text(r: &Report) {
     println!("Tuning");
     println!("  fingerprint     {}", r.tuning.fingerprint_id);
     println!("  kernels         {}", r.tuning.fingerprint.kernels_version);
+    println!("  base            {}", r.tuning.db.message);
+    if let Some(p) = &r.tuning.db.path {
+        println!("  archivo         {p}");
+    }
     println!();
     println!("Memoria del sistema");
     let pressure = match mem.pressure {

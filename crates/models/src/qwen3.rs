@@ -11,14 +11,14 @@
 use std::path::Path;
 
 use brasa_kernels::{
-    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, WeightType, decode_partials_len,
-    gqa_supported, norm_partials,
+    AttnShape, KV_ALIGN, Kernels, QMatrix, RopeTable, decode_partials_len, gqa_supported,
+    norm_partials,
 };
 use brasa_memory::planner::{ModelShape, SessionShape, buffer_bytes};
 use brasa_metal::{Arg, Buffer, Command, Context};
 use brasa_quant::{BrasaFile, QType};
 
-pub use brasa_kernels::KvType;
+pub use brasa_kernels::{GemvOp, KvType, Launch, WeightType};
 
 use crate::{Error, Result};
 
@@ -91,6 +91,27 @@ pub fn model_shape(path: &Path) -> Result<(ModelShape, Config)> {
         vocab: cfg.vocab,
     };
     Ok((shape, cfg))
+}
+
+/// Tipos de los pesos que eligen los kernels de decode: el de las matrices de las capas (de
+/// `q_proj` de la capa 0) y el de la tabla de embeddings (lm_head atado). Solo lee el encabezado.
+pub fn weight_types(path: &Path) -> Result<(WeightType, WeightType)> {
+    let f = BrasaFile::open(path)?;
+    let ty = |name: &str| -> Result<WeightType> {
+        let t = f
+            .tensor(name)
+            .ok_or_else(|| Error(format!("falta el tensor {name}")))?;
+        match t.dtype {
+            QType::Q4_0 => Ok(WeightType::Q4_0),
+            QType::Q8_0 => Ok(WeightType::Q8_0),
+            QType::Q6_0 => Ok(WeightType::Q6_0),
+            QType::F32 => Err(Error(format!("{name}: se esperaba un tensor cuantizado"))),
+        }
+    };
+    Ok((
+        ty("model.layers.0.self_attn.q_proj.weight")?,
+        ty("model.embed_tokens.weight")?,
+    ))
 }
 
 impl Limits {
@@ -378,6 +399,18 @@ impl Qwen3 {
             rope,
             ws,
         })
+    }
+
+    /// Parámetros de lanzamiento de decode (ADR 0029). Se llama al cargar, no entre tokens; no
+    /// cambian los logits.
+    pub fn set_launch(&mut self, ctx: &Context, launch: Launch) -> Result<()> {
+        self.kernels
+            .set_launch(ctx, launch)
+            .map_err(|e| Error(e.to_string()))
+    }
+
+    pub fn launch(&self) -> &Launch {
+        self.kernels.launch()
     }
 
     /// Memoria reservada en buffers Metal (redondeada a páginas como la asigna Metal).

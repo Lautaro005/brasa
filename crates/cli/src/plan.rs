@@ -3,17 +3,10 @@
 
 use brasa_memory::planner::{Budget, Fit, gib, rejection_message};
 use brasa_runtime::{Limits, Session};
-use clap::{Args, ValueEnum};
+use clap::Args;
 
+use crate::config::Perfil;
 use crate::run::resolve_model;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Perfil {
-    #[value(name = "8gb")]
-    G8,
-    #[value(name = "16gb")]
-    G16,
-}
 
 #[derive(Debug, Args)]
 pub struct PlanArgs {
@@ -39,8 +32,7 @@ pub struct PlanArgs {
 pub fn run(args: PlanArgs) -> Result<bool, String> {
     let dir = resolve_model(&args.model)?;
     let budget = match args.perfil {
-        Some(Perfil::G8) => Budget::profile(8),
-        Some(Perfil::G16) => Budget::profile(16),
+        Some(p) => p.profile().budget(),
         None => Budget::this_machine().ok_or("no hay dispositivo Metal")?,
     };
     let limits = Limits {
