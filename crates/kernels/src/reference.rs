@@ -60,12 +60,44 @@ pub fn rope_neox(x: &mut [f32], heads: usize, dim: usize, pos0: usize, cos: &[f3
 /// `y[t, r] = Σ_k W[r, k] · x[t, k]` con `W` cuantizado `[rows, cols]`.
 /// Devuelve además `Σ_k |W[r, k] · x[t, k]|` por salida, la escala de la tolerancia.
 pub fn matmul(q: QType, w: &[u8], rows: usize, cols: usize, x: &[f32], y: &mut [f32]) -> Vec<f32> {
+    matmul_rounded(q, w, rows, cols, x, y, |v| v)
+}
+
+/// Redondeo a f16 (al par más cercano, como Metal) y vuelta a f32.
+pub fn round_f16(v: f32) -> f32 {
+    brasa_quant::f16_to_f32(brasa_quant::f32_to_f16(v))
+}
+
+/// Como [`matmul`], pero con los pesos decuantizados y las activaciones redondeados a f16 antes
+/// del producto, como el GEMM de prefill con `GemmInput::F16` (ADR 0030).
+pub fn matmul_f16_inputs(
+    q: QType,
+    w: &[u8],
+    rows: usize,
+    cols: usize,
+    x: &[f32],
+    y: &mut [f32],
+) -> Vec<f32> {
+    matmul_rounded(q, w, rows, cols, x, y, round_f16)
+}
+
+fn matmul_rounded(
+    q: QType,
+    w: &[u8],
+    rows: usize,
+    cols: usize,
+    x: &[f32],
+    y: &mut [f32],
+    round: impl Fn(f32) -> f32,
+) -> Vec<f32> {
+    let x: Vec<f32> = x.iter().map(|v| round(*v)).collect();
     let t_count = x.len() / cols;
     let mut abs_sum = vec![0f32; t_count * rows];
     let row_bytes = q.nbytes(cols);
     let mut wr = vec![0f32; cols];
     for r in 0..rows {
         dequantize(q, &w[r * row_bytes..(r + 1) * row_bytes], &mut wr);
+        wr.iter_mut().for_each(|v| *v = round(*v));
         for t in 0..t_count {
             let xt = &x[t * cols..(t + 1) * cols];
             let (mut s, mut a) = (0f64, 0f64);

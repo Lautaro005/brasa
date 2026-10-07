@@ -24,13 +24,17 @@
 //! que `TIE_REL_KVQ8` · |top-1|. Se mide además la pérdida por redondear la KV: coincidencia de
 //! top-1 contra la referencia con KV sin redondear (mínimo `MIN_KV_AGREE`).
 //!
+//! Las pruebas `forward_kv_*` usan el GEMM de prefill exacto (`GemmInput::F32`); las
+//! `forward_gemm_f16_*`, la ruta caliente, que redondea pesos y activaciones a f16 dentro del GEMM
+//! (ADR 0030), con `LOGIT_TOL_GEMM16` y empates relativos `TIE_REL_GEMM16`.
+//!
 //! Necesita models/qwen3-4b-q4/model.brasa:
 //!   cargo test --release -p brasa-models --test forward -- --ignored --nocapture
 
 use std::path::{Path, PathBuf};
 
 use brasa_metal::Context;
-use brasa_models::qwen3::{KvType, Limits, Qwen3};
+use brasa_models::qwen3::{GemmInput, KvType, Limits, Qwen3};
 use serde_json::Value;
 
 const LOGIT_TOL: f32 = 1e-4;
@@ -41,6 +45,12 @@ const TIE_REL_KVQ8: f32 = 1e-2;
 const MIN_Q4_AGREE: f64 = 0.80;
 const MIN_KV_AGREE: f64 = 0.98;
 const CHUNK: usize = 64;
+/// GEMM de prefill con entradas f16 (ADR 0030). Las fixtures no redondean pesos ni activaciones,
+/// así que la tolerancia sale de lo medido en M1 Pro con KV f16: logits hasta 6,3e-4 (con GEMM
+/// f32: 2,3e-4) y 2 de 2898 posiciones con otro top-1, con brecha top-1/top-2 de hasta
+/// 3,5e-4 · |top-1|. Con KV Q8 manda su propia tolerancia (8,5e-3 medido).
+const LOGIT_TOL_GEMM16: f32 = 2e-3;
+const TIE_REL_GEMM16: f32 = 1e-3;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -116,9 +126,12 @@ impl TopK {
     }
 
     /// Empate según el tipo de KV (ver la documentación del módulo).
-    fn tie(&self, j: usize, kv: KvType) -> bool {
+    fn tie(&self, j: usize, kv: KvType, gemm: GemmInput) -> bool {
         let g = self.gap(j);
-        g < TIE || (kv == KvType::Q8_0 && g < TIE_REL_KVQ8 * self.logits[j * self.k].abs())
+        let top = self.logits[j * self.k].abs();
+        g < TIE
+            || (kv == KvType::Q8_0 && g < TIE_REL_KVQ8 * top)
+            || (gemm == GemmInput::F16 && g < TIE_REL_GEMM16 * top)
     }
 }
 
@@ -145,22 +158,36 @@ fn top1_agree(
 #[test]
 #[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
 fn forward_kv_f32_igual_a_la_referencia() {
-    forward_igual_a_la_referencia(KvType::F32, "fixtures/qwen3-4b-q4");
+    forward_igual_a_la_referencia(KvType::F32, "fixtures/qwen3-4b-q4", GemmInput::F32);
+}
+
+/// Ruta caliente: GEMM de prefill con entradas f16 y KV f16 (ADR 0030).
+#[test]
+#[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
+fn forward_gemm_f16_kv_f16_igual_a_la_referencia() {
+    forward_igual_a_la_referencia(KvType::F16, "fixtures/qwen3-4b-q4-kvf16", GemmInput::F16);
+}
+
+/// Perfil de agente: GEMM de prefill con entradas f16 y KV Q8 (ADR 0030).
+#[test]
+#[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
+fn forward_gemm_f16_kv_q8_igual_a_la_referencia() {
+    forward_igual_a_la_referencia(KvType::Q8_0, "fixtures/qwen3-4b-q4-kvq8", GemmInput::F16);
 }
 
 #[test]
 #[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
 fn forward_kv_f16_igual_a_la_referencia() {
-    forward_igual_a_la_referencia(KvType::F16, "fixtures/qwen3-4b-q4-kvf16");
+    forward_igual_a_la_referencia(KvType::F16, "fixtures/qwen3-4b-q4-kvf16", GemmInput::F32);
 }
 
 #[test]
 #[ignore = "requiere models/qwen3-4b-q4/model.brasa"]
 fn forward_kv_q8_igual_a_la_referencia() {
-    forward_igual_a_la_referencia(KvType::Q8_0, "fixtures/qwen3-4b-q4-kvq8");
+    forward_igual_a_la_referencia(KvType::Q8_0, "fixtures/qwen3-4b-q4-kvq8", GemmInput::F32);
 }
 
-fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
+fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str, gemm: GemmInput) {
     let fx_q4 = root().join(fixtures);
     let fx_fp = root().join("fixtures/qwen3-4b");
     let fx_kv32 = root().join("fixtures/qwen3-4b-q4");
@@ -168,7 +195,12 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
         KvType::F32 => LOGIT_TOL,
         KvType::F16 => LOGIT_TOL_KV16,
         KvType::Q8_0 => LOGIT_TOL_KVQ8,
-    };
+    }
+    .max(if gemm == GemmInput::F16 {
+        LOGIT_TOL_GEMM16
+    } else {
+        0.0
+    });
     let m_q4 = manifest(&fx_q4);
     let (greedy, k) = (
         m_q4["greedy_tokens"].as_u64().unwrap() as usize,
@@ -183,9 +215,12 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
     };
     let mut model =
         Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();
+    model.prefill_gemm = gemm;
     let vocab = model.cfg.vocab;
 
     let mut worst_logit = 0f32;
+    // Mayor brecha top-1/top-2 (relativa a |top-1|) entre las posiciones con otro top-1.
+    let mut worst_gap = 0f32;
     let (mut tf_pos, mut tf_bad, mut tf_ties) = (0usize, 0usize, 0usize);
     let (mut dec_pos, mut dec_bad) = (0usize, 0usize);
     let (mut q_pos, mut q_agree) = (0usize, 0usize);
@@ -221,7 +256,8 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
         let (mut bad, mut ties) = (0, 0);
         for j in 0..seq.len() {
             if argmax(&logits[j * vocab..(j + 1) * vocab]) != refk.top1(j) {
-                if refk.tie(j, kv) {
+                worst_gap = worst_gap.max(refk.gap(j) / refk.logits[j * refk.k].abs());
+                if refk.tie(j, kv, gemm) {
                     ties += 1;
                 } else {
                     bad += 1;
@@ -240,7 +276,7 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
         let mut dbad = 0;
         for (step, tok) in g[..greedy - 1].iter().enumerate() {
             let j = prompt.len() - 1 + step; // fila de la referencia que predice g[step]
-            if argmax(&tail) != refk.top1(j) && !refk.tie(j, kv) {
+            if argmax(&tail) != refk.top1(j) && !refk.tie(j, kv, gemm) {
                 dbad += 1;
             }
             model
@@ -271,7 +307,11 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str) {
         q_pos += flen;
         q_agree += agree;
     }
-    println!("KV {}", kv.name());
+    println!(
+        "KV {}, GEMM de prefill {:?}; mayor brecha relativa con otro top-1: {worst_gap:.2e}",
+        kv.name(),
+        gemm
+    );
     if kv_pos > 0 {
         println!(
             "KV {} vs KV sin redondear: top-1 {kv_agree}/{kv_pos} ({:.2} %)",

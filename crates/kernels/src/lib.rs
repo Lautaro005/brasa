@@ -174,8 +174,8 @@ pub struct Kernels {
     attn_pv_f32: Pipeline,
     gemv_fast_q4_0: Pipeline,
     gemv_fast_q8_0: Pipeline,
-    gemm_tiled_q4_0: Pipeline,
-    gemm_tiled_q8_0: Pipeline,
+    /// `gemm_tiled` por tipo de peso (q4_0, q8_0) y tipo de las entradas ([`GemmInput`]).
+    gemm_tiled: [[Pipeline; 2]; 2],
     /// Variantes por [`KvType`] (índice `KvType as usize`).
     flash_attn: [Pipeline; 3],
     /// `flash_attn_gqa` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
@@ -236,8 +236,16 @@ impl Kernels {
             attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
             gemv_fast_q4_0: ctx.pipeline(MATMUL, "gemv_fast_q4_0_f32")?,
             gemv_fast_q8_0: ctx.pipeline(MATMUL, "gemv_fast_q8_0_f32")?,
-            gemm_tiled_q4_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
-            gemm_tiled_q8_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
+            gemm_tiled: [
+                [
+                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f16")?,
+                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
+                ],
+                [
+                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f16")?,
+                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
+                ],
+            ],
             flash_attn: kv_variants(ctx, FLASH_ATTENTION, "flash_attn_f32")?,
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
@@ -593,8 +601,8 @@ impl Kernels {
         );
     }
 
-    /// GEMM para prefill: `y[t, :] = W · x[t, :]`. Usa el kernel tiled (simdgroup matrix) si
-    /// `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple.
+    /// GEMM para prefill: `y[t, :] = W · x[t, :]`, con pesos y activaciones redondeados a f16 y
+    /// acumulación en f32 (ADR 0030). Ver [`Kernels::gemm_with`].
     pub fn gemm<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -603,14 +611,29 @@ impl Kernels {
         y: Arg<'a>,
         tokens: usize,
     ) {
+        self.gemm_with(cmd, w, x, y, tokens, GemmInput::F16);
+    }
+
+    /// GEMM para prefill con el tipo de entradas `input`. Usa el kernel tiled (simdgroup matrix)
+    /// si `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple (siempre en f32).
+    pub fn gemm_with<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: QMatrix<'a>,
+        x: Arg<'a>,
+        y: Arg<'a>,
+        tokens: usize,
+        input: GemmInput,
+    ) {
         if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
             return self.gemm_naive(cmd, w, x, y, tokens);
         }
-        let p = match w.qtype {
-            WeightType::Q4_0 => &self.gemm_tiled_q4_0,
-            WeightType::Q8_0 => &self.gemm_tiled_q8_0,
+        let qi = match w.qtype {
+            WeightType::Q4_0 => 0,
+            WeightType::Q8_0 => 1,
             WeightType::Q6_0 => unreachable!(),
         };
+        let p = &self.gemm_tiled[qi][input as usize];
         cmd.dispatch_groups(
             p,
             &[
@@ -864,8 +887,7 @@ impl Kernels {
         assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
         let scale = 1.0 / (dim as f32).sqrt();
         if let Some(gi) = gqa_index(hq, hkv) {
-            // Variante GQA: FA_ROWS filas (FA_ROWS / grupo queries × grupo cabezas) por threadgroup.
-            let qt = FA_ROWS / GQA_GROUPS[gi];
+            // Variante GQA (ADR 0030): FA_QUERIES queries de una cabeza por threadgroup.
             cmd.dispatch_groups(
                 &self.flash_attn_gqa[gi][kv.idx()],
                 &[
@@ -878,7 +900,7 @@ impl Kernels {
                     Arg::u32(pos0 as u32),
                     Arg::f32(scale),
                 ],
-                [groups(tokens, qt), hkv, 1],
+                [groups(tokens, FA_QUERIES), hq, 1],
                 [128, 1, 1],
             );
             return;
@@ -956,6 +978,16 @@ impl Kernels {
 
 /// Tamaños de grupo GQA (`hq / hkv`) para los que se compilan `decode_attention_lanes` y la
 /// variante GQA de `flash_attention`.
+/// Tipo al que se redondean pesos y activaciones dentro del GEMM de prefill (ADR 0030). La
+/// acumulación es siempre f32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GemmInput {
+    /// Ruta caliente: ~1,35× más rápida que f32 en M1 Pro.
+    F16 = 0,
+    /// Exacta: mismo resultado que el producto en f32.
+    F32 = 1,
+}
+
 pub const GQA_GROUPS: [usize; 4] = [1, 2, 4, 8];
 
 /// Si hay kernels compilados para el grupo GQA de `hq` cabezas de query y `hkv` de KV.
@@ -982,9 +1014,8 @@ pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
     hq * lk.div_ceil(DECODE_CHUNK) * 130
 }
 
-/// Filas (queries × cabezas del grupo) por threadgroup de la variante GQA de `flash_attention`
-/// (`FA_ROWS` en MSL).
-const FA_ROWS: usize = 16;
+/// Queries (de una cabeza) por threadgroup de la variante GQA de `flash_attention` (`FQ` en MSL).
+const FA_QUERIES: usize = 8;
 
 /// Hilos por threadgroup de `add_norm_prep` (cada uno escribe una suma parcial).
 const NORM_PREP_TG: usize = 256;

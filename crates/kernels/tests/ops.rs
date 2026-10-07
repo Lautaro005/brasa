@@ -2,7 +2,7 @@
 //! (tolerancias en `brasa_kernels`). Formas de Qwen3-4B: H = 2560, FFN = 9728, head_dim = 128.
 
 use brasa_kernels::testutil::{Rng, max_rel};
-use brasa_kernels::{Kernels, QMatrix, RopeTable, WeightType, reference};
+use brasa_kernels::{GemmInput, Kernels, QMatrix, RopeTable, WeightType, reference};
 use brasa_metal::{Arg, Context};
 use brasa_quant::QType;
 
@@ -147,7 +147,10 @@ enum Path {
     Gemv,
     GemvSimple,
     Naive,
+    /// GEMM tiled con entradas f16 (ruta caliente), contra la referencia que redondea igual.
     Tiled,
+    /// GEMM tiled con entradas f32.
+    TiledF32,
 }
 
 fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens: usize) -> f32 {
@@ -160,7 +163,15 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
     };
     let x = rng.vec(tokens * cols, 4.0);
     let mut expected = vec![0.0; tokens * rows];
-    let abs_sum = reference::matmul(q, &w, rows, cols, &x, &mut expected);
+    // El kernel tiled solo se usa con filas % 64 == 0, columnas % 32 == 0 y pesos q4_0/q8_0; si
+    // no, `gemm` cae en la versión simple en f32.
+    let tiled_f16 =
+        path == Path::Tiled && rows % 64 == 0 && cols % 32 == 0 && qtype != WeightType::Q6_0;
+    let abs_sum = if tiled_f16 {
+        reference::matmul_f16_inputs(q, &w, rows, cols, &x, &mut expected)
+    } else {
+        reference::matmul(q, &w, rows, cols, &x, &mut expected)
+    };
     let (gw, gx) = (ctx.buffer_from(&w).unwrap(), ctx.buffer_from(&x).unwrap());
     let mut y = ctx.buffer::<f32>(tokens * rows).unwrap();
     let m = QMatrix {
@@ -175,6 +186,14 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
         Path::GemvSimple => k.gemv_simple(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
         Path::Naive => k.gemm_naive(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
         Path::Tiled => k.gemm(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
+        Path::TiledF32 => k.gemm_with(
+            &mut cmd,
+            m,
+            Arg::buf(&gx),
+            Arg::buf(&y),
+            tokens,
+            GemmInput::F32,
+        ),
     }
     cmd.commit_and_wait().unwrap();
     y.as_mut_slice()
@@ -191,21 +210,39 @@ fn matmul_q4_0_y_q8_0() {
     // (filas, columnas): q/o proj, gate/up, down, y una forma chica (sin tiled: 5 % 64 != 0).
     for (rows, cols) in [(4096, 2560), (9728, 2560), (2560, 9728), (5, 64)] {
         for tokens in [1, 3] {
-            for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
+            for path in [
+                Path::Gemv,
+                Path::GemvSimple,
+                Path::Naive,
+                Path::Tiled,
+                Path::TiledF32,
+            ] {
                 worst = worst.max(check_matmul(WeightType::Q4_0, path, rows, cols, tokens));
             }
         }
     }
     // lm_head q8_0 (filas reducidas para que el test sea rápido) y una forma chica.
     for (rows, cols) in [(8192, 2560), (6, 32)] {
-        for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
+        for path in [
+            Path::Gemv,
+            Path::GemvSimple,
+            Path::Naive,
+            Path::Tiled,
+            Path::TiledF32,
+        ] {
             worst = worst.max(check_matmul(WeightType::Q8_0, path, rows, cols, 2));
         }
     }
     // Tabla de embeddings q6_0 (ADR 0012): lm_head con 1 y 2 filas de logits, y una forma chica.
     for (rows, cols) in [(8192, 2560), (6, 32)] {
         for tokens in [1, 2] {
-            for path in [Path::Gemv, Path::GemvSimple, Path::Naive, Path::Tiled] {
+            for path in [
+                Path::Gemv,
+                Path::GemvSimple,
+                Path::Naive,
+                Path::Tiled,
+                Path::TiledF32,
+            ] {
                 worst = worst.max(check_matmul(WeightType::Q6_0, path, rows, cols, tokens));
             }
         }
@@ -219,21 +256,47 @@ fn gemm_tiled_bordes_de_tokens() {
     // Tokens que no son múltiplo del bloque de 32 y bloques completos.
     let mut worst = 0f32;
     for tokens in [31, 32, 33, 70, 128] {
-        worst = worst.max(check_matmul(
-            WeightType::Q4_0,
-            Path::Tiled,
-            1024,
-            2560,
-            tokens,
-        ));
-        worst = worst.max(check_matmul(
-            WeightType::Q8_0,
-            Path::Tiled,
-            512,
-            2560,
-            tokens,
-        ));
+        for path in [Path::Tiled, Path::TiledF32] {
+            worst = worst.max(check_matmul(WeightType::Q4_0, path, 1024, 2560, tokens));
+            worst = worst.max(check_matmul(WeightType::Q8_0, path, 512, 2560, tokens));
+        }
     }
     eprintln!("gemm tiled (bordes): error máximo / Σ|w·x| {worst:.2e}");
     assert!(worst <= 1e-5, "{worst}");
+}
+
+#[test]
+fn gemm_f16_contra_referencia_sin_redondear() {
+    // Distancia del GEMM con entradas f16 a la referencia en f64 sin redondear (ADR 0030): cada
+    // producto lleva a lo sumo ~2^-11 de error relativo por x y otro tanto por w.
+    let (ctx, k) = setup();
+    let mut worst = 0f32;
+    for (rows, cols, tokens) in [(1024, 2560, 70), (2560, 9728, 33)] {
+        let mut rng = Rng::new((rows + cols + tokens) as u64);
+        let w = rng.q4_0(rows, cols);
+        let x = rng.vec(tokens * cols, 4.0);
+        let mut expected = vec![0.0; tokens * rows];
+        let abs_sum = reference::matmul(QType::Q4_0, &w, rows, cols, &x, &mut expected);
+        let (gw, gx) = (ctx.buffer_from(&w).unwrap(), ctx.buffer_from(&x).unwrap());
+        let mut y = ctx.buffer::<f32>(tokens * rows).unwrap();
+        let m = QMatrix {
+            data: &gw,
+            qtype: WeightType::Q4_0,
+            rows,
+            cols,
+        };
+        let mut cmd = ctx.command().unwrap();
+        k.gemm(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens);
+        cmd.commit_and_wait().unwrap();
+        let e = y
+            .as_mut_slice()
+            .iter()
+            .zip(&expected)
+            .zip(&abs_sum)
+            .map(|((g, e), a)| (g - e).abs() / a.max(1e-30))
+            .fold(0.0, f32::max);
+        worst = worst.max(e);
+    }
+    eprintln!("gemm f16 vs referencia sin redondear: error máximo / Σ|w·x| {worst:.2e}");
+    assert!(worst <= 2f32.powi(-10), "{worst}");
 }
