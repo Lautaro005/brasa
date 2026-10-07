@@ -163,7 +163,7 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
     };
     let x = rng.vec(tokens * cols, 4.0);
     let mut expected = vec![0.0; tokens * rows];
-    // El kernel tiled solo se usa con filas % 64 == 0, columnas % 64 == 0 y pesos q4_0/q8_0; si
+    // El kernel tiled solo se usa con filas % 64 == 0, columnas % 32 == 0 y pesos q4_0/q8_0; si
     // no, `gemm` cae en la versión simple en f32.
     let tiled_f16 =
         path == Path::Tiled && rows % 64 == 0 && cols % 32 == 0 && qtype != WeightType::Q6_0;
@@ -255,7 +255,7 @@ fn matmul_q4_0_y_q8_0() {
 fn gemm_tiled_bordes_de_tokens() {
     // Tokens que no son múltiplo del bloque de 32 y bloques completos.
     let mut worst = 0f32;
-    for tokens in [31, 32, 33, 70, 128] {
+    for tokens in [9, 31, 33, 64, 100, 128, 150, 192, 230] {
         for path in [Path::Tiled, Path::TiledF32] {
             worst = worst.max(check_matmul(WeightType::Q4_0, path, 1024, 2560, tokens));
             worst = worst.max(check_matmul(WeightType::Q8_0, path, 512, 2560, tokens));

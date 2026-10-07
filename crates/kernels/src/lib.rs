@@ -174,8 +174,9 @@ pub struct Kernels {
     attn_pv_f32: Pipeline,
     gemv_fast_q4_0: Pipeline,
     gemv_fast_q8_0: Pipeline,
-    /// `gemm_tiled` por tipo de peso (q4_0, q8_0) y tipo de las entradas ([`GemmInput`]).
-    gemm_tiled: [[Pipeline; 2]; 2],
+    /// GEMM tiled por bloque de tokens (64: bloques completos; 32: el resto), tipo de peso
+    /// (q4_0, q8_0) y tipo de las entradas ([`GemmInput`]).
+    gemm_tiled: [[[Pipeline; 2]; 2]; 2],
     /// Variantes por [`KvType`] (índice `KvType as usize`).
     flash_attn: [Pipeline; 3],
     /// `flash_attn_gqa` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
@@ -203,6 +204,14 @@ fn gqa_variants(
 fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline; 3], MetalError> {
     let v = |kv| ctx.pipeline(&kv_source(kv, source), function);
     Ok([v(KvType::F32)?, v(KvType::F16)?, v(KvType::Q8_0)?])
+}
+
+/// `a` desplazado `bytes` (vista de un buffer más adelante).
+fn offset(a: Arg<'_>, bytes: usize) -> Arg<'_> {
+    match a {
+        Arg::Buf(b, off) => Arg::Buf(b, off + bytes),
+        Arg::Inline(..) => panic!("offset sobre una constante"),
+    }
 }
 
 fn groups(n: usize, per: usize) -> usize {
@@ -236,16 +245,19 @@ impl Kernels {
             attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
             gemv_fast_q4_0: ctx.pipeline(MATMUL, "gemv_fast_q4_0_f32")?,
             gemv_fast_q8_0: ctx.pipeline(MATMUL, "gemv_fast_q8_0_f32")?,
-            gemm_tiled: [
+            gemm_tiled: {
+                let p = |n: &str| ctx.pipeline(MATMUL_TILED, n);
                 [
-                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f16")?,
-                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
-                ],
-                [
-                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f16")?,
-                    ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
-                ],
-            ],
+                    [
+                        [p("gemm64_q4_0_f16")?, p("gemm64_q4_0_f32")?],
+                        [p("gemm64_q8_0_f16")?, p("gemm64_q8_0_f32")?],
+                    ],
+                    [
+                        [p("gemm32_q4_0_f16")?, p("gemm32_q4_0_f32")?],
+                        [p("gemm32_q8_0_f16")?, p("gemm32_q8_0_f32")?],
+                    ],
+                ]
+            },
             flash_attn: kv_variants(ctx, FLASH_ATTENTION, "flash_attn_f32")?,
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
@@ -615,7 +627,7 @@ impl Kernels {
     }
 
     /// GEMM para prefill con el tipo de entradas `input`. Usa el kernel tiled (simdgroup matrix)
-    /// si `rows % 64 == 0` y `cols % 64 == 0`; si no, la versión simple (siempre en f32).
+    /// si `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple (siempre en f32).
     pub fn gemm_with<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -625,7 +637,7 @@ impl Kernels {
         tokens: usize,
         input: GemmInput,
     ) {
-        if w.rows % 64 != 0 || w.cols % 64 != 0 || w.qtype == WeightType::Q6_0 {
+        if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
             return self.gemm_naive(cmd, w, x, y, tokens);
         }
         let qi = match w.qtype {
@@ -633,20 +645,28 @@ impl Kernels {
             WeightType::Q8_0 => 1,
             WeightType::Q6_0 => unreachable!(),
         };
-        let p = &self.gemm_tiled[qi][input as usize];
-        cmd.dispatch_groups(
-            p,
-            &[
-                Arg::buf(w.data),
-                x,
-                y,
-                Arg::u32(w.rows as u32),
-                Arg::u32(w.cols as u32),
-                Arg::u32(tokens as u32),
-            ],
-            [w.rows / 64, groups(tokens, 32), 1],
-            [128, 1, 1],
-        );
+        // Bloques completos de 64 tokens con el kernel de 64; el resto, con el de 32 sobre las
+        // vistas de x e y desde el primer token que sobra. Con menos de 128 tokens, todo con el de
+        // 32 (con un solo bloque de 64 hay pocos threadgroups; medido en M1 Pro con T = 100).
+        let full = if tokens < 128 { 0 } else { tokens / 64 * 64 };
+        for (bi, t0, n) in [(0, 0, full), (1, full, tokens - full)] {
+            if n == 0 {
+                continue;
+            }
+            cmd.dispatch_groups(
+                &self.gemm_tiled[bi][qi][input as usize],
+                &[
+                    Arg::buf(w.data),
+                    offset(x, t0 * w.cols * 4),
+                    offset(y, t0 * w.rows * 4),
+                    Arg::u32(w.rows as u32),
+                    Arg::u32(w.cols as u32),
+                    Arg::u32(n as u32),
+                ],
+                [w.rows / 64, groups(n, 64 >> bi), 1],
+                [128, 1, 1],
+            );
+        }
     }
 
     /// GEMM simple: un hilo por salida, sin tiling (referencia de rendimiento y respaldo).
