@@ -117,17 +117,22 @@ todas las entradas medidas, también las que quedan en el valor por defecto: son
 - Las cifras del perfil de 8 GB son **estimadas** hasta que corra `scripts/validate-8gb.sh` en la
   M2 (que ahora incluye `brasa tune` y el A/B del tuning).
 
-## Resultados (M1 Pro 16 GB, 16 núcleos de GPU, macOS 27.0 26A428, 2026-10-06)
+## Resultados (M1 Pro 16 GB, 16 núcleos de GPU, macOS 27.0 26A428, 2026-10-07)
 
-- **Quick tune:** 5,5 / 5,5 / 5,7 s en tres corridas (`brasa tune`, tiempo informado por el
-  comando; 6 s de pared cada una). Aceptación de fase 4 (< 60 s): cumplida en la M1 Pro.
-- **Elección:** las tres corridas dejaron las 9 entradas en el valor por defecto. Las diferencias
-  entre candidatos son de 0–2 % salvo `SG=1`, que es 3–7 % más lento en GEMV de o y down y en la
-  atención a 2K. En la M1 Pro los valores fijados a mano ya son los mejores (o empatan); el
-  tuner lo confirma con evidencia en lugar de suponerlo. Si cambia algo en la M2 está por medir.
-- **A/B de decode** (`profile_decode`, mediana de 4 corridas alternadas, tiempo de GPU por token):
-  ver la tabla en `docs/bench/m1pro-16gb/tuning-ab.md`. Leer `[[simdgroups_per_threadgroup]]` en
-  lugar de una constante no cambia el decode más allá del ruido.
+Detalle en `docs/bench/m1pro-16gb/tuning-ab.md`.
+
+- **Quick tune:** 5,7 / 5,6 / 5,7 s en tres corridas (5–6 s de pared, incluida la compilación de
+  las variantes). Aceptación de fase 4 (< 60 s): cumplida en la M1 Pro.
+- **Elección:** en dos corridas las 9 entradas quedaron en el valor por defecto; en una,
+  `gemv_scaled_swiglu` pasó a SG=4. Las diferencias entre candidatos son de 0–2 % salvo `SG=1`
+  (3–7 % más lento): en la M1 Pro los valores fijados a mano son los mejores o empatan, y el tuner
+  lo confirma con evidencia. Qué elige en la M2 está por medir.
+- **A/B del decode** (`profile_decode`, 5 corridas alternadas, mediana de GPU ms/token): a 2K f16,
+  main 19,35, rama sin base 19,35, rama con la base que cambió `gemv_scaled_swiglu` 19,36; a 16K
+  Q8, 35,98 / 36,01 / 35,99. Sin cambio fuera del ruido: el tuning no empeora el decode.
+- **Logits:** iguales bit a bit con SG 1, 4 y 8 en todos los kernels tuneables, KV f16 y Q8
+  (`crates/models/tests/launch.rs`, 13 pasos cada uno). Decode sin asignaciones con un `Launch`
+  no trivial (`decode_alloc`).
 
 ## Consecuencias
 
