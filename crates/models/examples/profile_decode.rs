@@ -1,5 +1,6 @@
 //! Perfil del decode: tiempo de pared vs tiempo de GPU por token, en una posición dada.
 //!   cargo run --release -p brasa-models --example profile_decode -- [posición] [contexto] [f16|q8_0|f32] [carpeta del modelo]
+//! Usa la base de tuning de esta máquina si existe (BRASA_TUNING=off: valores por defecto).
 
 use std::path::Path;
 use std::time::Instant;
@@ -26,6 +27,10 @@ fn main() {
         |d| Path::new(&d).join("model.brasa"),
     );
     let mut m = Qwen3::load(&ctx, &path, limits).unwrap();
+    // Base de tuning de esta máquina (ADR 0029); BRASA_TUNING=off usa los valores por defecto.
+    let tuning = brasa_tuner::resolve_current();
+    m.set_launch(&ctx, tuning.launch).unwrap();
+    eprintln!("tuning: {}", tuning.status);
     let mut logits = vec![0f32; m.cfg.vocab];
     let ids: Vec<u32> = (0..pos as u32).map(|i| 1000 + i % 5000).collect();
     for (i, c) in ids.chunks(512).enumerate() {

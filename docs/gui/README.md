@@ -49,9 +49,19 @@ Ninguna cifra sale de la GUI: todo viene de `/api/*` o de `/v1/*`.
      desde la cabecera y se le cambia el ancho arrastrando el divisor (o con las flechas; doble
      clic vuelve a 320 px). El ancho y el estado se recuerdan.
    En pantallas angostas la lista y el panel se abren superpuestos (Esc los cierra).
-3. **Modelos.** Los `.brasa` de la carpeta del modelo servido, con tamaño en disco, si entran con
-   el contexto y la KV de este servidor (planner), y la huella y memoria residente del cargado. Las
-   entradas del catálogo que no están en disco aparecen con su comando `brasa pull`.
+3. **Modelos.** Arriba, la **carpeta de modelos** (ADR 0031): la ruta, de dónde sale (variable
+   `BRASA_MODELS`, `models_dir` del archivo de configuración, `./models` del checkout o la
+   predeterminada `~/Library/Application Support/brasa/models`) y el espacio libre, con
+   **Cambiar…** (abre el selector de carpetas de macOS y guarda la elegida en `models_dir` del
+   archivo de configuración, sin tocar el resto) y **Abrir carpeta** (Finder). Debajo, los
+   `.brasa` de esa carpeta, con tamaño en disco, si entran con el contexto y la KV de este servidor
+   (planner), y la huella y memoria residente del cargado. Las entradas del catálogo que no están
+   en disco tienen **Descargar** (o **Reanudar** si quedó un `.part`): baja los pesos ya
+   convertidos del repo de Hugging Face del manifiesto, verificados por sha256. Mientras baja, la
+   fila muestra la barra (en brasa: es trabajo activo), bytes, porcentaje y **Cancelar**, que deja
+   lo bajado para reanudar. Al terminar, el modelo pasa a "En disco". Una descarga a la vez.
+   Probado el 2026-10-06 con un servidor local que imita Hugging Face (ver ADR 0031); hasta que
+   `lautiss/brasa-v0.01-base` esté publicado, contra Hugging Face responde 404.
 4. **Benchmarks.** Gráficos de barras por contexto (decode y prefill, último reporte de cada engine
    y variante) y la tabla completa de `docs/bench/`, desde `GET /api/bench`.
 5. **Plan de memoria.** El planner de `brasa plan` (`GET /api/plan`), con el veredicto, la barra del
@@ -82,7 +92,14 @@ botón junto a la marca.
 - `GET /api/activity`: pedidos en curso, los 12 últimos terminados y 120 s de actividad por segundo
   (cada 1 s). Los tokens de un pedido se reparten de forma uniforme sobre su tramo de decode al
   terminar; el prefill se ve en vivo.
-- `GET /api/models`: modelos en disco y catálogo.
+- `GET /api/models`: modelos en disco y catálogo, carpeta de modelos (`dir`, `dir_source`,
+  `free_bytes`) y, por entrada del catálogo, si tiene pesos convertidos y cuánto ya está en disco.
+- `POST /api/models/pull {name}`, `GET /api/models/pull`, `POST /api/models/pull/cancel` (o
+  `DELETE /api/models/pull`): descarga en segundo plano, progreso por archivo y cancelación
+  (ADR 0031). Solo baja URLs del manifiesto; del pedido se usa solo el nombre.
+- `POST /api/models/dir {path}`, `POST /api/models/dir/choose`, `POST /api/models/dir/open`:
+  cambiar la carpeta de modelos (ruta absoluta; se crea y se prueba la escritura), el selector
+  nativo (devuelve la ruta sin aplicarla) y abrirla en Finder.
 - `POST /api/model/{load,idle,pause,resume,stop}`: Model Manager (ADR 0025).
 
 ## Capturas
@@ -97,7 +114,15 @@ chat de la GUI), a 390 px de ancho:
 - [Chat en un teléfono](chat-movil.jpg): una respuesta con lista y negrita renderizadas, el turno
   anterior cancelado a mitad y la barra con el último pedido de este chat.
 
-Pendiente: capturas de escritorio (claro y oscuro) a 1440 px.
+De escritorio, tomadas el 2026-10-06 en la misma máquina con
+`brasa serve qwen3-4b-q4 --ctx 16384` (KV f16) y pedidos reales desde el chat, a 1440 × 900
+(WebKit, `prefers-color-scheme` claro y oscuro):
 
-Las capturas de la primera versión (`chat-dos-turnos.jpg`, `chat-cancelado.jpg`, `estado.jpg`)
-quedan como referencia de la GUI anterior.
+- [Monitor](monitor.jpg) y [Monitor, oscuro](monitor-oscuro.jpg): los pedidos del chat (uno
+  cancelado por captura) en la tira de actividad y en la tabla.
+- [Chat](chat.jpg): dos turnos sobre el mismo contexto, con el panel del último pedido.
+- [Chat con un pedido cancelado](chat-cancelado.jpg) y [en oscuro](chat-oscuro.jpg).
+- [Modelos](modelos.jpg) y [Plan de memoria](plan.jpg) (el formulario arranca con el contexto, el
+  chunk y la KV del servidor).
+
+La landing (`site/img/`) usa las mismas capturas.

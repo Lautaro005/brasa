@@ -4,7 +4,7 @@ Usage: run [OPTIONS] [MODEL]
 
 Arguments:
   [MODEL]
-          Nombre del modelo (carpeta en ./models o $BRASA_MODELS) o ruta a su carpeta. Sin esto, el del archivo de configuración
+          Nombre del modelo (carpeta dentro de la carpeta de modelos; ver `brasa config show`) o ruta a su carpeta. Sin esto, el del archivo de configuración
 
 Options:
   -p, --prompt <PROMPT>
@@ -27,7 +27,7 @@ Options:
       --chunk <CHUNK>
           Tokens por bloque de prefill
           
-          [default: 128]
+          [default: 1024]
 
       --kv <KV>
           Tipo de la KV cache: f16 (por defecto), q8_0 o f32 (ADR 0009)

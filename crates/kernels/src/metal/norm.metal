@@ -5,16 +5,12 @@ using namespace metal;
 
 constant uint TG = 256;
 
-kernel void rms_norm_f32(device const float* x   [[buffer(0)]],
-                         device const float* w   [[buffer(1)]],
-                         device float*       out [[buffer(2)]],
-                         constant uint&      n   [[buffer(3)]],
-                         constant float&     eps [[buffer(4)]],
-                         uint row  [[threadgroup_position_in_grid]],
-                         uint tid  [[thread_position_in_threadgroup]],
-                         uint lane [[thread_index_in_simdgroup]],
-                         uint sg   [[simdgroup_index_in_threadgroup]]) {
-    threadgroup float partial[TG / 32];
+template <typename T>
+void rms_norm_t(device const float* x,
+                         device const float* w,
+                         device T*           out,
+                         uint n, float eps, uint row, uint tid, uint lane, uint sg,
+                         threadgroup float* partial) {
     device const float* xr = x + row * n;
     float ss = 0.0f;
     for (uint i = tid; i < n; i += TG) {
@@ -30,11 +26,30 @@ kernel void rms_norm_f32(device const float* x   [[buffer(0)]],
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float scale = 1.0f / precise::sqrt(partial[0] / float(n) + eps);
-    device float* orow = out + row * n;
+    device T* orow = out + row * n;
     for (uint i = tid; i < n; i += TG) {
-        orow[i] = xr[i] * scale * w[i];
+        orow[i] = T(xr[i] * scale * w[i]);
     }
 }
+
+
+#define RMS_NORM_KERNEL(name, T)                                                              \
+kernel void name(device const float* x   [[buffer(0)]],                                      \
+                 device const float* w   [[buffer(1)]],                                      \
+                 device T*           out [[buffer(2)]],                                      \
+                 constant uint&      n   [[buffer(3)]],                                      \
+                 constant float&     eps [[buffer(4)]],                                      \
+                 uint row  [[threadgroup_position_in_grid]],                                 \
+                 uint tid  [[thread_position_in_threadgroup]],                               \
+                 uint lane [[thread_index_in_simdgroup]],                                    \
+                 uint sg   [[simdgroup_index_in_threadgroup]]) {                             \
+    threadgroup float partial[TG / 32];                                                       \
+    rms_norm_t(x, w, out, n, eps, row, tid, lane, sg, partial);                               \
+}
+
+RMS_NORM_KERNEL(rms_norm_f32, float)
+// Salida en f16 para el GEMM de prefill (ADR 0030): mismo valor que rms_norm_f32 redondeado.
+RMS_NORM_KERNEL(rms_norm_f16, half)
 
 // Preparación de RMSNorm para decode (T3.5), con la suma residual incluida. Un hilo por elemento,
 // threadgroups de 256:

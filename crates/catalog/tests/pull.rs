@@ -1,18 +1,21 @@
 //! U3: `brasa pull` contra un servidor local chico (sin red): descarga, reanudación y fallo
-//! limpio cuando el sha256 no coincide.
+//! limpio cuando el sha256 no coincide. ADR 0031: pesos ya convertidos (`[prebuilt]`) desde una
+//! subcarpeta del repo y cancelación que deja el `.part`.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use brasa_catalog::manifest::{FileSpec, Manifest};
+use brasa_catalog::manifest::{FileSpec, Manifest, Prebuilt};
 use sha2::{Digest, Sha256};
 
 struct Server {
     endpoint: String,
     stop: Arc<AtomicBool>,
+    /// Rutas pedidas, en orden.
+    log: Arc<Mutex<Vec<String>>>,
 }
 
 impl Drop for Server {
@@ -21,7 +24,11 @@ impl Drop for Server {
     }
 }
 
-fn handle(mut stream: TcpStream, files: Arc<HashMap<String, Vec<u8>>>) {
+fn handle(
+    mut stream: TcpStream,
+    files: Arc<HashMap<String, Vec<u8>>>,
+    log: Arc<Mutex<Vec<String>>>,
+) {
     // En macOS el socket aceptado hereda O_NONBLOCK del listener; se vuelve a bloqueante.
     stream.set_nonblocking(false).unwrap();
     let mut buf = Vec::new();
@@ -37,6 +44,9 @@ fn handle(mut stream: TcpStream, files: Arc<HashMap<String, Vec<u8>>>) {
         }
     }
     let text = String::from_utf8_lossy(&buf).into_owned();
+    log.lock()
+        .unwrap()
+        .push(text.split_whitespace().nth(1).unwrap_or("").to_string());
     // El servidor de prueba indexa por nombre de archivo (el manifiesto usa rutas del repo).
     let key = text
         .split_whitespace()
@@ -86,14 +96,17 @@ fn serve(files: HashMap<String, Vec<u8>>) -> Server {
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let stop = Arc::new(AtomicBool::new(false));
+    let log = Arc::new(Mutex::new(Vec::new()));
     let s = stop.clone();
+    let l = log.clone();
     std::thread::spawn(move || {
         let files = Arc::new(files);
         while !s.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _)) => {
                     let f = files.clone();
-                    std::thread::spawn(move || handle(stream, f));
+                    let l = l.clone();
+                    std::thread::spawn(move || handle(stream, f, l));
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -102,7 +115,11 @@ fn serve(files: HashMap<String, Vec<u8>>) -> Server {
             }
         }
     });
-    Server { endpoint, stop }
+    Server {
+        endpoint,
+        stop,
+        log,
+    }
 }
 
 fn sha(b: &[u8]) -> String {
@@ -127,6 +144,16 @@ fn manifest_for(path: &str, content: &[u8]) -> Manifest {
             sha256: sha(content),
             size: Some(content.len() as u64),
         }],
+        convertible: true,
+        prebuilt: None,
+    }
+}
+
+fn spec(path: &str, content: &[u8]) -> FileSpec {
+    FileSpec {
+        path: path.into(),
+        sha256: sha(content),
+        size: Some(content.len() as u64),
     }
 }
 
@@ -179,4 +206,103 @@ fn falla_limpio_si_el_hash_no_coincide() {
     assert!(err.0.contains("sha256 no coincide"), "{}", err.0);
     assert!(!dir.path().join("weights.bin").exists());
     assert!(!dir.path().join("weights.bin.part").exists());
+}
+
+#[test]
+fn baja_los_pesos_convertidos_desde_la_subcarpeta() {
+    let tok = b"{\"tokenizer\": 1}".to_vec();
+    let weights: Vec<u8> = (0..2_000_000).map(|i| (i % 241) as u8).collect();
+    let mut files = HashMap::new();
+    files.insert("tokenizer.json".to_string(), tok.clone());
+    files.insert("model.brasa".to_string(), weights.clone());
+    let server = serve(files);
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manifest_for("no-se-usa.safetensors", b"x");
+    m.prebuilt = Some(Prebuilt {
+        repo: "dueno/brasa-base".into(),
+        revision: "main".into(),
+        subdir: "qwen3-4b-q4".into(),
+        files: vec![spec("tokenizer.json", &tok), spec("model.brasa", &weights)],
+    });
+    let dest = dir.path().join("qwen3-4b-q4");
+    let mut seen = Vec::new();
+    let done = brasa_catalog::pull::download_prebuilt(
+        &m,
+        &dest,
+        &server.endpoint,
+        |p, got, total| seen.push((p.to_string(), got, total)),
+        None,
+    )
+    .unwrap();
+    assert_eq!(done.len(), 2);
+    assert_eq!(std::fs::read(dest.join("model.brasa")).unwrap(), weights);
+    assert_eq!(std::fs::read(dest.join("tokenizer.json")).unwrap(), tok);
+    // URL: <endpoint>/<repo>/resolve/<revision>/<subdir>/<archivo>, en el orden del manifiesto.
+    let log = server.log.lock().unwrap().clone();
+    assert_eq!(
+        log,
+        [
+            "/dueno/brasa-base/resolve/main/qwen3-4b-q4/tokenizer.json",
+            "/dueno/brasa-base/resolve/main/qwen3-4b-q4/model.brasa"
+        ]
+    );
+    let last = seen.last().unwrap();
+    assert_eq!(
+        (last.0.as_str(), last.1, last.2),
+        (
+            "model.brasa",
+            weights.len() as u64,
+            Some(weights.len() as u64)
+        )
+    );
+    // Sin [prebuilt], error claro.
+    let sin = manifest_for("a", b"a");
+    let e =
+        brasa_catalog::pull::download_prebuilt(&sin, &dest, &server.endpoint, |_, _, _| {}, None)
+            .unwrap_err();
+    assert!(e.0.contains("prebuilt"), "{}", e.0);
+}
+
+#[test]
+fn cancelar_deja_el_parcial_y_despues_reanuda() {
+    let content: Vec<u8> = (0..6_000_000).map(|i| (i % 239) as u8).collect();
+    let mut files = HashMap::new();
+    files.insert("model.brasa".to_string(), content.clone());
+    let server = serve(files);
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manifest_for("x", b"x");
+    m.prebuilt = Some(Prebuilt {
+        repo: "u/r".into(),
+        revision: "main".into(),
+        subdir: String::new(),
+        files: vec![spec("model.brasa", &content)],
+    });
+    let cancel = AtomicBool::new(false);
+    // Cancela apenas llega el primer bloque.
+    let e = brasa_catalog::pull::download_prebuilt(
+        &m,
+        dir.path(),
+        &server.endpoint,
+        |_, got, _| {
+            if got > 0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        },
+        Some(&cancel),
+    )
+    .unwrap_err();
+    assert_eq!(e.0, brasa_catalog::pull::CANCELLED);
+    let part = dir.path().join("model.brasa.part");
+    let partial = std::fs::metadata(&part).unwrap().len();
+    assert!(partial > 0 && partial < content.len() as u64, "{partial}");
+    assert!(!dir.path().join("model.brasa").exists());
+
+    // Reanuda: pide con Range desde lo que ya tenía.
+    brasa_catalog::pull::download_prebuilt(&m, dir.path(), &server.endpoint, |_, _, _| {}, None)
+        .unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("model.brasa")).unwrap(),
+        content
+    );
+    assert!(!part.exists());
 }

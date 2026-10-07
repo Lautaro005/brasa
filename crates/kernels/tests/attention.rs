@@ -3,11 +3,24 @@
 //! Q8 (ADR 0009: la referencia recibe K y V ya redondeados al tipo de la caché).
 
 use brasa_kernels::testutil::{KvPair, Rng};
-use brasa_kernels::{AttnShape, Kernels, KvType, reference};
+use brasa_kernels::{AttnShape, Kernels, KvType, PrefillPrecision, reference};
 use brasa_metal::{Arg, Context};
 use brasa_quant::{f16_to_f32, f32_to_f16, quantize_kv_q8};
 
 const KVS: [KvType; 3] = [KvType::F32, KvType::F16, KvType::Q8_0];
+
+/// Como [`worst`], para una salida redondeada a f16: descuenta el redondeo final (a lo sumo
+/// 2⁻¹¹ · |valor|) antes de comparar.
+fn worst_f16(got: &[u16], expected: &[f32], vmax: &[f32]) -> f32 {
+    got.iter()
+        .zip(expected)
+        .zip(vmax)
+        .map(|((g, e), m)| {
+            let d = (f16_to_f32(*g) - e).abs() - e.abs() * 2f32.powi(-11);
+            d.max(0.0) / m.max(1e-30)
+        })
+        .fold(0f32, f32::max)
+}
 
 /// Error máximo `|gpu - ref| / max|v|` entre la salida de la GPU y la referencia.
 fn worst(got: &[f32], expected: &[f32], vmax: &[f32]) -> f32 {
@@ -25,7 +38,7 @@ fn flash_attention_gqa_causal() {
     let (hq, hkv, dim) = (32, 8, 128);
     for kv in KVS {
         let mut rng = Rng::new(22);
-        let mut w = 0f32;
+        let (mut w, mut w_raw, mut w32) = (0f32, 0f32, 0f32);
         // Prefill desde 0 (bloques parciales y completos), prefill continuado y decode.
         for (tokens, pos0) in [
             (9usize, 0usize),
@@ -47,10 +60,15 @@ fn flash_attention_gqa_causal() {
                 rng.vec(cap * hkv * dim, 2.0),
                 rng.vec(cap * hkv * dim, 3.0),
             );
+            // Q · escala y la salida se redondean a f16 en el kernel (ADR 0030): la tolerancia se
+            // mide contra la referencia que redondea Q igual, descontando el redondeo de la
+            // salida; contra la sin redondear solo se informa y se acota.
             let (expected, vmax) =
-                reference::attention(&q, &cache.k, &cache.v, tokens, hq, hkv, dim, pos0);
+                reference::attention_q16(&q, &cache.k, &cache.v, tokens, hq, hkv, dim, pos0);
+            let (raw, _) = reference::attention(&q, &cache.k, &cache.v, tokens, hq, hkv, dim, pos0);
             let gq = ctx.buffer_from(&q).unwrap();
             let mut o = ctx.buffer::<f32>(tokens * hq * dim).unwrap();
+            let mut oh = ctx.buffer::<u16>(tokens * hq * dim).unwrap();
             let shape = AttnShape {
                 tokens,
                 hq,
@@ -60,16 +78,34 @@ fn flash_attention_gqa_causal() {
                 kv,
             };
             let (gk, gv) = cache.args();
+            // Ruta caliente: Q y la salida en f16.
             let mut cmd = ctx.command().unwrap();
-            k.flash_attention(&mut cmd, Arg::buf(&gq), gk, gv, Arg::buf(&o), shape);
+            k.flash_attention(&mut cmd, Arg::buf(&gq), gk, gv, Arg::buf(&oh), shape);
             cmd.commit_and_wait().unwrap();
-            w = w.max(worst(o.as_mut_slice(), &expected, &vmax));
+            w = w.max(worst_f16(oh.as_mut_slice(), &expected, &vmax));
+            let oh32: Vec<f32> = oh.as_mut_slice().iter().map(|h| f16_to_f32(*h)).collect();
+            w_raw = w_raw.max(worst(&oh32, &raw, &vmax));
+            // Variante exacta (Q en f32) contra la referencia sin redondear.
+            let mut cmd = ctx.command().unwrap();
+            k.flash_attention_with(
+                &mut cmd,
+                Arg::buf(&gq),
+                gk,
+                gv,
+                Arg::buf(&o),
+                shape,
+                PrefillPrecision::F32,
+            );
+            cmd.commit_and_wait().unwrap();
+            w32 = w32.max(worst(o.as_mut_slice(), &raw, &vmax));
         }
         eprintln!(
-            "flash attention KV {}: error máximo / max|v| {w:.2e}",
+            "flash attention KV {}: error máximo / max|v| {w:.2e} (f16), {w_raw:.2e} (f16 vs sin redondear), {w32:.2e} (f32)",
             kv.name()
         );
         assert!(w <= 1e-5, "{}: {w}", kv.name());
+        assert!(w32 <= 1e-5, "{}: {w32}", kv.name());
+        assert!(w_raw <= 2e-3, "{}: {w_raw}", kv.name());
     }
 }
 

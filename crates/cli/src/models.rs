@@ -17,7 +17,7 @@ pub struct ModelsArgs {
     /// Salida en JSON.
     #[arg(long)]
     json: bool,
-    /// Carpeta base de modelos (por defecto `$BRASA_MODELS` o `./models`).
+    /// Carpeta base de modelos (por defecto la efectiva; ver `brasa config show`).
     #[arg(long)]
     dir: Option<PathBuf>,
     /// Verifica el sha256 de cada modelo listado (lee los archivos enteros).
@@ -36,7 +36,10 @@ enum ModelsCmd {
 }
 
 pub fn run(a: ModelsArgs) -> Result<(), String> {
-    let dir = a.dir.unwrap_or_else(models_dir);
+    let dir = match a.dir {
+        Some(d) => d,
+        None => models_dir()?,
+    };
     match a.cmd {
         Some(ModelsCmd::Verify { model, json }) => verify_model(&dir, &model, json),
         None => list(&dir, a.json, a.verify),
@@ -50,7 +53,7 @@ fn fits(dir: &Path) -> Option<bool> {
     let budget = Budget::this_machine()?;
     let limits = Limits {
         ctx: DEFAULT_CTX,
-        max_tokens: 128,
+        max_tokens: brasa_runtime::DEFAULT_CHUNK,
         max_logit_rows: 1,
         kv: KvType::F16,
     };

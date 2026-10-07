@@ -209,6 +209,7 @@
   /* ---------- code ---------- */
   pre{margin:0;overflow-x:auto;background:#100e0a;border:1px solid #33301f;border-radius:6px;padding:16px 18px}
   code{font-family:var(--mono);font-size:.82rem;color:#e9e4da}
+  p code,li code{color:inherit}
   pre code .c{color:#8c887c}
   pre code .k{color:var(--amber-hi)}
   .cmdline{color:#ded8cc}
@@ -455,21 +456,21 @@
         <p class="hint en" lang="en">real dashboard captures</p>
       </div>
       <div class="body">
-        <p class="es" style="max-width:70ch">Chat con streaming, estado y métricas, benchmarks y plan, servidos en <code>127.0.0.1:8080/ui</code> desde el mismo proceso que atiende la API.</p>
-        <p class="en" lang="en" style="max-width:70ch">Streaming chat, status and metrics, benchmarks and plan, served at <code>127.0.0.1:8080/ui</code> by the same process that serves the API.</p>
+        <p class="es" style="max-width:70ch">Monitor en vivo, chat con historial, modelos, benchmarks, plan de memoria y conexión de agentes, servidos en <code>127.0.0.1:8080/ui</code> desde el mismo proceso que atiende la API.</p>
+        <p class="en" lang="en" style="max-width:70ch">Live monitor, chat with history, models, benchmarks, memory plan and agent connection, served at <code>127.0.0.1:8080/ui</code> by the same process that serves the API.</p>
         <div class="shots">
           <figure class="wide">
-            <img data-key="chat" src="img/chat-dos-turnos.jpg" alt="Pantalla de chat de la GUI: una pregunta sobre la configuración de Rust y su respuesta, con el segundo turno usando el contexto del primero.">
-            <figcaption class="es">Chat · dos turnos sobre el mismo contexto.</figcaption>
-            <figcaption class="en" lang="en">Chat · two turns over the same context.</figcaption>
+            <img data-key="chat" src="img/chat-dos-turnos.jpg" alt="Chat de la GUI: lista de conversaciones a la izquierda, dos turnos que escriben y prueban una función de Rust en el centro, y a la derecha el panel con el último pedido (TTFT, decode, tokens del prefix cache) y los parámetros de muestreo.">
+            <figcaption class="es">Chat · dos turnos sobre el mismo contexto, con historial y panel del pedido.</figcaption>
+            <figcaption class="en" lang="en">Chat · two turns over the same context, with history and the request panel.</figcaption>
           </figure>
           <figure>
-            <img data-key="estado" src="img/estado.jpg" alt="Pantalla de estado de la GUI: memoria del plan contra el presupuesto, rendimiento, estado del servidor y presión del sistema.">
-            <figcaption class="es">Estado · memoria, rendimiento y cola. Las cifras son de la corrida de la captura; las mediciones están en el reporte.</figcaption>
-            <figcaption class="en" lang="en">Status · memory, throughput and queue. Figures are from that run; measurements live in the report.</figcaption>
+            <img data-key="estado" src="img/monitor.jpg" alt="Monitor de la GUI: tira de actividad de los últimos 120 segundos con carriles de prefill y decode, tabla de pedidos por cliente, memoria del plan contra el presupuesto y controles del modelo.">
+            <figcaption class="es">Monitor · actividad en vivo, pedidos por cliente, memoria y modelo. Las cifras son de la corrida de la captura; las mediciones están en el reporte.</figcaption>
+            <figcaption class="en" lang="en">Monitor · live activity, requests per client, memory and model. Figures are from that run; measurements live in the report.</figcaption>
           </figure>
           <figure>
-            <img data-key="cancel" src="img/chat-cancelado.jpg" alt="Pantalla de chat de la GUI con una generación cancelada: el botón Cancelar corta el stream y la respuesta queda marcada como cancelada.">
+            <img data-key="cancel" src="img/chat-cancelado.jpg" alt="Chat de la GUI con una generación cancelada a mitad: la respuesta queda marcada como cancelada y el panel muestra el pedido como cancelado.">
             <figcaption class="es">Cancelación · el botón corta el stream.</figcaption>
             <figcaption class="en" lang="en">Cancellation · the button cuts the stream.</figcaption>
           </figure>
@@ -554,9 +555,9 @@
       dial: "Vúmetro esquemático del plan de memoria",
       blocks: "Bloques del plan de memoria: pesos, KV, workspace y margen del sistema, sobre un mismo eje",
       alts: {
-        chat: "Pantalla de chat de la GUI: una pregunta sobre la configuración de Rust y su respuesta, con el segundo turno usando el contexto del primero.",
-        estado: "Pantalla de estado de la GUI: memoria del plan contra el presupuesto, rendimiento, estado del servidor y presión del sistema.",
-        cancel: "Pantalla de chat de la GUI con una generación cancelada: el botón Cancelar corta el stream y la respuesta queda marcada como cancelada."
+        chat: "Chat de la GUI: lista de conversaciones a la izquierda, dos turnos que escriben y prueban una función de Rust en el centro, y a la derecha el panel con el último pedido (TTFT, decode, tokens del prefix cache) y los parámetros de muestreo.",
+        estado: "Monitor de la GUI: tira de actividad de los últimos 120 segundos con carriles de prefill y decode, tabla de pedidos por cliente, memoria del plan contra el presupuesto y controles del modelo.",
+        cancel: "Chat de la GUI con una generación cancelada a mitad: la respuesta queda marcada como cancelada y el panel muestra el pedido como cancelado."
       }
     },
     en: {
@@ -566,9 +567,9 @@
       dial: "Schematic gauge of the memory plan",
       blocks: "Memory plan blocks: weights, KV, workspace and system margin, on one shared axis",
       alts: {
-        chat: "The GUI's chat screen: a question about Rust's configuration and its answer, with the second turn reusing the first turn's context.",
-        estado: "The GUI's status screen: memory plan against budget, throughput, server state and system pressure.",
-        cancel: "The GUI's chat screen with a cancelled generation: the Cancel button cuts the stream and the answer is marked as cancelled."
+        chat: "The GUI's chat: the conversation list on the left, two turns that write and test a Rust function in the middle, and on the right the panel with the last request (TTFT, decode, prefix-cache tokens) and the sampling parameters.",
+        estado: "The GUI's monitor: a strip of the last 120 seconds of activity with prefill and decode lanes, the requests per client, the memory plan against the budget and the model controls.",
+        cancel: "The GUI's chat with a generation cancelled halfway: the answer is marked as cancelled and the panel shows the request as cancelled."
       }
     }
   };

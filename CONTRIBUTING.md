@@ -1,13 +1,16 @@
-# Cómo contribuir a Brasa
+# Contributing to Brasa
 
-Brasa es el engine de inferencia local para Apple Silicon. El proyecto está en desarrollo, antes
-de 1.0: se corrige solo `main`. La arquitectura y las reglas completas están en
-[CLAUDE.md](CLAUDE.md). El estado de cada fase y los resultados medidos están en los ADR
-([docs/adr/](docs/adr/)) y en [docs/bench/baseline.md](docs/bench/baseline.md).
+Brasa is a local inference engine for Apple Silicon. The project is pre-1.0 and under active
+development: only `main` gets fixes. The full architecture and rules live in
+[CLAUDE.md](CLAUDE.md). The state of each phase and the measured results are in the ADRs
+([docs/adr/](docs/adr/)) and in [docs/bench/baseline.md](docs/bench/baseline.md).
 
-## Cómo compilar
+The project's working language is Spanish (ADRs, commit messages, code comments, the CLI and the
+GUI). Issues and pull requests in English are welcome.
 
-Requisitos: macOS sobre Apple Silicon y una toolchain de Rust (la versión la fija
+## Building
+
+Requirements: macOS on Apple Silicon and a Rust toolchain (the version is pinned by
 `rust-toolchain.toml`).
 
 ```bash
@@ -15,38 +18,40 @@ cargo build --release -p brasa-cli
 ./target/release/brasa --version
 ```
 
-Los pesos no van en el repo (están en `.gitignore`): bajalos con `brasa pull qwen3-4b-q4` y
-convertilos con `brasa convert`, o poné los pesos en `models/`.
+Weights are not in the repository (they are in `.gitignore`). Download them with
+`brasa pull qwen3-4b-q4`, or put them in your models folder (`brasa config show` prints which one
+is in use).
 
-## Antes de cada commit
+## Before every commit
 
 ```bash
 ./scripts/ci.sh
 ```
 
-corre `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` y
-`cargo test --workspace`. Tiene que salir con 0.
+It runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace`. It has to exit with 0.
 
-## Reglas no negociables (resumen de CLAUDE.md)
+## Non-negotiable rules (summary of CLAUDE.md)
 
-1. Nada de Ollama, llama.cpp ni MLX en el camino caliente; solo como baseline en `crates/bench` y
-   en `tools/`.
-2. Ningún kernel Metal entra sin implementación de referencia en CPU, test de equivalencia
-   numérica con tolerancia documentada y microbenchmark.
-3. Correcto primero, rápido después: una optimización que cambia logits fuera de tolerancia se
-   revierte.
-4. Decode sin asignaciones: buffers, scratch y KV se preasignan al cargar el modelo.
-5. Memoria presupuestada: si no entra, se baja el contexto o se rechaza; nunca swap silencioso.
-6. Nada se afirma sin medir: no hay cifras de velocidad, memoria ni calidad en docs o README sin
-   un reporte de `brasa benchmark` que las respalde.
-7. Python solo offline, en `tools/`; el binario final no depende de Python.
-8. La API compatible es transporte; los tipos internos son de `crates/core`.
-9. Sin telemetría saliente y la GUI no carga nada de internet.
+1. No Ollama, llama.cpp or MLX in the hot path; they are allowed only as baselines in
+   `crates/bench` and in `tools/`.
+2. No Metal kernel lands without a CPU reference implementation, a numerical equivalence test with
+   a documented tolerance, and a microbenchmark.
+3. Correct first, fast later: an optimization that moves logits outside the tolerance is reverted.
+4. No allocations in decode: buffers, scratch and the KV cache are preallocated when the model
+   loads.
+5. Budgeted memory: if it does not fit, the context is lowered or the load is refused; never
+   silent swapping.
+6. Nothing is claimed without measuring: no speed, memory or quality figures in the docs or the
+   README without a `brasa benchmark` report that backs them.
+7. Python only offline, in `tools/`; the final binary does not depend on Python.
+8. The compatible APIs are transport; internal types belong to `crates/core`.
+9. No outbound telemetry, and the GUI loads nothing from the internet.
 
-## Tests de GPU
+## GPU tests
 
-Los tests que crean un dispositivo Metal **no** corren en la CI de GitHub (ver
-[docs/adr/0024](docs/adr/0024-ci-en-github-actions.md)); hay que correrlos en una Mac:
+Tests that create a Metal device do **not** run in GitHub's CI (see
+[docs/adr/0024](docs/adr/0024-ci-en-github-actions.md)); run them on a Mac:
 
 ```bash
 cargo test -p brasa-kernels -- --nocapture
@@ -55,17 +60,16 @@ cargo test --release -p brasa-models --test forward -- --ignored --nocapture --t
 cargo test --release -p brasa-runtime --test session -- --ignored --nocapture
 ```
 
-En una Mac compartida, no corras dos trabajos de GPU a la vez: coordinalos antes de empezar y
-liberá la GPU al terminar.
+On a shared Mac, don't run two GPU jobs at the same time: benchmarks measured while something else
+uses the GPU are not valid.
 
-## Cómo proponer un ADR
+## Proposing an ADR
 
-Antes de una decisión de diseño no trivial (una dependencia nueva, el formato de un manifiesto, la
-estructura de la GUI), agregá un ADR corto en `docs/adr/`, numerado con el siguiente número libre,
-con este esqueleto:
+Before a non-trivial design decision (a new dependency, a manifest format, the structure of the
+GUI), add a short ADR in `docs/adr/` with the next free number and this skeleton:
 
 ```markdown
-# ADR NNNN — Título
+# ADR NNNN — Title
 
 Estado: propuesta
 
@@ -76,20 +80,21 @@ Estado: propuesta
 ## Consecuencias
 ```
 
-No reescribas un ADR aceptado: si cambia la decisión, escribí uno nuevo que reemplace al anterior.
+Don't rewrite an accepted ADR: if the decision changes, write a new one that supersedes it.
 
 ## Pull requests
 
-- Un commit por tarea, en castellano, chico y descriptivo. Sin la línea `Claude-Session: ...`.
-- `./scripts/ci.sh` en 0 antes de commitear.
-- Completá la checklist de la plantilla de PR ([pull_request_template.md](.github/pull_request_template.md)).
-- Un kernel nuevo trae su referencia CPU, su test de equivalencia y su microbenchmark.
+- One small, descriptive commit per task. No `Claude-Session: ...` line.
+- `./scripts/ci.sh` exits with 0 before committing.
+- Fill in the PR template checklist ([pull_request_template.md](.github/pull_request_template.md)).
+- A new kernel comes with its CPU reference, its equivalence test and its microbenchmark.
 
-## Seguridad
+## Security
 
-No abras un issue público para una vulnerabilidad: leé [SECURITY.md](SECURITY.md) y usá el reporte
-privado de la pestaña Security.
+Don't open a public issue for a vulnerability: read [SECURITY.md](SECURITY.md) and use private
+vulnerability reporting in the Security tab.
 
-## Licencia
+## License
 
-Al contribuir aceptás que tu aporte se distribuya bajo Apache-2.0 ([LICENSE](LICENSE)).
+By contributing you agree that your contribution is distributed under Apache-2.0
+([LICENSE](LICENSE)).

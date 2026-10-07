@@ -1,6 +1,7 @@
 //! Catálogo de modelos: manifiestos (ADR 0020), descubrimiento local, verificación por hash y
 //! descarga desde Hugging Face.
 
+pub mod dirs;
 pub mod local;
 pub mod manifest;
 pub mod pull;

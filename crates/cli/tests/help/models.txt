@@ -11,7 +11,7 @@ Options:
           Salida en JSON
 
       --dir <DIR>
-          Carpeta base de modelos (por defecto `$BRASA_MODELS` o `./models`)
+          Carpeta base de modelos (por defecto la efectiva; ver `brasa config show`)
 
       --verify
           Verifica el sha256 de cada modelo listado (lee los archivos enteros)

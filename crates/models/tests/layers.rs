@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use brasa_metal::Context;
-use brasa_models::qwen3::{KvType, Limits, Qwen3};
+use brasa_models::qwen3::{KvType, Limits, PrefillPrecision, Qwen3};
 use serde_json::Value;
 
 fn root() -> PathBuf {
@@ -53,6 +53,9 @@ fn capas_iguales_a_la_referencia() {
     };
     let mut model =
         Qwen3::load(&ctx, &root().join("models/qwen3-4b-q4/model.brasa"), limits).unwrap();
+    // Tolerancias de T1.5 (KV f32): con los kernels de prefill exactos. La ruta f16 se valida en
+    // el forward (tests/forward.rs, ADR 0030).
+    model.prefill_precision = PrefillPrecision::F32;
     let h = model.cfg.hidden;
     let layers = model.cfg.layers;
 

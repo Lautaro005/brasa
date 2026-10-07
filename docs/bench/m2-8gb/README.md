@@ -17,3 +17,5 @@ archivos (o pegarlos en la conversación) como evidencia de los criterios que ex
 | T0.5 | baselines llama.cpp y MLX-LM en 2K, 8K y 16K | pendiente |
 | T1.7 | `brasa run` genera texto coherente sin swap creciente (`run.txt`, `run-chat.txt`) | pendiente |
 | T1.8 | rechaza ctx 16384 con mensaje claro y acepta 4096 (`plan-rechazo.txt`, `plan-acepta.txt`) | pendiente |
+| Fase 4 | `brasa tune` (quick) en menos de 60 s (`tune.txt`); el decode con la base no empeora (`bench-*-tuning-{off,on}.log`) | pendiente |
+| Fase 4 | `serve` usa el perfil 8 GB (16K, KV Q8; `config-show.txt`, `serve-perfil.log`) y la presión queda estable con una conversación de ~16K tokens (`serve-status-{antes,despues}.json`: `system.pressure`, swap) | pendiente |

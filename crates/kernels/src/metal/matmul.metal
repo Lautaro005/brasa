@@ -112,10 +112,18 @@ kernel void gemm_q8_0_f32(device const block_q8_0* w    [[buffer(0)]],
     y[t * rows + row] = acc;
 }
 
-// GEMV rápido para decode: cada simdgroup calcula NR = 4 filas y cada threadgroup 2 simdgroups
-// (8 filas). Cada lane procesa media fila de bloque (16 pesos): carga una vez los 16 valores de x
-// en registros y los usa para las 4 filas; los lanes avanzan de a 16 bloques. Requiere filas % 8.
+// GEMV rápido para decode: cada simdgroup calcula NR = 4 filas y cada threadgroup GSG simdgroups
+// (2 por defecto: 8 filas). Cada lane procesa media fila de bloque (16 pesos): carga una vez los 16
+// valores de x en registros y los usa para las 4 filas; los lanes avanzan de a 16 bloques. Requiere
+// filas % (4 · GSG). GSG es constante de compilación (el host antepone `#define GEMV_SG n` para
+// las variantes de la base de tuning, ADR 0029); cada fila se calcula igual con cualquier valor, así
+// que el resultado es el mismo bit a bit. Con el valor leído en tiempo de ejecución
+// ([[simdgroups_per_threadgroup]]) el decode era ~1 % más lento (medido en M1 Pro).
 constant uint NR = 4;
+#ifndef GEMV_SG
+#define GEMV_SG 2
+#endif
+constant uint GSG = GEMV_SG;
 
 // Escala de RMSNorm a partir de las sumas parciales de add_norm_prep (orden fijo: el mismo en
 // todos los threadgroups, así todas las filas usan exactamente la misma escala).
@@ -153,7 +161,7 @@ template <bool SCALED>
 void gemv_fast_q4(device const block_q4_0* w, device const float* x, device float* y,
                   uint rows, uint cols, device const float* ss, uint nss, float eps,
                   uint2 tg, uint sg, uint lane) {
-    uint row0 = (tg.x * 2 + sg) * NR;
+    uint row0 = (tg.x * GSG + sg) * NR;
     float acc[NR] = {0.0f, 0.0f, 0.0f, 0.0f};
     q4_rows(w, x + tg.y * cols, row0, cols / 32, lane, acc);
     float scale = SCALED ? norm_scale(ss, nss, cols, eps) : 1.0f;
@@ -182,7 +190,7 @@ kernel void gemv_scaled3_q4_0_f32(device const block_q4_0* w0 [[buffer(0)]],
                                   uint  tg   [[threadgroup_position_in_grid]],
                                   uint  sg   [[simdgroup_index_in_threadgroup]],
                                   uint  lane [[thread_index_in_simdgroup]]) {
-    uint row = (tg * 2 + sg) * NR;
+    uint row = (tg * GSG + sg) * NR;
     device const block_q4_0* w = w0;
     device float* y = y0;
     if (row >= rows0 + rows1) { w = w2; y = y2; row -= rows0 + rows1; }
@@ -210,7 +218,7 @@ kernel void gemv_scaled_swiglu_q4_0_f32(device const block_q4_0* wg [[buffer(0)]
                                         uint  tg   [[threadgroup_position_in_grid]],
                                         uint  sg   [[simdgroup_index_in_threadgroup]],
                                         uint  lane [[thread_index_in_simdgroup]]) {
-    uint row = (tg * 2 + sg) * NR;
+    uint row = (tg * GSG + sg) * NR;
     float ag[NR] = {0.0f, 0.0f, 0.0f, 0.0f}, au[NR] = {0.0f, 0.0f, 0.0f, 0.0f};
     q4_rows(wg, x, row, cols / 32, lane, ag);
     q4_rows(wu, x, row, cols / 32, lane, au);
@@ -251,7 +259,7 @@ kernel void gemv_fast_q8_0_f32(device const block_q8_0* w    [[buffer(0)]],
                                uint2 tg   [[threadgroup_position_in_grid]],
                                uint  sg   [[simdgroup_index_in_threadgroup]],
                                uint  lane [[thread_index_in_simdgroup]]) {
-    uint row0 = (tg.x * 2 + sg) * NR;
+    uint row0 = (tg.x * GSG + sg) * NR;
     uint nb = cols / 32;
     uint ix = lane / 2, il = lane % 2;
     device const float* xt = x + tg.y * cols;
@@ -316,7 +324,7 @@ template <bool SCALED>
 void gemv_fast_q6(device const block_q6_0* w, device const float* x, device float* y,
                   uint rows, uint cols, device const float* ss, uint nss, float eps,
                   uint2 tg, uint sg, uint lane) {
-    uint row0 = (tg.x * 2 + sg) * NR;
+    uint row0 = (tg.x * GSG + sg) * NR;
     uint nb = cols / 32;
     uint ix = lane / 2, il = lane % 2;
     device const float* xt = x + tg.y * cols;

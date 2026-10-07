@@ -16,6 +16,7 @@ mod pull;
 mod rm;
 mod run;
 mod serve;
+mod tune;
 
 use clap::{Parser, Subcommand};
 
@@ -49,6 +50,8 @@ enum Command {
     Run(run::RunArgs),
     /// Plan de memoria de un modelo y contexto, sin cargarlo.
     Plan(plan::PlanArgs),
+    /// Autotuner: mide en esta GPU los parámetros de lanzamiento de decode y guarda la base.
+    Tune(tune::TuneArgs),
     /// API local compatible con OpenAI y Anthropic para agentes.
     Serve(serve::ServeArgs),
     /// Estado y métricas de un `serve` corriendo (endpoints /api/status y /api/metrics).
@@ -147,6 +150,12 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Command::Tune(args) => {
+            if let Err(e) = tune::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::Run(args) => {
             if let Err(e) = run::run(args) {
                 eprintln!("error: {e}");

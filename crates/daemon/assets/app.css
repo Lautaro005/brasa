@@ -229,6 +229,25 @@ table.data { width: 100%; border-collapse: collapse; font-variant-numeric: tabul
 .data tr.muted td { color: var(--ink-3); }
 .data .client { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------- Modelos: carpeta y descargas (ADR 0031) ---------- */
+.dir-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.dir-path {
+  flex: 1 1 320px; min-width: 0; padding: 7px 9px; border-radius: 6px; background: var(--ground);
+  font-size: 12.5px; overflow-wrap: anywhere;
+}
+.dir-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dir-msg, .dl-msg { margin: 10px 0 0; min-height: 0; }
+.dir-msg:empty, .dl-msg:empty { display: none; }
+.data tr.pulling td { border-bottom: 0; padding-bottom: 2px; }
+.data tr.dl-row td { padding-top: 4px; white-space: normal; }
+.dl { position: sticky; left: 0; max-width: 640px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+/* Una descarga en curso es trabajo activo: la barra arde (Solo Arde Lo Activo). */
+.dl-bar { position: relative; flex: 1 1 200px; max-width: 420px; height: 8px; border-radius: 3px; overflow: hidden; background: var(--cold); }
+.dl-fill { height: 100%; width: 0; background: var(--ember); transition: width 150ms ease-out; }
+.dl-text { color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.dl-file { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dl-none { color: var(--ink-3); font-size: 13px; }
+
 .tag {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; font-weight: 500; padding: 1px 8px 1px 6px; border-radius: 999px;
@@ -408,7 +427,7 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--focus); out
   align-self: flex-end; background: var(--ground); border: 1px solid var(--line);
   padding: 10px 14px; border-radius: 10px 10px 2px 10px;
 }
-.msg.assistant { align-self: flex-start; padding: 2px 0; }
+.msg.assistant { align-self: stretch; min-width: 0; padding: 2px 0; }
 .msg.assistant.streaming::after {
   content: ""; display: inline-block; width: 7px; height: 1.05em; margin-left: 2px;
   vertical-align: text-bottom; background: var(--live); animation: ember 1s steps(2) infinite;

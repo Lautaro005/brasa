@@ -98,7 +98,12 @@ kernel void attn_decode_reduce(device const float* part [[buffer(0)]],
 #ifndef GQA_G
 #define GQA_G 4
 #endif
-constant uint SG_PER_TG = 4;
+// Tramos (simdgroups) por threadgroup: 4 por defecto; el host antepone `#define LANES_SG n` para
+// las variantes de la base de tuning (ADR 0029). Cada tramo se calcula igual: mismos bits.
+#ifndef LANES_SG
+#define LANES_SG 4
+#endif
+constant uint SG_PER_TG = LANES_SG;
 
 kernel void attn_decode_lanes(device const float* q      [[buffer(0)]],  // [hq, D]
                               device const KV_T*  k      [[buffer(1)]],  // [cap, hkv, D]

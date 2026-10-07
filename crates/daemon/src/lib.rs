@@ -11,6 +11,7 @@ pub mod engine;
 mod local_models;
 mod metrics;
 mod model;
+pub mod models_admin;
 mod openai;
 mod origin;
 mod plan;
@@ -20,7 +21,7 @@ mod ui;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use axum::Router;
@@ -28,6 +29,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use brasa_catalog::dirs::ModelsDir;
 use brasa_memory::planner::Budget;
 use brasa_runtime::Limits;
 use brasa_tokenizer::Tokenizer;
@@ -35,6 +37,7 @@ use serde_json::json;
 
 use crate::engine::{Engine, LoadedModel};
 use crate::metrics::Metrics;
+use crate::models_admin::{Catalog, Desktop, PullStatus};
 
 /// Configuración del servidor.
 #[derive(Debug, Clone)]
@@ -46,6 +49,15 @@ pub struct ServeConfig {
     pub addr: SocketAddr,
     /// Commit del binario (se informa en `/api/status`).
     pub commit: String,
+    /// Carpeta de modelos efectiva y de dónde sale (ADR 0031).
+    pub models_dir: ModelsDir,
+    /// Archivo de configuración donde `POST /api/models/dir` guarda `models_dir`.
+    pub config_path: PathBuf,
+    /// Endpoint de Hugging Face para `POST /api/models/pull`.
+    pub hf_endpoint: String,
+    /// Presupuesto de memoria del planner; `None` es el de esta máquina. `serve --perfil` pasa el
+    /// del perfil simulado (ADR 0029).
+    pub budget: Option<Budget>,
 }
 
 /// Estado compartido por los handlers.
@@ -72,6 +84,14 @@ pub struct AppState {
     pub commit: String,
     /// Señal de apagado ordenado (la dispara `POST /api/model/stop`, ADR 0025).
     pub shutdown: Arc<tokio::sync::Notify>,
+    /// Carpeta de modelos (ADR 0031); `POST /api/models/dir` la cambia.
+    pub models_dir: RwLock<ModelsDir>,
+    pub config_path: PathBuf,
+    pub hf_endpoint: String,
+    pub catalog: Catalog,
+    pub desktop: Desktop,
+    /// Descarga en curso o la última (`/api/models/pull`).
+    pub pull: Arc<Mutex<PullStatus>>,
 }
 
 /// Datos de configuración del servidor que se fijan al arrancar.
@@ -83,6 +103,11 @@ pub struct ServerMeta {
     pub budget: Budget,
     pub bench_dir: PathBuf,
     pub commit: String,
+    pub models_dir: ModelsDir,
+    pub config_path: PathBuf,
+    pub hf_endpoint: String,
+    pub catalog: Catalog,
+    pub desktop: Desktop,
 }
 
 impl AppState {
@@ -103,6 +128,12 @@ impl AppState {
             version: env!("CARGO_PKG_VERSION").to_string(),
             commit: meta.commit,
             shutdown: Arc::new(tokio::sync::Notify::new()),
+            models_dir: RwLock::new(meta.models_dir),
+            config_path: meta.config_path,
+            hf_endpoint: meta.hf_endpoint,
+            catalog: meta.catalog,
+            desktop: meta.desktop,
+            pull: Arc::new(Mutex::new(PullStatus::default())),
         })
     }
 }
@@ -134,6 +165,16 @@ pub fn router(state: Shared) -> Router {
         .route("/api/metrics", get(status::metrics))
         .route("/api/activity", get(status::activity))
         .route("/api/models", get(local_models::models))
+        .route(
+            "/api/models/pull",
+            get(models_admin::pull_status)
+                .post(models_admin::pull_start)
+                .delete(models_admin::pull_cancel),
+        )
+        .route("/api/models/pull/cancel", post(models_admin::pull_cancel))
+        .route("/api/models/dir", post(models_admin::set_dir))
+        .route("/api/models/dir/choose", post(models_admin::choose_dir))
+        .route("/api/models/dir/open", post(models_admin::open_dir))
         .route("/api/plan", get(plan::plan))
         .route("/api/bench", get(bench::bench))
         .route("/api/agents", get(connect::agents))
@@ -198,8 +239,13 @@ async fn models(State(s): State<Shared>, headers: HeaderMap) -> Response {
 /// Carga el modelo y sirve hasta que llegue Ctrl-C.
 pub fn serve(cfg: ServeConfig) -> Result<(), String> {
     let tok = Tokenizer::from_dir(&cfg.model_dir).map_err(|e| e.0)?;
-    let (engine, model) = Engine::start(cfg.model_dir.clone(), cfg.limits)?;
-    let budget = Budget::this_machine().unwrap_or_else(|| Budget::profile(16));
+    let (engine, model) = Engine::start(cfg.model_dir.clone(), cfg.limits, cfg.budget.clone())?;
+    eprintln!("tuning: {}", model.tuning);
+    let budget = cfg
+        .budget
+        .clone()
+        .or_else(Budget::this_machine)
+        .unwrap_or_else(|| Budget::profile(16));
     let meta = ServerMeta {
         model_id: cfg.model_id.clone(),
         model_dir: cfg.model_dir.clone(),
@@ -207,6 +253,11 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         budget,
         bench_dir: bench::resolve_dir(),
         commit: cfg.commit.clone(),
+        models_dir: cfg.models_dir.clone(),
+        config_path: cfg.config_path.clone(),
+        hf_endpoint: cfg.hf_endpoint.clone(),
+        catalog: Catalog::System,
+        desktop: Desktop::system(),
     };
     let state = AppState::new(engine, tok, model, meta);
     let shutdown = state.shutdown.clone();

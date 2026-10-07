@@ -66,6 +66,7 @@ pub fn workspace_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
         + 2 * f(t * qd) // q, attn
         + 2 * f(t * m.kv_heads * m.head_dim) // k_new, v_new
         + 2 * f(t * m.ffn) // gate, up
+        + buffer_bytes(2 * (t * m.ffn.max(qd).max(h)) as u64) // xh: entrada f16 del GEMM (ADR 0030)
         + f(t) // ids
         + f(h.div_ceil(NORM_PREP_TG)) // sumas parciales de RMSNorm en decode
         + f(m.heads * s.ctx.div_ceil(DECODE_CHUNK) * (m.head_dim + 2)) // parciales de decode
@@ -143,6 +144,88 @@ impl Budget {
             &info.name,
             ram,
         ))
+    }
+}
+
+/// Perfil de memoria (ADR 0029): fija el presupuesto simulado y los valores por defecto del modo
+/// agente (`serve`). El contexto por defecto es 16K en los dos (CLAUDE.md: los agentes mandan
+/// prompts de 15K a 30K tokens); la KV es Q8 en 8 GB, donde hace falta la memoria, y f16 en 16 GB,
+/// donde entra con margen y es más precisa (ADR 0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Profile {
+    #[serde(rename = "8gb")]
+    G8,
+    #[serde(rename = "16gb")]
+    G16,
+}
+
+/// Contexto por defecto del modo agente en todos los perfiles.
+pub const AGENT_CTX: usize = 16_384;
+
+impl Profile {
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::G8 => "8gb",
+            Profile::G16 => "16gb",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "8gb" | "8" => Some(Profile::G8),
+            "16gb" | "16" => Some(Profile::G16),
+            _ => None,
+        }
+    }
+
+    /// Perfil de una Mac con `ram` bytes: 8 GB hasta 12 GiB, 16 GB desde ahí.
+    pub fn for_ram(ram: u64) -> Self {
+        if ram < 12 << 30 {
+            Profile::G8
+        } else {
+            Profile::G16
+        }
+    }
+
+    /// Perfil de esta Mac (16 GB si no se puede leer la RAM).
+    pub fn this_machine() -> Self {
+        brasa_core::sys::sysctl_u64("hw.memsize").map_or(Profile::G16, Self::for_ram)
+    }
+
+    pub fn ram_gib(self) -> u64 {
+        match self {
+            Profile::G8 => 8,
+            Profile::G16 => 16,
+        }
+    }
+
+    /// Presupuesto simulado del perfil ([`Budget::profile`]; estimado si no hay medición).
+    pub fn budget(self) -> Budget {
+        Budget::profile(self.ram_gib())
+    }
+
+    /// Contexto por defecto del modo agente.
+    pub fn agent_ctx(self) -> usize {
+        AGENT_CTX
+    }
+
+    /// Tipo de KV por defecto del modo agente (nombre de `KvType`: `q8_0` o `f16`).
+    pub fn agent_kv(self) -> &'static str {
+        match self {
+            Profile::G8 => "q8_0",
+            Profile::G16 => "f16",
+        }
+    }
+}
+
+/// Presupuesto para cargar con un perfil simulado en esta máquina: el menor entre el del perfil y
+/// el de la máquina (simular 8 GB en una de 16 rechaza lo que no entraría en 8; simular 16 en una
+/// de 8 no promete memoria que no hay).
+pub fn simulated_budget(profile: Profile, machine: Option<Budget>) -> Budget {
+    let p = profile.budget();
+    match machine {
+        Some(m) if m.bytes < p.bytes => m,
+        _ => p,
     }
 }
 
@@ -272,6 +355,60 @@ mod tests {
         assert!(plan(&m, &session(c)).total <= budget.bytes);
         assert!(plan(&m, &session(c + CTX_STEP)).total > budget.bytes);
         assert_eq!(c % CTX_STEP, 0);
+    }
+
+    fn agent(ctx: usize, kv_block_bytes: usize) -> SessionShape {
+        SessionShape {
+            ctx,
+            max_tokens: 512,
+            max_logit_rows: 1,
+            kv_block_bytes,
+        }
+    }
+
+    #[test]
+    fn perfiles() {
+        assert_eq!(Profile::for_ram(8 << 30), Profile::G8);
+        assert_eq!(Profile::for_ram(7 << 30), Profile::G8);
+        assert_eq!(Profile::for_ram(16 << 30), Profile::G16);
+        assert_eq!(Profile::for_ram(32 << 30), Profile::G16);
+        for p in [Profile::G8, Profile::G16] {
+            assert_eq!(Profile::parse(p.name()), Some(p));
+            assert_eq!(p.agent_ctx(), 16_384);
+            assert!(p.budget().source.starts_with("estimado"));
+        }
+        assert_eq!(Profile::G8.agent_kv(), "q8_0");
+        assert_eq!(Profile::G16.agent_kv(), "f16");
+        assert_eq!(Profile::parse("4gb"), None);
+    }
+
+    #[test]
+    fn el_modo_agente_entra_en_cada_perfil() {
+        // Pesos de Qwen3-4B Q4 como en `brasa plan` (2,20 GiB); el plan real con el archivo lo
+        // verifica tests/planner.rs de brasa-runtime. Presupuestos estimados (ADR 0007).
+        let m = ModelShape {
+            tensor_bytes: vec![2_362_232_013],
+            ..qwen3_4b()
+        };
+        let (q8, f16) = (34, 64);
+        let margin =
+            |p: Profile, kv| p.budget().bytes as i64 - plan(&m, &agent(AGENT_CTX, kv)).total as i64;
+        // 8 GB con Q8: más de 1 GiB de margen. 16 GB con f16: más de 6 GiB.
+        assert!(margin(Profile::G8, q8) > 1 << 30);
+        assert!(margin(Profile::G16, f16) > 6 << 30);
+        // 8 GB con f16 entra por menos de 256 MiB sobre un presupuesto estimado: por eso Q8 ahí.
+        let m8 = margin(Profile::G8, f16);
+        assert!((0..256 << 20).contains(&m8), "{m8}");
+    }
+
+    #[test]
+    fn presupuesto_simulado_es_el_menor() {
+        let m16 = Budget::from_working_set(12 << 30, "M1 Pro", 16 << 30);
+        let b = simulated_budget(Profile::G8, Some(m16.clone()));
+        assert_eq!(b, Profile::G8.budget());
+        let chico = Budget::from_working_set(4 << 30, "M2", 8 << 30);
+        assert_eq!(simulated_budget(Profile::G16, Some(chico.clone())), chico);
+        assert_eq!(simulated_budget(Profile::G16, None), Profile::G16.budget());
     }
 
     #[test]

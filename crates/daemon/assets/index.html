@@ -32,6 +32,9 @@
   <symbol id="i-panel" viewBox="0 0 20 20"><path d="M3.5 4.5h13v11h-13zM12 4.5v11"/></symbol>
   <symbol id="i-plug" viewBox="0 0 20 20"><path d="M7.5 3.5v4M12.5 3.5v4M5.5 7.5h9v2.5a4.5 4.5 0 0 1-9 0zM10 14.5v2.5"/></symbol>
   <symbol id="i-list" viewBox="0 0 20 20"><path d="M4 6h12M4 10h12M4 14h8"/></symbol>
+  <symbol id="i-download" viewBox="0 0 20 20"><path d="M10 3.5v9M6.5 9l3.5 3.5L13.5 9M4 15.5h12"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 20 20"><path d="M3.5 5.5h4.5l1.5 1.5h7v8.5h-13z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 20 20"><path d="M11 3.5h5.5V9M16.5 3.5 9.5 10.5M14 12v4H4V6h4"/></symbol>
 </svg>
 
 <div class="shell">
@@ -222,6 +225,20 @@
         <h1 id="h-modelos">Modelos</h1>
         <p id="models-sub" class="view-sub"></p>
       </header>
+      <section class="panel" aria-labelledby="h-dir">
+        <div class="panel-head">
+          <h2 id="h-dir">Carpeta de modelos</h2>
+          <p id="dir-note" class="panel-note"></p>
+        </div>
+        <div class="dir-row">
+          <code id="dir-path" class="dir-path">—</code>
+          <div class="dir-actions">
+            <button type="button" class="btn" id="dir-change"><svg class="ic"><use href="#i-folder"/></svg>Cambiar…</button>
+            <button type="button" class="btn" id="dir-open"><svg class="ic"><use href="#i-open"/></svg>Abrir carpeta</button>
+          </div>
+        </div>
+        <p id="dir-msg" class="control-msg dir-msg" role="status" aria-live="polite"></p>
+      </section>
       <section class="panel" aria-labelledby="h-inst">
         <div class="panel-head">
           <h2 id="h-inst">En disco</h2>
@@ -245,13 +262,14 @@
         <div class="table-wrap">
           <table class="data" id="cat-table">
             <thead><tr>
-              <th scope="col">Modelo</th><th scope="col">Familia</th><th scope="col">Cuantización</th><th scope="col">Licencia</th>
-              <th scope="col" class="n">Contexto máx.</th><th scope="col" class="n">Descarga</th><th scope="col">Comando</th>
+              <th scope="col">Modelo</th><th scope="col" class="n">Tamaño</th><th scope="col">Descarga</th><th scope="col">Cuantización</th>
+              <th scope="col">Familia</th><th scope="col">Licencia</th><th scope="col" class="n">Contexto máx.</th><th scope="col">Comando</th>
             </tr></thead>
             <tbody></tbody>
           </table>
         </div>
         <p id="cat-empty" class="empty-inline" hidden>Todo el catálogo ya está en disco.</p>
+        <p id="dl-msg" class="control-msg dl-msg" role="status" aria-live="polite"></p>
       </section>
     </section>
 
@@ -286,7 +304,7 @@
       <section class="panel">
         <form id="plan-form" class="form-row" novalidate>
           <div class="field"><label for="plan-ctx">Contexto</label><input id="plan-ctx" type="number" min="256" step="256" value="16384" inputmode="numeric"></div>
-          <div class="field"><label for="plan-chunk">Chunk de prefill</label><input id="plan-chunk" type="number" min="64" step="64" value="128" inputmode="numeric"></div>
+          <div class="field"><label for="plan-chunk">Chunk de prefill</label><input id="plan-chunk" type="number" min="64" step="64" value="1024" inputmode="numeric"></div>
           <div class="field"><label for="plan-kv">Caché KV</label>
             <select id="plan-kv">
               <option value="f16" selected data-hint="por defecto">f16</option>

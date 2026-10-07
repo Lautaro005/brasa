@@ -20,8 +20,11 @@
 use brasa_metal::{Arg, Buffer, Command, Context, MetalError, Pipeline};
 use brasa_quant::{KV_Q8_DIM, KV_Q8_ROW};
 
+pub mod launch;
 pub mod reference;
 pub mod testutil;
+
+pub use launch::{GEMV_NR, GEMV_SG_DEFAULT, GemvOp, LANES_SG_DEFAULT, Launch, LaunchError};
 
 /// Fuentes MSL embebidas en el binario.
 pub mod sources {
@@ -153,7 +156,9 @@ pub struct QMatrix<'a> {
 pub struct Kernels {
     add_f32: Pipeline,
     swiglu_f32: Pipeline,
+    swiglu_f16: Pipeline,
     rms_norm_f32: Pipeline,
+    rms_norm_f16: Pipeline,
     softmax_f32: Pipeline,
     rope_neox_f32: Pipeline,
     embed_q8_0: Pipeline,
@@ -174,12 +179,16 @@ pub struct Kernels {
     attn_pv_f32: Pipeline,
     gemv_fast_q4_0: Pipeline,
     gemv_fast_q8_0: Pipeline,
-    gemm_tiled_q4_0: Pipeline,
-    gemm_tiled_q8_0: Pipeline,
+    /// GEMM tiled por bloque de tokens (64: bloques completos; 32: el resto), tipo de peso
+    /// (q4_0, q8_0) y tipo de las entradas ([`PrefillPrecision`]).
+    gemm_tiled: [[[Pipeline; 2]; 2]; 2],
+    /// gate + up + SwiGLU en un kernel (q4_0, entradas f16, bloques de 64 tokens).
+    gemm64_swiglu: Pipeline,
     /// Variantes por [`KvType`] (índice `KvType as usize`).
     flash_attn: [Pipeline; 3],
-    /// `flash_attn_gqa` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
-    flash_attn_gqa: [[Pipeline; 3]; 4],
+    /// `flash_attn_gqa` por precisión de Q ([`PrefillPrecision`]), tamaño de grupo GQA
+    /// ([`GQA_GROUPS`]) y tipo de KV.
+    flash_attn_gqa: [[[Pipeline; 3]; 4]; 2],
     attn_decode_partial: [Pipeline; 3],
     /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
     attn_decode_lanes: [[Pipeline; 3]; 4],
@@ -187,6 +196,13 @@ pub struct Kernels {
     /// `qk_norm_rope_store` por tipo de KV (T3.5).
     qk_norm_rope_store: [Pipeline; 3],
     attn_decode_reduce: Pipeline,
+    /// Parámetros de lanzamiento de decode (ADR 0029); por defecto, los fijados a mano.
+    launch: Launch,
+    /// Variantes de los GEMV de decode con otros simdgroups por threadgroup (compiladas por
+    /// `set_launch`).
+    gemv_variants: Vec<(GemvOp, usize, Pipeline)>,
+    /// Variantes de `attn_decode_lanes` (índice de grupo GQA, KV, simdgroups).
+    lanes_variants: Vec<(usize, KvType, usize, Pipeline)>,
 }
 
 /// Compila `function` para cada tamaño de grupo de [`GQA_GROUPS`] (`#define GQA_G n`) y tipo de KV.
@@ -205,6 +221,14 @@ fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline;
     Ok([v(KvType::F32)?, v(KvType::F16)?, v(KvType::Q8_0)?])
 }
 
+/// `a` desplazado `bytes` (vista de un buffer más adelante).
+fn offset(a: Arg<'_>, bytes: usize) -> Arg<'_> {
+    match a {
+        Arg::Buf(b, off) => Arg::Buf(b, off + bytes),
+        Arg::Inline(..) => panic!("offset sobre una constante"),
+    }
+}
+
 fn groups(n: usize, per: usize) -> usize {
     n.div_ceil(per)
 }
@@ -215,7 +239,9 @@ impl Kernels {
         Ok(Self {
             add_f32: ctx.pipeline(ELEMENTWISE, "add_f32")?,
             swiglu_f32: ctx.pipeline(ELEMENTWISE, "swiglu_f32")?,
+            swiglu_f16: ctx.pipeline(ELEMENTWISE, "swiglu_f16")?,
             rms_norm_f32: ctx.pipeline(NORM, "rms_norm_f32")?,
+            rms_norm_f16: ctx.pipeline(NORM, "rms_norm_f16")?,
             softmax_f32: ctx.pipeline(SOFTMAX, "softmax_f32")?,
             rope_neox_f32: ctx.pipeline(ROPE, "rope_neox_f32")?,
             embed_q8_0: ctx.pipeline(EMBED, "embed_q8_0")?,
@@ -236,12 +262,31 @@ impl Kernels {
             attn_pv_f32: ctx.pipeline(ATTENTION, "attn_pv_f32")?,
             gemv_fast_q4_0: ctx.pipeline(MATMUL, "gemv_fast_q4_0_f32")?,
             gemv_fast_q8_0: ctx.pipeline(MATMUL, "gemv_fast_q8_0_f32")?,
-            gemm_tiled_q4_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q4_0_f32")?,
-            gemm_tiled_q8_0: ctx.pipeline(MATMUL_TILED, "gemm_tiled_q8_0_f32")?,
+            gemm64_swiglu: ctx.pipeline(MATMUL_TILED, "gemm64_swiglu_q4_0_f16")?,
+            gemm_tiled: {
+                let p = |n: &str| ctx.pipeline(MATMUL_TILED, n);
+                [
+                    [
+                        [p("gemm64_q4_0_f16")?, p("gemm64_q4_0_f32")?],
+                        [p("gemm64_q8_0_f16")?, p("gemm64_q8_0_f32")?],
+                    ],
+                    [
+                        [p("gemm32_q4_0_f16")?, p("gemm32_q4_0_f32")?],
+                        [p("gemm32_q8_0_f16")?, p("gemm32_q8_0_f32")?],
+                    ],
+                ]
+            },
             flash_attn: kv_variants(ctx, FLASH_ATTENTION, "flash_attn_f32")?,
             attn_decode_partial: kv_variants(ctx, DECODE_ATTENTION, "attn_decode_partial")?,
             attn_decode_lanes: gqa_variants(ctx, DECODE_ATTENTION, "attn_decode_lanes")?,
-            flash_attn_gqa: gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
+            flash_attn_gqa: [
+                gqa_variants(ctx, FLASH_ATTENTION, "flash_attn_gqa")?,
+                gqa_variants(
+                    ctx,
+                    &format!("#define FA_Q_F32 1\n{FLASH_ATTENTION}"),
+                    "flash_attn_gqa",
+                )?,
+            ],
             qk_norm_rope_store: kv_variants(ctx, QKV, "qk_norm_rope_store")?,
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
@@ -252,7 +297,94 @@ impl Kernels {
                 &kv_source(KvType::F32, DECODE_ATTENTION),
                 "attn_decode_reduce",
             )?,
+            launch: Launch::default(),
+            gemv_variants: Vec::new(),
+            lanes_variants: Vec::new(),
         })
+    }
+
+    /// Reemplaza los parámetros de lanzamiento de decode (ADR 0029). Se llama al cargar, nunca
+    /// en el loop de decode: compila las variantes que falten (`#define GEMV_SG n` o
+    /// `#define LANES_SG n`). Ningún parámetro cambia los resultados. Si una variante no compila o
+    /// pide más hilos por threadgroup de los que admite su pipeline, devuelve error y deja los
+    /// parámetros anteriores.
+    pub fn set_launch(&mut self, ctx: &Context, launch: Launch) -> Result<(), LaunchError> {
+        let err = |e: MetalError| LaunchError(e.to_string());
+        for (op, sg) in launch.gemv_entries() {
+            if sg == GEMV_SG_DEFAULT || self.gemv_variant(op, sg).is_some() {
+                continue;
+            }
+            let src = format!("#define GEMV_SG {sg}\n{}", sources::MATMUL);
+            let p = ctx.pipeline(&src, op.kernel_name()).map_err(err)?;
+            if p.max_threads_per_threadgroup() < 32 * sg {
+                return Err(LaunchError(format!(
+                    "{}: {sg} simdgroups por threadgroup, el pipeline admite {}",
+                    op.kernel_name(),
+                    p.max_threads_per_threadgroup() / 32
+                )));
+            }
+            self.gemv_variants.push((op, sg, p));
+        }
+        for (kv, group, sg) in launch.lanes_entries() {
+            let gi = GQA_GROUPS.iter().position(|&g| g == group).ok_or_else(|| {
+                LaunchError(format!("attn_decode_lanes: grupo GQA {group} no compilado"))
+            })?;
+            if sg == LANES_SG_DEFAULT || self.lanes_variant(gi, kv, sg).is_some() {
+                continue;
+            }
+            let src = format!(
+                "#define GQA_G {group}\n#define LANES_SG {sg}\n{}",
+                sources::DECODE_ATTENTION
+            );
+            let p = ctx
+                .pipeline(&kv_source(kv, &src), "attn_decode_lanes")
+                .map_err(err)?;
+            if p.max_threads_per_threadgroup() < 32 * sg {
+                return Err(LaunchError(format!(
+                    "attn_decode_lanes kv {} g {group}: {sg} simdgroups por threadgroup, el \
+                     pipeline admite {}",
+                    kv.name(),
+                    p.max_threads_per_threadgroup() / 32
+                )));
+            }
+            self.lanes_variants.push((gi, kv, sg, p));
+        }
+        self.launch = launch;
+        Ok(())
+    }
+
+    fn gemv_variant(&self, op: GemvOp, sg: usize) -> Option<&Pipeline> {
+        self.gemv_variants
+            .iter()
+            .find(|(o, s, _)| *o == op && *s == sg)
+            .map(|v| &v.2)
+    }
+
+    fn lanes_variant(&self, gi: usize, kv: KvType, sg: usize) -> Option<&Pipeline> {
+        self.lanes_variants
+            .iter()
+            .find(|(g, k, s, _)| *g == gi && *k == kv && *s == sg)
+            .map(|v| &v.3)
+    }
+
+    /// Pipeline y simdgroups por threadgroup del GEMV `op` `[rows, cols]` según el `Launch`
+    /// (`base` es la variante por defecto). Sin asignaciones: corre en cada paso de decode.
+    fn gemv_pick<'p>(
+        &'p self,
+        op: GemvOp,
+        rows: usize,
+        cols: usize,
+        base: &'p Pipeline,
+    ) -> (&'p Pipeline, usize) {
+        let sg = self.launch.gemv_sg(op, rows, cols);
+        match self.gemv_variant(op, sg) {
+            Some(p) if sg != GEMV_SG_DEFAULT => (p, sg),
+            _ => (base, GEMV_SG_DEFAULT),
+        }
+    }
+
+    pub fn launch(&self) -> &Launch {
+        &self.launch
     }
 
     /// `out = a + b` sobre los primeros `n` elementos.
@@ -293,6 +425,104 @@ impl Kernels {
             ],
             [n, 1, 1],
             [ELEMENTWISE_TG, 1, 1],
+        );
+    }
+
+    /// `out = silu(gate) · up` con `out` en f16 (bits en `u16`), para el GEMM de prefill
+    /// ([`PrefillPrecision::F16`]).
+    pub fn swiglu_f16<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        gate: Arg<'a>,
+        up: Arg<'a>,
+        out: Arg<'a>,
+        n: usize,
+    ) {
+        cmd.dispatch(
+            &self.swiglu_f16,
+            &[gate, up, out, Arg::u32(n as u32)],
+            [n, 1, 1],
+            [ELEMENTWISE_TG, 1, 1],
+        );
+    }
+
+    /// gate, up y SwiGLU de prefill con entradas f16: `out[t, :] = silu(Wg · x[t, :]) · Wu · x[t, :]`
+    /// en f16 (bits en `u16`), mismos bits que [`Kernels::gemm_multi`] + [`Kernels::swiglu_f16`].
+    /// Los bloques completos de 64 tokens van a un kernel que no escribe gate ni up; el resto (y
+    /// todo si hay menos de 128 tokens o las matrices no son q4_0 alineadas) pasa por `gate` y
+    /// `up` (`[tokens, filas]` en f32).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_swiglu<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        wg: QMatrix<'a>,
+        wu: QMatrix<'a>,
+        x: Arg<'a>,
+        gate: Arg<'a>,
+        up: Arg<'a>,
+        out: Arg<'a>,
+        tokens: usize,
+    ) {
+        let (rows, cols) = (wg.rows, wg.cols);
+        let fused_ok = wg.qtype == WeightType::Q4_0
+            && wu.qtype == WeightType::Q4_0
+            && (wu.rows, wu.cols) == (rows, cols)
+            && rows % 32 == 0
+            && cols % 32 == 0;
+        let full = if fused_ok && tokens >= 128 {
+            tokens / 64 * 64
+        } else {
+            0
+        };
+        if full > 0 {
+            cmd.dispatch_groups(
+                &self.gemm64_swiglu,
+                &[
+                    Arg::buf(wg.data),
+                    Arg::buf(wu.data),
+                    x,
+                    out,
+                    Arg::u32(rows as u32),
+                    Arg::u32(cols as u32),
+                    Arg::u32(full as u32),
+                ],
+                [rows / 32, full / 64, 1],
+                [128, 1, 1],
+            );
+        }
+        let rest = tokens - full;
+        if rest > 0 {
+            let (g, u) = (offset(gate, full * rows * 4), offset(up, full * rows * 4));
+            self.gemm_multi(
+                cmd,
+                &[wg, wu],
+                offset(x, full * cols * 2),
+                &[g, u],
+                rest,
+                PrefillPrecision::F16,
+            );
+            self.swiglu_f16(cmd, g, u, offset(out, full * rows * 2), rest * rows);
+        }
+    }
+
+    /// Como [`Kernels::rms_norm`], con `out` en f16, para el GEMM de prefill
+    /// ([`PrefillPrecision::F16`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_f16<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        x: Arg<'a>,
+        w: Arg<'a>,
+        out: Arg<'a>,
+        rows: usize,
+        n: usize,
+        eps: f32,
+    ) {
+        cmd.dispatch_groups(
+            &self.rms_norm_f16,
+            &[x, w, out, Arg::u32(n as u32), Arg::f32(eps)],
+            [rows, 1, 1],
+            [ROW_TG, 1, 1],
         );
     }
 
@@ -445,6 +675,7 @@ impl Kernels {
             WeightType::Q6_0 => &self.gemv_scaled_q6_0,
             WeightType::Q8_0 => panic!("gemv_scaled: q4_0 o q6_0"),
         };
+        let (p, sg) = self.gemv_pick(GemvOp::Scaled(w.qtype), w.rows, w.cols, p);
         cmd.dispatch_groups(
             p,
             &[
@@ -457,8 +688,8 @@ impl Kernels {
                 Arg::u32(norm_partials(w.cols) as u32),
                 Arg::f32(eps),
             ],
-            [w.rows / 8, 1, 1],
-            [64, 1, 1],
+            [w.rows / (GEMV_NR * sg), 1, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -480,9 +711,15 @@ impl Kernels {
             assert_eq!(m.rows % 8, 0, "gemv_scaled3: filas % 8");
         }
         let total = w[0].rows + w[1].rows + w[2].rows;
+        // Cada threadgroup trabaja sobre una sola matriz: las filas de cada una, múltiplo del
+        // bloque de filas del threadgroup.
+        let (mut p, mut sg) = self.gemv_pick(GemvOp::Scaled3, total, cols, &self.gemv_scaled3_q4_0);
+        if w.iter().any(|m| m.rows % (GEMV_NR * sg) != 0) {
+            (p, sg) = (&self.gemv_scaled3_q4_0, GEMV_SG_DEFAULT);
+        }
         let [y0, y1, y2] = y;
         cmd.dispatch_groups(
-            &self.gemv_scaled3_q4_0,
+            p,
             &[
                 Arg::buf(w[0].data),
                 Arg::buf(w[1].data),
@@ -498,8 +735,8 @@ impl Kernels {
                 Arg::u32(norm_partials(cols) as u32),
                 Arg::f32(eps),
             ],
-            [total / 8, 1, 1],
-            [64, 1, 1],
+            [total / (GEMV_NR * sg), 1, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -518,8 +755,14 @@ impl Kernels {
     ) {
         assert!(gate.qtype == WeightType::Q4_0 && up.qtype == WeightType::Q4_0);
         assert!(gate.rows == up.rows && gate.cols == up.cols && gate.rows % 8 == 0);
-        cmd.dispatch_groups(
+        let (p, sg) = self.gemv_pick(
+            GemvOp::ScaledSwiglu,
+            gate.rows,
+            gate.cols,
             &self.gemv_scaled_swiglu_q4_0,
+        );
+        cmd.dispatch_groups(
+            p,
             &[
                 Arg::buf(gate.data),
                 Arg::buf(up.data),
@@ -530,8 +773,8 @@ impl Kernels {
                 Arg::u32(norm_partials(gate.cols) as u32),
                 Arg::f32(eps),
             ],
-            [gate.rows / 8, 1, 1],
-            [64, 1, 1],
+            [gate.rows / (GEMV_NR * sg), 1, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -551,6 +794,7 @@ impl Kernels {
             WeightType::Q8_0 => &self.gemv_fast_q8_0,
             WeightType::Q6_0 => &self.gemv_fast_q6_0,
         };
+        let (p, sg) = self.gemv_pick(GemvOp::Fast(w.qtype), w.rows, w.cols, p);
         cmd.dispatch_groups(
             p,
             &[
@@ -560,8 +804,8 @@ impl Kernels {
                 Arg::u32(w.rows as u32),
                 Arg::u32(w.cols as u32),
             ],
-            [w.rows / 8, tokens, 1],
-            [64, 1, 1],
+            [w.rows / (GEMV_NR * sg), tokens, 1],
+            [32 * sg, 1, 1],
         );
     }
 
@@ -593,8 +837,8 @@ impl Kernels {
         );
     }
 
-    /// GEMM para prefill: `y[t, :] = W · x[t, :]`. Usa el kernel tiled (simdgroup matrix) si
-    /// `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple.
+    /// GEMM para prefill: `y[t, :] = W · x[t, :]`, con `x` en f16 (bits en `u16`), pesos
+    /// redondeados a f16 y acumulación en f32 (ADR 0030). Ver [`Kernels::gemm_with`].
     pub fn gemm<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -603,27 +847,98 @@ impl Kernels {
         y: Arg<'a>,
         tokens: usize,
     ) {
-        if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
-            return self.gemm_naive(cmd, w, x, y, tokens);
+        self.gemm_with(cmd, w, x, y, tokens, PrefillPrecision::F16);
+    }
+
+    /// GEMM para prefill con entradas en la precisión `input`: `x` en f16 (bits en `u16`) con
+    /// [`PrefillPrecision::F16`] y en f32 con `F32`. Usa el kernel tiled (simdgroup matrix) si
+    /// `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple, que solo acepta `F32`.
+    pub fn gemm_with<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        w: QMatrix<'a>,
+        x: Arg<'a>,
+        y: Arg<'a>,
+        tokens: usize,
+        input: PrefillPrecision,
+    ) {
+        self.gemm_multi(cmd, &[w], x, &[y], tokens, input);
+    }
+
+    /// Hasta tres GEMM de prefill con la misma entrada `x` (q, k, v o gate, up) en un dispatch:
+    /// `ys[i][t, :] = ws[i] · x[t, :]`, con `x` como en [`Kernels::gemm_with`]. Las matrices que no
+    /// sean q4_0/q8_0 con filas % 64 == 0 y columnas % 32 == 0, o de otro tipo que la primera, se
+    /// encolan aparte (con el GEMM simple, que solo acepta `F32`).
+    pub fn gemm_multi<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        ws: &[QMatrix<'a>],
+        x: Arg<'a>,
+        ys: &[Arg<'a>],
+        tokens: usize,
+        input: PrefillPrecision,
+    ) {
+        assert!(ws.len() == ys.len() && (1..=3).contains(&ws.len()));
+        let tiled = |w: &QMatrix| {
+            w.rows % 64 == 0
+                && w.cols % 32 == 0
+                && w.cols == ws[0].cols
+                && w.qtype == ws[0].qtype
+                && w.qtype != WeightType::Q6_0
+        };
+        if !ws.iter().all(tiled) {
+            for (w, y) in ws.iter().zip(ys) {
+                if tiled(w) && ws.len() > 1 {
+                    self.gemm_multi(cmd, &[*w], x, &[*y], tokens, input);
+                } else {
+                    assert_eq!(
+                        input,
+                        PrefillPrecision::F32,
+                        "el GEMM simple solo acepta x en f32"
+                    );
+                    self.gemm_naive(cmd, *w, x, *y, tokens);
+                }
+            }
+            return;
         }
-        let p = match w.qtype {
-            WeightType::Q4_0 => &self.gemm_tiled_q4_0,
-            WeightType::Q8_0 => &self.gemm_tiled_q8_0,
+        let qi = match ws[0].qtype {
+            WeightType::Q4_0 => 0,
+            WeightType::Q8_0 => 1,
             WeightType::Q6_0 => unreachable!(),
         };
-        cmd.dispatch_groups(
-            p,
-            &[
-                Arg::buf(w.data),
-                x,
-                y,
-                Arg::u32(w.rows as u32),
-                Arg::u32(w.cols as u32),
-                Arg::u32(tokens as u32),
-            ],
-            [w.rows / 64, groups(tokens, 32), 1],
-            [128, 1, 1],
-        );
+        let cols = ws[0].cols;
+        let xb = if input == PrefillPrecision::F16 { 2 } else { 4 };
+        let blocks: usize = ws.iter().map(|w| w.rows / 64).sum();
+        let m = |i: usize| ws.get(i).unwrap_or(&ws[0]);
+        // Bloques completos de 64 tokens con el kernel de 64; el resto, con el de 32 sobre las
+        // vistas de x e y desde el primer token que sobra. Con menos de 128 tokens, todo con el de
+        // 32 (con un solo bloque de 64 hay pocos threadgroups; medido en M1 Pro con T = 100).
+        let full = if tokens < 128 { 0 } else { tokens / 64 * 64 };
+        for (bi, t0, n) in [(0, 0, full), (1, full, tokens - full)] {
+            if n == 0 {
+                continue;
+            }
+            let y = |i: usize| offset(*ys.get(i).unwrap_or(&ys[0]), t0 * m(i).rows * 4);
+            cmd.dispatch_groups(
+                &self.gemm_tiled[bi][qi][input as usize],
+                &[
+                    Arg::buf(m(0).data),
+                    Arg::buf(m(1).data),
+                    Arg::buf(m(2).data),
+                    offset(x, t0 * cols * xb),
+                    y(0),
+                    y(1),
+                    y(2),
+                    Arg::u32(ws[0].rows as u32),
+                    Arg::u32(ws.get(1).map_or(0, |w| w.rows as u32)),
+                    Arg::u32(ws.get(2).map_or(0, |w| w.rows as u32)),
+                    Arg::u32(cols as u32),
+                    Arg::u32(n as u32),
+                ],
+                [blocks, groups(n, 64 >> bi), 1],
+                [128, 1, 1],
+            );
+        }
     }
 
     /// GEMM simple: un hilo por salida, sin tiling (referencia de rendimiento y respaldo).
@@ -702,9 +1017,10 @@ impl Kernels {
                 Arg::u32(hkv as u32),
                 Arg::u32(pos0 as u32),
                 Arg::f32(eps),
+                Arg::u32((tokens * (hq + 2 * hkv)) as u32),
             ],
-            [tokens * (hq + 2 * hkv), 1, 1],
-            [dim, 1, 1],
+            [groups(tokens * (hq + 2 * hkv), 4), 1, 1],
+            [128, 1, 1],
         );
     }
 
@@ -817,9 +1133,16 @@ impl Kernels {
             "scratch de decode chico"
         );
         let gi = gqa_index(hq, hkv).expect("decode_attention_lanes: grupo GQA no compilado");
+        let base = &self.attn_decode_lanes[gi][kv.idx()];
+        let (p, sg) = match self.launch.attn_lanes_sg(kv, GQA_GROUPS[gi], lk) {
+            LANES_SG_DEFAULT => (base, LANES_SG_DEFAULT),
+            sg => self
+                .lanes_variant(gi, kv, sg)
+                .map_or((base, LANES_SG_DEFAULT), |p| (p, sg)),
+        };
         let scale = 1.0 / (dim as f32).sqrt();
         cmd.dispatch_groups(
-            &self.attn_decode_lanes[gi][kv.idx()],
+            p,
             &[
                 q,
                 k,
@@ -829,8 +1152,8 @@ impl Kernels {
                 Arg::u32(lk as u32),
                 Arg::f32(scale),
             ],
-            [groups(groups(lk, DECODE_CHUNK), DECODE_LANES_SG), hkv, 1],
-            [32 * DECODE_LANES_SG, 1, 1],
+            [groups(groups(lk, DECODE_CHUNK), sg), hkv, 1],
+            [32 * sg, 1, 1],
         );
         cmd.dispatch_groups(
             &self.attn_decode_reduce,
@@ -840,9 +1163,9 @@ impl Kernels {
         );
     }
 
-    /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes).
-    /// `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN` posiciones
-    /// más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
+    /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes),
+    /// con Q redondeada a f16 y `o` en f16 (bits en `u16`) en la variante GQA (ADR 0030). Ver
+    /// [`Kernels::flash_attention_with`].
     pub fn flash_attention<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -851,6 +1174,23 @@ impl Kernels {
         v: Arg<'a>,
         o: Arg<'a>,
         shape: AttnShape,
+    ) {
+        self.flash_attention_with(cmd, q, k, v, o, shape, PrefillPrecision::F16);
+    }
+
+    /// Atención causal de prefill con Q y la salida `o` en la precisión `precision` (`o` en f16,
+    /// bits en `u16`, con [`PrefillPrecision::F16`]); la variante sin GQA es siempre f32. `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN`
+    /// posiciones más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attention_with<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        q: Arg<'a>,
+        k: Arg<'a>,
+        v: Arg<'a>,
+        o: Arg<'a>,
+        shape: AttnShape,
+        precision: PrefillPrecision,
     ) {
         let AttnShape {
             tokens,
@@ -864,10 +1204,11 @@ impl Kernels {
         assert!(hq % hkv == 0, "hq debe ser múltiplo de hkv");
         let scale = 1.0 / (dim as f32).sqrt();
         if let Some(gi) = gqa_index(hq, hkv) {
-            // Variante GQA: FA_ROWS filas (FA_ROWS / grupo queries × grupo cabezas) por threadgroup.
-            let qt = FA_ROWS / GQA_GROUPS[gi];
+            // Variante GQA (ADR 0030): FA_QUERIES queries de 2 cabezas del grupo (1 sin GQA) por
+            // threadgroup.
+            let heads = if GQA_GROUPS[gi] >= 2 { 2 } else { 1 };
             cmd.dispatch_groups(
-                &self.flash_attn_gqa[gi][kv.idx()],
+                &self.flash_attn_gqa[precision as usize][gi][kv.idx()],
                 &[
                     q,
                     k,
@@ -878,11 +1219,16 @@ impl Kernels {
                     Arg::u32(pos0 as u32),
                     Arg::f32(scale),
                 ],
-                [groups(tokens, qt), hkv, 1],
+                [groups(tokens, FA_QUERIES), hq / heads, 1],
                 [128, 1, 1],
             );
             return;
         }
+        assert_eq!(
+            precision,
+            PrefillPrecision::F32,
+            "sin GQA la atención es solo f32"
+        );
         cmd.dispatch_groups(
             &self.flash_attn[kv.idx()],
             &[
@@ -956,6 +1302,17 @@ impl Kernels {
 
 /// Tamaños de grupo GQA (`hq / hkv`) para los que se compilan `decode_attention_lanes` y la
 /// variante GQA de `flash_attention`.
+/// Precisión de las entradas de los kernels de prefill (ADR 0030): tipo al que se redondean
+/// pesos y activaciones dentro del GEMM y Q en la atención. La acumulación y el softmax son
+/// siempre f32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefillPrecision {
+    /// Ruta caliente (medido en M1 Pro: GEMM ~1,4× y atención ~1,1× más rápidos que en f32).
+    F16 = 0,
+    /// Exacta: mismo resultado que con las entradas en f32.
+    F32 = 1,
+}
+
 pub const GQA_GROUPS: [usize; 4] = [1, 2, 4, 8];
 
 /// Si hay kernels compilados para el grupo GQA de `hq` cabezas de query y `hkv` de KV.
@@ -971,9 +1328,6 @@ fn gqa_index(hq: usize, hkv: usize) -> Option<usize> {
     GQA_GROUPS.iter().position(|&g| g == hq / hkv)
 }
 
-/// Simdgroups (tramos) por threadgroup de `decode_attention_lanes` (`SG_PER_TG` en MSL).
-const DECODE_LANES_SG: usize = 4;
-
 /// Claves por tramo de `decode_attention` (`CHUNK` en MSL).
 pub const DECODE_CHUNK: usize = 128;
 
@@ -982,9 +1336,8 @@ pub fn decode_partials_len(hq: usize, lk: usize) -> usize {
     hq * lk.div_ceil(DECODE_CHUNK) * 130
 }
 
-/// Filas (queries × cabezas del grupo) por threadgroup de la variante GQA de `flash_attention`
-/// (`FA_ROWS` en MSL).
-const FA_ROWS: usize = 16;
+/// Queries (de una cabeza) por threadgroup de la variante GQA de `flash_attention` (`FQ` en MSL).
+const FA_QUERIES: usize = 8;
 
 /// Hilos por threadgroup de `add_norm_prep` (cada uno escribe una suma parcial).
 const NORM_PREP_TG: usize = 256;

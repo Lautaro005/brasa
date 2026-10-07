@@ -1,17 +1,17 @@
-//! `GET /api/models`: modelos `.brasa` en la carpeta del modelo servido y entradas del catálogo
+//! `GET /api/models`: modelos `.brasa` en la carpeta de modelos (ADR 0031) y entradas del catálogo
 //! que todavía no están en disco. Solo lee encabezados; no carga pesos.
 
 use std::path::Path;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use brasa_catalog::local;
-use brasa_catalog::manifest::Manifest;
+use brasa_catalog::{dirs, local};
 use brasa_memory::planner::Fit;
 use brasa_runtime::{KvType, Limits, Session};
 use serde_json::{Value, json};
 
 use crate::Shared;
+use crate::models_admin;
 
 fn same_dir(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
@@ -39,7 +39,8 @@ fn fits(s: &Shared, dir: &Path) -> Value {
 }
 
 pub async fn models(State(s): State<Shared>) -> Response {
-    let base = s.model_dir.parent().unwrap_or(Path::new("."));
+    let md = models_admin::current_dir(&s);
+    let base = md.path.as_path();
     let found = local::scan(base);
     let installed: Vec<Value> = found
         .iter()
@@ -54,8 +55,9 @@ pub async fn models(State(s): State<Shared>) -> Response {
             })
         })
         .collect();
-    let catalog: Vec<Value> = Manifest::all()
-        .unwrap_or_default()
+    let catalog: Vec<Value> = s
+        .catalog
+        .all()
         .into_iter()
         .filter(|m| !found.iter().any(|f| f.name == m.name))
         .map(|m| {
@@ -65,12 +67,20 @@ pub async fn models(State(s): State<Shared>) -> Response {
                 "quant": m.quant,
                 "license": m.license,
                 "max_context": m.max_context,
-                "download_bytes": m.total_bytes(),
+                "download_bytes": m.download_bytes(),
+                // Con pesos convertidos se puede bajar desde la GUI; si no, hace falta
+                // `brasa pull --desde-fuente` y `brasa convert`.
+                "prebuilt": m.prebuilt.is_some(),
+                "pinned": m.prebuilt.as_ref().is_some_and(|p| p.is_pinned()),
+                "partial_bytes": models_admin::partial_bytes(base, &m),
             })
         })
         .collect();
     axum::Json(json!({
         "dir": base.display().to_string(),
+        "dir_source": md.source.as_str(),
+        "dir_source_label": md.source.describe(),
+        "free_bytes": dirs::free_bytes(base),
         "ctx": s.ctx,
         "kv": s.model.kv,
         "installed": installed,

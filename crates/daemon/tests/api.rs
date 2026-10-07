@@ -8,8 +8,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use brasa_catalog::dirs::{DirSource, ModelsDir};
+use brasa_catalog::manifest::{FileSpec, Manifest, Prebuilt};
 use brasa_core::chat::{ChatEvent, FinishReason, Usage};
 use brasa_daemon::engine::{Engine, LoadedModel};
+use brasa_daemon::models_admin::{Catalog, Desktop};
 use brasa_daemon::{AppState, ServerMeta};
 use brasa_memory::planner::{Budget, MemoryPlan};
 use brasa_tokenizer::Tokenizer;
@@ -39,9 +42,8 @@ fn state() -> Arc<AppState> {
     }))
 }
 
-fn state_with(engine: Engine) -> Arc<AppState> {
-    let tok = Tokenizer::from_dir(&root().join("fixtures/qwen3-4b/tokenizer")).unwrap();
-    let model = LoadedModel {
+fn loaded() -> LoadedModel {
+    LoadedModel {
         path: "/tmp/falso/model.brasa".into(),
         weights_sha256_declarado: "ab".repeat(32),
         weights_bytes: 2_000_000_000,
@@ -58,17 +60,52 @@ fn state_with(engine: Engine) -> Arc<AppState> {
             overhead: 1_000_000,
             total: 2_002_500_000,
         },
-    };
-    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-    let meta = ServerMeta {
+        tuning: "base 0123456789abcdef con 9 entradas".into(),
+    }
+}
+
+fn tok() -> Tokenizer {
+    Tokenizer::from_dir(&root().join("fixtures/qwen3-4b/tokenizer")).unwrap()
+}
+
+/// Acciones de escritorio de los tests: nunca abren Finder ni diálogos.
+fn fake_choose(_: Option<&Path>) -> Result<Option<String>, String> {
+    Ok(Some("/Volumes/Externo/brasa".into()))
+}
+
+fn fake_open(_: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn fake_desktop() -> Desktop {
+    Desktop {
+        choose_folder: fake_choose,
+        open: fake_open,
+    }
+}
+
+fn base_meta() -> ServerMeta {
+    ServerMeta {
         model_id: "qwen3-4b-q4".into(),
         model_dir: root().join("models/qwen3-4b-q4"),
-        addr,
+        addr: "127.0.0.1:8080".parse::<SocketAddr>().unwrap(),
         budget: Budget::profile(16),
         bench_dir: root().join("docs/bench"),
         commit: "test".into(),
-    };
-    AppState::new(engine, tok, model, meta)
+        models_dir: ModelsDir {
+            path: root().join("models"),
+            source: DirSource::Checkout,
+        },
+        // Nunca el archivo real del usuario.
+        config_path: std::env::temp_dir().join("brasa-api-test-sin-config/config.toml"),
+        hf_endpoint: "http://127.0.0.1:9".into(),
+        catalog: Catalog::System,
+        desktop: fake_desktop(),
+    }
+}
+
+fn state_with(engine: Engine) -> Arc<AppState> {
+    AppState::new(engine, tok(), loaded(), base_meta())
 }
 
 async fn json_body(resp: axum::response::Response) -> Value {
@@ -249,6 +286,7 @@ async fn status_informa_modelo_plan_y_cola() {
     assert_eq!(s["model"]["id"], "qwen3-4b-q4");
     assert_eq!(s["context"]["ctx"], 2048);
     assert_eq!(s["context"]["kv"], "f16");
+    assert_eq!(s["tuning"], "base 0123456789abcdef con 9 entradas");
     assert_eq!(s["plan"]["weights"], 2_000_000_000u64);
     assert_eq!(s["queue"], json!({"pending": 0, "running": 0}));
     assert!(s["uptime_s"].as_f64().unwrap() >= 0.0);
@@ -523,4 +561,444 @@ async fn connect_rechaza_cline_y_herramientas_desconocidas() {
         app.oneshot(req).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+}
+
+// ---------- Descarga y carpeta de modelos (ADR 0031) ----------
+
+/// Servidor HTTP mínimo (sin red) que sirve archivos por su último segmento de ruta y anota las
+/// rutas pedidas. `chunk_delay` lo vuelve lento para poder cancelar a mitad de camino.
+struct FakeHf {
+    endpoint: String,
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+fn fake_hf(files: Vec<(&str, Vec<u8>)>, chunk_delay_ms: u64) -> FakeHf {
+    use std::io::{Read, Write};
+    let files: Arc<std::collections::HashMap<String, Vec<u8>>> =
+        Arc::new(files.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let l = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let files = files.clone();
+            let l = l.clone();
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut tmp).unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
+                l.lock().unwrap().push(path.clone());
+                let key = path.rsplit('/').next().unwrap_or("").to_string();
+                let Some(body) = files.get(&key) else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return;
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                if stream.write_all(head.as_bytes()).is_err() {
+                    return;
+                }
+                for c in body.chunks(64 * 1024) {
+                    if stream.write_all(c).is_err() {
+                        return;
+                    }
+                    if chunk_delay_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(chunk_delay_ms));
+                    }
+                }
+            });
+        }
+    });
+    FakeHf { endpoint, log }
+}
+
+fn sha(b: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(b)
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
+}
+
+fn spec(path: &str, content: &[u8]) -> FileSpec {
+    FileSpec {
+        path: path.into(),
+        sha256: sha(content),
+        size: Some(content.len() as u64),
+    }
+}
+
+fn test_manifest(name: &str, prebuilt: Option<Vec<FileSpec>>) -> Manifest {
+    Manifest {
+        name: name.into(),
+        family: "qwen3".into(),
+        source_repo: "Qwen/Qwen3-4B".into(),
+        source_revision: "r".into(),
+        hf_dir: "x-hf".into(),
+        quant: "q4_0".into(),
+        max_context: 4096,
+        license: "Apache-2.0".into(),
+        files: vec![],
+        convertible: true,
+        prebuilt: prebuilt.map(|files| Prebuilt {
+            repo: "dueno/brasa-base".into(),
+            revision: "main".into(),
+            subdir: name.into(),
+            files,
+        }),
+    }
+}
+
+/// Estado con carpeta de modelos y archivo de configuración temporales, y un catálogo fijo.
+fn admin_state(tmp: &Path, endpoint: &str, catalog: Vec<Manifest>) -> Arc<AppState> {
+    let mut meta = base_meta();
+    meta.models_dir = ModelsDir {
+        path: tmp.join("modelos"),
+        source: DirSource::Default,
+    };
+    meta.config_path = tmp.join("config/brasa/config.toml");
+    meta.hf_endpoint = endpoint.to_string();
+    meta.catalog = Catalog::Fixed(catalog);
+    AppState::new(Engine::simulated(|_, _| {}), tok(), loaded(), meta)
+}
+
+async fn wait_pull(app: &Router, want: &str) -> Value {
+    for _ in 0..500 {
+        let v = json_body(get(app.clone(), "/api/models/pull").await).await;
+        if v["state"] == want {
+            return v;
+        }
+        assert_ne!(v["state"], "error", "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("la descarga no llegó a {want}");
+}
+
+#[tokio::test]
+async fn pull_baja_los_pesos_convertidos_del_catalogo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tokj = b"{\"t\": 1}".to_vec();
+    let weights: Vec<u8> = (0..1_500_000).map(|i| (i % 251) as u8).collect();
+    let hf = fake_hf(
+        vec![
+            ("tokenizer.json", tokj.clone()),
+            ("model.brasa", weights.clone()),
+        ],
+        0,
+    );
+    let cat = vec![
+        test_manifest(
+            "modelo-a",
+            Some(vec![
+                spec("tokenizer.json", &tokj),
+                spec("model.brasa", &weights),
+            ]),
+        ),
+        test_manifest("solo-fuente", None),
+    ];
+    let app = brasa_daemon::router(admin_state(tmp.path(), &hf.endpoint, cat));
+
+    let idle = json_body(get(app.clone(), "/api/models/pull").await).await;
+    assert_eq!(idle["state"], "idle");
+    let m = json_body(get(app.clone(), "/api/models").await).await;
+    assert_eq!(m["dir"], tmp.path().join("modelos").display().to_string());
+    assert_eq!(m["dir_source"], "defecto");
+    assert_eq!(m["catalog"][0]["prebuilt"], true);
+    assert_eq!(
+        m["catalog"][0]["download_bytes"],
+        (tokj.len() + weights.len()) as u64
+    );
+    assert_eq!(m["catalog"][1]["prebuilt"], false);
+
+    // Validación: fuera del catálogo, sin pesos convertidos, sin cuerpo.
+    let r = post(
+        app.clone(),
+        "/api/models/pull",
+        json!({"name": "no-existe"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let r = post(
+        app.clone(),
+        "/api/models/pull",
+        json!({"name": "solo-fuente"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    // Del pedido solo se usa el nombre: una URL no cambia nada.
+    let r = post(
+        app.clone(),
+        "/api/models/pull",
+        json!({"name": "../modelo-a", "url": "http://evil.example/x"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "modelo-a"})).await;
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    let v = wait_pull(&app, "done").await;
+    assert_eq!(v["done_bytes"], v["total_bytes"]);
+    assert_eq!(v["files"][1]["path"], "model.brasa");
+    assert_eq!(v["files"][1]["done"], weights.len() as u64);
+    let dest = tmp.path().join("modelos/modelo-a");
+    assert_eq!(std::fs::read(dest.join("model.brasa")).unwrap(), weights);
+    assert_eq!(
+        hf.log.lock().unwrap().clone(),
+        [
+            "/dueno/brasa-base/resolve/main/modelo-a/tokenizer.json",
+            "/dueno/brasa-base/resolve/main/modelo-a/model.brasa"
+        ]
+    );
+    // Ya en disco: aparece en la carpeta y no se vuelve a bajar.
+    let m = json_body(get(app.clone(), "/api/models").await).await;
+    assert_eq!(m["installed"][0]["name"], "modelo-a");
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "modelo-a"})).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn pull_se_cancela_y_reanuda() {
+    let tmp = tempfile::tempdir().unwrap();
+    let weights: Vec<u8> = (0..3_000_000).map(|i| (i % 233) as u8).collect();
+    // 64 KiB cada 10 ms: ~0,5 s en total, tiempo de sobra para cancelar.
+    let hf = fake_hf(vec![("model.brasa", weights.clone())], 10);
+    let cat = vec![test_manifest(
+        "lento",
+        Some(vec![spec("model.brasa", &weights)]),
+    )];
+    let app = brasa_daemon::router(admin_state(tmp.path(), &hf.endpoint, cat));
+
+    let r = post(app.clone(), "/api/models/pull/cancel", json!({})).await;
+    assert_eq!(
+        r.status(),
+        StatusCode::CONFLICT,
+        "sin descarga no hay qué cancelar"
+    );
+
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "lento"})).await;
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    // Una a la vez.
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "lento"})).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    // Mientras baja, no se cambia la carpeta.
+    let r = post(
+        app.clone(),
+        "/api/models/dir",
+        json!({"path": tmp.path().join("otra")}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    for _ in 0..200 {
+        let v = json_body(get(app.clone(), "/api/models/pull").await).await;
+        if v["done_bytes"].as_u64().unwrap() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/models/pull")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::OK
+    );
+    wait_pull(&app, "cancelled").await;
+    let part = tmp.path().join("modelos/lento/model.brasa.part");
+    assert!(part.is_file(), "el parcial queda para reanudar");
+    assert!(!tmp.path().join("modelos/lento/model.brasa").exists());
+    let m = json_body(get(app.clone(), "/api/models").await).await;
+    assert!(m["catalog"][0]["partial_bytes"].as_u64().unwrap() > 0);
+
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "lento"})).await;
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    wait_pull(&app, "done").await;
+    assert_eq!(
+        std::fs::read(tmp.path().join("modelos/lento/model.brasa")).unwrap(),
+        weights
+    );
+}
+
+#[tokio::test]
+async fn pull_informa_un_hash_que_no_coincide() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hf = fake_hf(vec![("model.brasa", b"alterado".to_vec())], 0);
+    let cat = vec![test_manifest(
+        "malo",
+        Some(vec![spec("model.brasa", b"original")]),
+    )];
+    let app = brasa_daemon::router(admin_state(tmp.path(), &hf.endpoint, cat));
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "malo"})).await;
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    let mut v = Value::Null;
+    for _ in 0..200 {
+        v = json_body(get(app.clone(), "/api/models/pull").await).await;
+        if v["state"] != "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(v["state"], "error");
+    assert!(
+        v["error"].as_str().unwrap().contains("sha256 no coincide"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn dir_cambia_la_carpeta_y_la_guarda() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = brasa_daemon::router(admin_state(tmp.path(), "http://127.0.0.1:9", vec![]));
+    for malo in ["relativa/modelos", "/tmp/../etc/brasa", ""] {
+        let r = post(app.clone(), "/api/models/dir", json!({"path": malo})).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{malo:?}");
+    }
+    let r = post(app.clone(), "/api/models/dir", json!({})).await;
+    assert!(r.status().is_client_error());
+
+    let nueva = tmp.path().join("Externo/brasa modelos");
+    let r = post(app.clone(), "/api/models/dir", json!({"path": nueva})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_body(r).await;
+    assert_eq!(v["dir"], nueva.display().to_string());
+    assert_eq!(v["source"], "archivo");
+    assert!(nueva.is_dir(), "se crea si falta");
+    let cfg = tmp.path().join("config/brasa/config.toml");
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    assert_eq!(
+        brasa_catalog::dirs::read_models_dir(&cfg)
+            .unwrap()
+            .as_deref(),
+        Some(nueva.to_str().unwrap()),
+        "{text}"
+    );
+    let m = json_body(get(app.clone(), "/api/models").await).await;
+    assert_eq!(m["dir"], nueva.display().to_string());
+    assert_eq!(m["dir_source"], "archivo");
+
+    // Un archivo con claves que brasa no conoce no se reescribe.
+    std::fs::write(&cfg, "# mío\nalgo_raro = true\n").unwrap();
+    let r = post(
+        app.clone(),
+        "/api/models/dir",
+        json!({"path": tmp.path().join("x")}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert!(
+        json_body(r).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("algo_raro")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&cfg).unwrap(),
+        "# mío\nalgo_raro = true\n"
+    );
+    let m = json_body(get(app, "/api/models").await).await;
+    assert_eq!(
+        m["dir"],
+        nueva.display().to_string(),
+        "sin guardar no se aplica"
+    );
+}
+
+#[tokio::test]
+async fn dir_choose_y_open_usan_el_escritorio_inyectado() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = brasa_daemon::router(admin_state(tmp.path(), "http://127.0.0.1:9", vec![]));
+    let r = post(app.clone(), "/api/models/dir/choose", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_body(r).await;
+    assert_eq!(v["path"], "/Volumes/Externo/brasa");
+    assert_eq!(v["cancelled"], false);
+    // Elegir no aplica: la carpeta sigue igual.
+    let m = json_body(get(app.clone(), "/api/models").await).await;
+    assert_eq!(m["dir"], tmp.path().join("modelos").display().to_string());
+
+    let r = post(app.clone(), "/api/models/dir/open", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(
+        tmp.path().join("modelos").is_dir(),
+        "la crea antes de abrirla"
+    );
+}
+
+#[tokio::test]
+async fn descarga_y_carpeta_rechazan_otro_origen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let weights = b"pesos".to_vec();
+    let cat = vec![test_manifest(
+        "m",
+        Some(vec![spec("model.brasa", &weights)]),
+    )];
+    // Si el middleware dejara pasar algo, el escritorio de este test lo delataría.
+    fn no_choose(_: Option<&Path>) -> Result<Option<String>, String> {
+        panic!("abrió el selector desde otro origen");
+    }
+    fn no_open(_: &Path) -> Result<(), String> {
+        panic!("abrió Finder desde otro origen");
+    }
+    let mut meta = base_meta();
+    meta.models_dir = ModelsDir {
+        path: tmp.path().join("modelos"),
+        source: DirSource::Default,
+    };
+    meta.config_path = tmp.path().join("config/brasa/config.toml");
+    meta.catalog = Catalog::Fixed(cat);
+    meta.desktop = Desktop {
+        choose_folder: no_choose,
+        open: no_open,
+    };
+    let app = brasa_daemon::router(AppState::new(
+        Engine::simulated(|_, _| {}),
+        tok(),
+        loaded(),
+        meta,
+    ));
+    for (method, uri, body) in [
+        ("POST", "/api/models/pull", json!({"name": "m"})),
+        ("POST", "/api/models/pull/cancel", json!({})),
+        ("DELETE", "/api/models/pull", json!({})),
+        (
+            "POST",
+            "/api/models/dir",
+            json!({"path": tmp.path().join("evil")}),
+        ),
+        ("POST", "/api/models/dir/choose", json!({})),
+        ("POST", "/api/models/dir/open", json!({})),
+    ] {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("host", "127.0.0.1:8080")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let r = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+    assert_eq!(
+        json_body(get(app, "/api/models/pull").await).await["state"],
+        "idle"
+    );
+    assert!(!tmp.path().join("evil").exists());
+    assert!(!tmp.path().join("config").exists());
+    assert!(!tmp.path().join("modelos").exists());
 }

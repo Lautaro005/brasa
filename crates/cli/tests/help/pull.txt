@@ -8,12 +8,15 @@ Arguments:
 
 Options:
       --dir <DIR>
-          Carpeta de destino (por defecto `models/<hf_dir>`)
+          Carpeta de destino (por defecto `<carpeta de modelos>/<modelo>`, o `<carpeta de modelos>/<hf_dir>` con --desde-fuente)
 
       --endpoint <ENDPOINT>
           Endpoint de Hugging Face (se puede apuntar a un espejo o servidor de prueba)
           
           [default: https://huggingface.co]
+
+      --desde-fuente
+          Baja los safetensors de origen en vez de los pesos convertidos (después, `brasa convert`)
 
       --dry-run
           Solo muestra los archivos del manifiesto, sin descargar

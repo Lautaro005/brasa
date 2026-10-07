@@ -1,0 +1,25 @@
+Autotuner: mide en esta GPU los parámetros de lanzamiento de decode y guarda la base
+
+Usage: tune [OPTIONS] [MODEL]
+
+Arguments:
+  [MODEL]
+          Modelo cuyas formas se miden (carpeta en ./models o $BRASA_MODELS, o ruta). Sin esto, el del archivo de configuración
+
+Options:
+      --full
+          Tuning completo: además KV f32, más longitudes de caché y 15 rondas (quick: 5)
+
+      --ctx <CTX>
+          Contexto máximo para medir la atención de decode
+          
+          [default: 16384]
+
+      --dry-run
+          Mide e imprime sin guardar la base
+
+      --json
+          Salida en JSON
+
+  -h, --help
+          Print help
