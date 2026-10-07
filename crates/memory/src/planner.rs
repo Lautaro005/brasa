@@ -66,6 +66,7 @@ pub fn workspace_bytes(m: &ModelShape, s: &SessionShape) -> u64 {
         + 2 * f(t * qd) // q, attn
         + 2 * f(t * m.kv_heads * m.head_dim) // k_new, v_new
         + 2 * f(t * m.ffn) // gate, up
+        + buffer_bytes(2 * (t * m.ffn.max(qd).max(h)) as u64) // xh: entrada f16 del GEMM (ADR 0030)
         + f(t) // ids
         + f(h.div_ceil(NORM_PREP_TG)) // sumas parciales de RMSNorm en decode
         + f(m.heads * s.ctx.div_ceil(DECODE_CHUNK) * (m.head_dim + 2)) // parciales de decode

@@ -173,6 +173,9 @@ struct Workspace {
     k_new: Buffer<f32>,
     v_new: Buffer<f32>,
     attn: Buffer<f32>,
+    /// Entrada en f16 (bits) de los GEMM de prefill con `PrefillPrecision::F16` (ADR 0030): salida
+    /// de RMSNorm, de la atención o de SwiGLU, según el GEMM.
+    xh: Buffer<u16>,
     gate: Buffer<f32>,
     up: Buffer<f32>,
     ids: Buffer<u32>,
@@ -247,6 +250,9 @@ impl KvCache {
         }
     }
 }
+
+/// Hasta esta cantidad de tokens por forward, las proyecciones usan GEMV (con x en f32).
+const GEMV_MAX_TOKENS: usize = 8;
 
 /// Capas que van en el primer command buffer de cada forward (ver `Qwen3::forward`).
 const FIRST_COMMAND_LAYERS: usize = 2;
@@ -364,6 +370,7 @@ impl Qwen3 {
             k_new: ctx.buffer(t * kvd)?,
             v_new: ctx.buffer(t * kvd)?,
             attn: ctx.buffer(t * qd)?,
+            xh: ctx.buffer(t * ffn.max(qd).max(h))?,
             gate: ctx.buffer(t * ffn)?,
             up: ctx.buffer(t * ffn)?,
             ids: ctx.buffer(t)?,
@@ -407,6 +414,7 @@ impl Qwen3 {
             + b(&w.k_new)
             + b(&w.v_new)
             + b(&w.attn)
+            + b(&w.xh)
             + b(&w.gate)
             + b(&w.up)
             + b(&w.ids)
@@ -423,6 +431,18 @@ impl Qwen3 {
         }
     }
 
+    /// Precisión de prefill para un forward de `tokens` tokens: con 8 o menos se usa GEMV y la
+    /// atención en f32 (ver `matmul`).
+    fn precision(&self, tokens: usize) -> PrefillPrecision {
+        if tokens > GEMV_MAX_TOKENS && gqa_supported(self.cfg.heads, self.cfg.kv_heads) {
+            self.prefill_precision
+        } else {
+            PrefillPrecision::F32
+        }
+    }
+
+    /// `y = W · x`. GEMV (un simdgroup por fila) para pocos tokens; GEMM tiled para prefill, con
+    /// `x` en f16 si la precisión es `F16` (ver [`Qwen3::precision`]).
     fn matmul<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -431,12 +451,44 @@ impl Qwen3 {
         y: Arg<'a>,
         tokens: usize,
     ) {
-        // GEMV (un simdgroup por fila) para pocos tokens; GEMM tiled para prefill.
-        if tokens <= 8 {
+        if tokens <= GEMV_MAX_TOKENS {
             self.kernels.gemv(cmd, w.q(), x, y, tokens);
         } else {
             self.kernels
-                .gemm_with(cmd, w.q(), x, y, tokens, self.prefill_precision);
+                .gemm_with(cmd, w.q(), x, y, tokens, self.precision(tokens));
+        }
+    }
+
+    /// RMSNorm de prefill hacia la entrada del GEMM: `ws.h` en f32 o `ws.xh` en f16.
+    fn prefill_norm<'a>(
+        &'a self,
+        cmd: &mut Command<'a>,
+        w: &'a Buffer<f32>,
+        tokens: usize,
+    ) -> Arg<'a> {
+        let (k, ws, c) = (&self.kernels, &self.ws, &self.cfg);
+        if self.precision(tokens) == PrefillPrecision::F16 {
+            k.rms_norm_f16(
+                cmd,
+                Arg::buf(&ws.x),
+                Arg::buf(w),
+                Arg::buf(&ws.xh),
+                tokens,
+                c.hidden,
+                c.eps,
+            );
+            Arg::buf(&ws.xh)
+        } else {
+            k.rms_norm(
+                cmd,
+                Arg::buf(&ws.x),
+                Arg::buf(w),
+                Arg::buf(&ws.h),
+                tokens,
+                c.hidden,
+                c.eps,
+            );
+            Arg::buf(&ws.h)
         }
     }
 
@@ -465,18 +517,10 @@ impl Qwen3 {
                 [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
             );
         } else {
-            k.rms_norm(
-                cmd,
-                Arg::buf(&ws.x),
-                Arg::buf(&l.attn_norm),
-                Arg::buf(&ws.h),
-                tokens,
-                c.hidden,
-                c.eps,
-            );
-            self.matmul(cmd, &l.wq, Arg::buf(&ws.h), Arg::buf(&ws.q), tokens);
-            self.matmul(cmd, &l.wk, Arg::buf(&ws.h), Arg::buf(&ws.k_new), tokens);
-            self.matmul(cmd, &l.wv, Arg::buf(&ws.h), Arg::buf(&ws.v_new), tokens);
+            let h = self.prefill_norm(cmd, &l.attn_norm, tokens);
+            self.matmul(cmd, &l.wq, h, Arg::buf(&ws.q), tokens);
+            self.matmul(cmd, &l.wk, h, Arg::buf(&ws.k_new), tokens);
+            self.matmul(cmd, &l.wv, h, Arg::buf(&ws.v_new), tokens);
         }
         // QK-norm, RoPE y K/V a la caché (en su tipo), en un dispatch (T3.5).
         let kvt = self.limits.kv;
@@ -500,6 +544,13 @@ impl Qwen3 {
             shape,
         );
         let (kc, vc) = self.kv.args(layer_off);
+        let half_io = self.precision(tokens) == PrefillPrecision::F16;
+        // Salida de la atención: entrada del GEMM de o_proj (f16 en `ws.xh` o f32 en `ws.attn`).
+        let attn = if half_io {
+            Arg::buf(&ws.xh)
+        } else {
+            Arg::buf(&ws.attn)
+        };
         if tokens == 1 && gqa_supported(c.heads, c.kv_heads) {
             k.decode_attention_lanes(
                 cmd,
@@ -526,12 +577,12 @@ impl Qwen3 {
                 Arg::buf(&ws.q),
                 kc,
                 vc,
-                Arg::buf(&ws.attn),
+                attn,
                 shape,
-                self.prefill_precision,
+                self.precision(tokens),
             );
         }
-        self.matmul(cmd, &l.wo, Arg::buf(&ws.attn), Arg::buf(&ws.h), tokens);
+        self.matmul(cmd, &l.wo, attn, Arg::buf(&ws.h), tokens);
         if decode {
             self.norm_prep(cmd, Some(Arg::buf(&ws.h)), &l.ffn_norm);
             // gate, up y SwiGLU en un dispatch; el resultado queda en ws.gate.
@@ -546,20 +597,21 @@ impl Qwen3 {
             );
         } else {
             k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
-            k.rms_norm(
-                cmd,
-                Arg::buf(&ws.x),
-                Arg::buf(&l.ffn_norm),
-                Arg::buf(&ws.h),
-                tokens,
-                c.hidden,
-                c.eps,
-            );
-            self.matmul(cmd, &l.gate, Arg::buf(&ws.h), Arg::buf(&ws.gate), tokens);
-            self.matmul(cmd, &l.up, Arg::buf(&ws.h), Arg::buf(&ws.up), tokens);
-            k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);
+            let h = self.prefill_norm(cmd, &l.ffn_norm, tokens);
+            self.matmul(cmd, &l.gate, h, Arg::buf(&ws.gate), tokens);
+            self.matmul(cmd, &l.up, h, Arg::buf(&ws.up), tokens);
         }
-        self.matmul(cmd, &l.down, Arg::buf(&ws.gate), Arg::buf(&ws.h), tokens);
+        // Entrada de down: SwiGLU (en prefill f16, en `ws.xh`); en decode ya está en ws.gate.
+        let act = if decode {
+            Arg::buf(&ws.gate)
+        } else if half_io {
+            k.swiglu_f16(cmd, &ws.gate, &ws.up, &ws.xh, tokens * c.ffn);
+            Arg::buf(&ws.xh)
+        } else {
+            k.swiglu(cmd, &ws.gate, &ws.up, &ws.gate, tokens * c.ffn);
+            Arg::buf(&ws.gate)
+        };
+        self.matmul(cmd, &l.down, act, Arg::buf(&ws.h), tokens);
         // En decode, la suma residual de down queda pendiente: la hace el norm_prep siguiente
         // (de la próxima capa o el final, antes del lm_head).
         if !decode {

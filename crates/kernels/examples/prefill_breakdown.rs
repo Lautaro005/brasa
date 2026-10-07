@@ -1,6 +1,8 @@
 //! Desglose del prefill de Qwen3-4B por kernel: cada operación de una capa se encola 36 veces
 //! seguidas en un command buffer, como en el forward, para un bloque de T tokens en la posición
-//! `pos0`, y se mide el tiempo de GPU (mediana). Pesos aleatorios con las formas reales.
+//! `pos0`, y se mide el tiempo de GPU (mediana). Pesos aleatorios con las formas reales. Ruta
+//! caliente (ADR 0030): las entradas de los GEMM en f16 (`xh`), escritas por RMSNorm, la
+//! atención y SwiGLU.
 //!   cargo run --release -p brasa-kernels --example prefill_breakdown -- [T] [pos0] [f16|q8_0|f32]
 use brasa_kernels::testutil::{KvPair, Rng, median};
 use brasa_kernels::{AttnShape, Kernels, KvType, QMatrix, RopeTable, WeightType};
@@ -30,15 +32,15 @@ fn main() {
     let mut rng = Rng::new(3);
     let (h, ffn, hq, hkv, hd) = (2560, 9728, 32, 8, 128);
     let buf = |rng: &mut Rng, n: usize| ctx.buffer_from(&rng.vec(n, 1.0)).unwrap();
-    let (x, hb, q, kn, vn, attn) = (
+    let (x, hb, q, kn, vn) = (
         buf(&mut rng, t * h),
         buf(&mut rng, t * h),
         buf(&mut rng, t * hq * hd),
         buf(&mut rng, t * hkv * hd),
         buf(&mut rng, t * hkv * hd),
-        buf(&mut rng, t * hq * hd),
     );
     let (gate, up) = (buf(&mut rng, t * ffn), buf(&mut rng, t * ffn));
+    let xh = ctx.buffer::<u16>(t * ffn).unwrap();
     let (nw, hw) = (buf(&mut rng, h), buf(&mut rng, hd));
     let q4 = |rng: &mut Rng, r: usize, c: usize| ctx.buffer_from(&rng.q4_0(r, c)).unwrap();
     let (wq, wk, wv, wo) = (
@@ -90,14 +92,14 @@ fn main() {
             })));
         };
     }
-    rep!("rms_norm ×2", c => {
-        k.rms_norm(c, Arg::buf(&x), Arg::buf(&nw), Arg::buf(&hb), t, h, 1e-6);
-        k.rms_norm(c, Arg::buf(&x), Arg::buf(&nw), Arg::buf(&hb), t, h, 1e-6);
+    rep!("rms_norm (salida f16) ×2", c => {
+        k.rms_norm_f16(c, Arg::buf(&x), Arg::buf(&nw), Arg::buf(&xh), t, h, 1e-6);
+        k.rms_norm_f16(c, Arg::buf(&x), Arg::buf(&nw), Arg::buf(&xh), t, h, 1e-6);
     });
     rep!("gemm q, k, v", c => {
-        k.gemm(c, m(&wq, hq * hd, h), Arg::buf(&hb), Arg::buf(&q), t);
-        k.gemm(c, m(&wk, hkv * hd, h), Arg::buf(&hb), Arg::buf(&kn), t);
-        k.gemm(c, m(&wv, hkv * hd, h), Arg::buf(&hb), Arg::buf(&vn), t);
+        k.gemm(c, m(&wq, hq * hd, h), Arg::buf(&xh), Arg::buf(&q), t);
+        k.gemm(c, m(&wk, hkv * hd, h), Arg::buf(&xh), Arg::buf(&kn), t);
+        k.gemm(c, m(&wv, hkv * hd, h), Arg::buf(&xh), Arg::buf(&vn), t);
     });
     let (kd, vd) = cache.args();
     rep!("qk_norm_rope_store", c => {
@@ -113,24 +115,24 @@ fn main() {
         );
     });
     rep!("flash_attention", c => {
-        k.flash_attention(c, Arg::buf(&q), kc, vc, Arg::buf(&attn), shape);
+        k.flash_attention(c, Arg::buf(&q), kc, vc, Arg::buf(&xh), shape);
     });
     rep!("gemm o", c => {
-        k.gemm(c, m(&wo, h, hq * hd), Arg::buf(&attn), Arg::buf(&hb), t);
+        k.gemm(c, m(&wo, h, hq * hd), Arg::buf(&xh), Arg::buf(&hb), t);
     });
     rep!("add residual ×2", c => {
         k.add(c, &x, &hb, &x, t * h);
         k.add(c, &x, &hb, &x, t * h);
     });
     rep!("gemm gate, up", c => {
-        k.gemm(c, m(&wg, ffn, h), Arg::buf(&hb), Arg::buf(&gate), t);
-        k.gemm(c, m(&wu, ffn, h), Arg::buf(&hb), Arg::buf(&up), t);
+        k.gemm(c, m(&wg, ffn, h), Arg::buf(&xh), Arg::buf(&gate), t);
+        k.gemm(c, m(&wu, ffn, h), Arg::buf(&xh), Arg::buf(&up), t);
     });
-    rep!("swiglu", c => {
-        k.swiglu(c, &gate, &up, &gate, t * ffn);
+    rep!("swiglu (salida f16)", c => {
+        k.swiglu_f16(c, &gate, &up, &xh, t * ffn);
     });
     rep!("gemm down", c => {
-        k.gemm(c, m(&wd, h, ffn), Arg::buf(&gate), Arg::buf(&hb), t);
+        k.gemm(c, m(&wd, h, ffn), Arg::buf(&xh), Arg::buf(&hb), t);
     });
     let total: f64 = rows.iter().map(|r| r.1).sum();
     for (name, v) in &rows {

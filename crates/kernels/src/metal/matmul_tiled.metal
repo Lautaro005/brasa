@@ -12,8 +12,9 @@
 // - sin prefetch a registros: con menos registros por hilo entran más threadgroups por núcleo
 //   (medido en M1 Pro: el prefetch rinde ~15 % menos);
 // - q4_0 se decuantiza con máscaras sobre pares de bytes, sin desplazamientos (+8 %).
-// TA = half (ruta caliente: pesos y activaciones redondeados a f16, acumulación f32, ADR 0030) o
-// float (exacto: mismo resultado que el producto en f32 en este orden de suma).
+// TA = half (ruta caliente: pesos redondeados a f16, acumulación f32, ADR 0030; x llega en f16,
+// escrita así por el kernel anterior: RMSNorm, atención o SwiGLU) o float (exacto: x en f32,
+// mismo resultado que el producto en f32 en este orden de suma).
 // Requiere filas % 64 == 0 y columnas % 32 == 0. Tokens arbitrarios.
 #include <metal_stdlib>
 #include <metal_simdgroup_matrix>
@@ -65,7 +66,7 @@ inline void dequant16(device const block_q8_0* b, ushort il, threadgroup TA* As,
 // (32 × 16) y bloque de tokens incompleto; el host lo usa para los tokens que sobran del
 // múltiplo de 64.
 template <ushort BN, typename TA, typename Block>
-void gemm_tiled(device const Block* w, device const float* x, device float* y,
+void gemm_tiled(device const Block* w, device const TA* x, device float* y,
                 uint rows, uint cols, uint tokens,
                 threadgroup TA* As, threadgroup TA* Bs,
                 uint2 tg, ushort tid, ushort sg) {
@@ -81,7 +82,7 @@ void gemm_tiled(device const Block* w, device const float* x, device float* y,
     const ushort ar = tid / 2, il = tid % 2;
     const ushort bt = tid / (BK / VPT), bh = tid % (BK / VPT);
     device const Block* wp = w + (r0 + ar) * nb;
-    device const float* xp = x + min(t0 + bt, tokens - 1) * cols + VPT * bh;
+    device const TA* xp = x + min(t0 + bt, tokens - 1) * cols + VPT * bh;
     // Bs: fragmentos [k/8][t/8] guardados como [t][k].
     threadgroup TA* bdst = Bs + 64 * ((VPT / 8) * bh * (BN / 8) + bt / 8) + 8 * (bt % 8);
 
@@ -92,9 +93,10 @@ void gemm_tiled(device const Block* w, device const float* x, device float* y,
     for (ushort i = 0; i < 4 * FN; i++) mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
 
     for (uint kb = 0; kb < nb; ++kb) {
-        float4 xv[VPT / 4];
+        typedef TA TA4 __attribute__((ext_vector_type(4)));
+        TA4 xv[VPT / 4];
 #pragma unroll
-        for (ushort j = 0; j < VPT / 4; ++j) xv[j] = *(device const float4*)(xp + kb * BK + 4 * j);
+        for (ushort j = 0; j < VPT / 4; ++j) xv[j] = *(device const TA4*)(xp + kb * BK + 4 * j);
         dequant16(wp + kb, il, As, ar);   // incluye la barrera antes de escribir As
 #pragma unroll
         for (ushort g = 0; g < VPT / 8; ++g)
@@ -150,7 +152,7 @@ void gemm_tiled(device const Block* w, device const float* x, device float* y,
 
 #define GEMM_KERNEL(name, BN, TA, Block)                                                      \
 kernel void name(device const Block* w [[buffer(0)]],                                        \
-                 device const float* x [[buffer(1)]],                                        \
+                 device const TA*    x [[buffer(1)]],                                        \
                  device float*       y [[buffer(2)]],                                        \
                  constant uint& rows   [[buffer(3)]],                                        \
                  constant uint& cols   [[buffer(4)]],                                        \

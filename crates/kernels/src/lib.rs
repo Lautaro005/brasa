@@ -153,7 +153,9 @@ pub struct QMatrix<'a> {
 pub struct Kernels {
     add_f32: Pipeline,
     swiglu_f32: Pipeline,
+    swiglu_f16: Pipeline,
     rms_norm_f32: Pipeline,
+    rms_norm_f16: Pipeline,
     softmax_f32: Pipeline,
     rope_neox_f32: Pipeline,
     embed_q8_0: Pipeline,
@@ -225,7 +227,9 @@ impl Kernels {
         Ok(Self {
             add_f32: ctx.pipeline(ELEMENTWISE, "add_f32")?,
             swiglu_f32: ctx.pipeline(ELEMENTWISE, "swiglu_f32")?,
+            swiglu_f16: ctx.pipeline(ELEMENTWISE, "swiglu_f16")?,
             rms_norm_f32: ctx.pipeline(NORM, "rms_norm_f32")?,
+            rms_norm_f16: ctx.pipeline(NORM, "rms_norm_f16")?,
             softmax_f32: ctx.pipeline(SOFTMAX, "softmax_f32")?,
             rope_neox_f32: ctx.pipeline(ROPE, "rope_neox_f32")?,
             embed_q8_0: ctx.pipeline(EMBED, "embed_q8_0")?,
@@ -321,6 +325,51 @@ impl Kernels {
             ],
             [n, 1, 1],
             [ELEMENTWISE_TG, 1, 1],
+        );
+    }
+
+    /// `out = silu(gate) · up` con `out` en f16 (bits en `u16`), para el GEMM de prefill
+    /// ([`PrefillPrecision::F16`]).
+    pub fn swiglu_f16<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        gate: &'a Buffer<f32>,
+        up: &'a Buffer<f32>,
+        out: &'a Buffer<u16>,
+        n: usize,
+    ) {
+        assert!(gate.len() >= n && up.len() >= n && out.len() >= n);
+        cmd.dispatch(
+            &self.swiglu_f16,
+            &[
+                Arg::buf(gate),
+                Arg::buf(up),
+                Arg::buf(out),
+                Arg::u32(n as u32),
+            ],
+            [n, 1, 1],
+            [ELEMENTWISE_TG, 1, 1],
+        );
+    }
+
+    /// Como [`Kernels::rms_norm`], con `out` en f16, para el GEMM de prefill
+    /// ([`PrefillPrecision::F16`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_f16<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        x: Arg<'a>,
+        w: Arg<'a>,
+        out: Arg<'a>,
+        rows: usize,
+        n: usize,
+        eps: f32,
+    ) {
+        cmd.dispatch_groups(
+            &self.rms_norm_f16,
+            &[x, w, out, Arg::u32(n as u32), Arg::f32(eps)],
+            [rows, 1, 1],
+            [ROW_TG, 1, 1],
         );
     }
 
@@ -621,8 +670,8 @@ impl Kernels {
         );
     }
 
-    /// GEMM para prefill: `y[t, :] = W · x[t, :]`, con pesos y activaciones redondeados a f16 y
-    /// acumulación en f32 (ADR 0030). Ver [`Kernels::gemm_with`].
+    /// GEMM para prefill: `y[t, :] = W · x[t, :]`, con `x` en f16 (bits en `u16`), pesos
+    /// redondeados a f16 y acumulación en f32 (ADR 0030). Ver [`Kernels::gemm_with`].
     pub fn gemm<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -634,8 +683,9 @@ impl Kernels {
         self.gemm_with(cmd, w, x, y, tokens, PrefillPrecision::F16);
     }
 
-    /// GEMM para prefill con el tipo de entradas `input`. Usa el kernel tiled (simdgroup matrix)
-    /// si `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple (siempre en f32).
+    /// GEMM para prefill con entradas en la precisión `input`: `x` en f16 (bits en `u16`) con
+    /// [`PrefillPrecision::F16`] y en f32 con `F32`. Usa el kernel tiled (simdgroup matrix) si
+    /// `rows % 64 == 0` y `cols % 32 == 0`; si no, la versión simple, que solo acepta `F32`.
     pub fn gemm_with<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -646,6 +696,11 @@ impl Kernels {
         input: PrefillPrecision,
     ) {
         if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
+            assert_eq!(
+                input,
+                PrefillPrecision::F32,
+                "el GEMM simple solo acepta x en f32"
+            );
             return self.gemm_naive(cmd, w, x, y, tokens);
         }
         let qi = match w.qtype {
@@ -665,7 +720,10 @@ impl Kernels {
                 &self.gemm_tiled[bi][qi][input as usize],
                 &[
                     Arg::buf(w.data),
-                    offset(x, t0 * w.cols * 4),
+                    offset(
+                        x,
+                        t0 * w.cols * if input == PrefillPrecision::F16 { 2 } else { 4 },
+                    ),
                     offset(y, t0 * w.rows * 4),
                     Arg::u32(w.rows as u32),
                     Arg::u32(w.cols as u32),
@@ -892,7 +950,8 @@ impl Kernels {
     }
 
     /// Atención causal con GQA estilo FlashAttention (softmax online, sin scratch de puntajes),
-    /// con Q redondeada a f16 en la variante GQA (ADR 0030). Ver [`Kernels::flash_attention_with`].
+    /// con Q redondeada a f16 y `o` en f16 (bits en `u16`) en la variante GQA (ADR 0030). Ver
+    /// [`Kernels::flash_attention_with`].
     pub fn flash_attention<'a>(
         &self,
         cmd: &mut Command<'a>,
@@ -905,8 +964,8 @@ impl Kernels {
         self.flash_attention_with(cmd, q, k, v, o, shape, PrefillPrecision::F16);
     }
 
-    /// Atención causal de prefill con Q en la precisión `precision` (la variante sin GQA es
-    /// siempre f32). `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN`
+    /// Atención causal de prefill con Q y la salida `o` en la precisión `precision` (`o` en f16,
+    /// bits en `u16`, con [`PrefillPrecision::F16`]); la variante sin GQA es siempre f32. `head_dim` debe ser 128. La caché `k`/`v` debe poder leerse hasta `KV_ALIGN`
     /// posiciones más allá de `pos0 + tokens` (las posiciones fuera de rango se enmascaran).
     #[allow(clippy::too_many_arguments)]
     pub fn flash_attention_with<'a>(
@@ -951,6 +1010,11 @@ impl Kernels {
             );
             return;
         }
+        assert_eq!(
+            precision,
+            PrefillPrecision::F32,
+            "sin GQA la atención es solo f32"
+        );
         cmd.dispatch_groups(
             &self.flash_attn[kv.idx()],
             &[

@@ -141,7 +141,9 @@ kernel void flash_attn_f32(device const float* q    [[buffer(0)]],   // [T, hq, 
 //   2. softmax online en f32: cada simdgroup atiende FH·2 filas y cada lane 2 claves; P queda en
 //      memoria threadgroup (f32) y O (en memoria threadgroup, f32) se reescala por fila;
 //   3. O[:, 32·s ..) += P · V para las FH cabezas, cada fragmento de V leído una vez.
-// Redondeos: los de la caché y Q a f16 (ADR 0030: ~2e-4 · max|o| contra Q en f32). Medido en
+// Redondeos: los de la caché, Q a f16 y la salida a f16 (ADR 0030: ~5e-4 · max|o| contra Q y
+// salida en f32; la salida solo la lee el GEMM de o_proj, que igual la redondea a f16). Con
+// FA_Q_F32 (variante exacta), Q y la salida en f32. Medido en
 // M1 Pro, T = 512, KV f16 a 16K: 2,48 TFLOPS (Q en f32: 2,21; una cabeza por threadgroup y Q en
 // f32: 2,08; el kernel de ADR 0010: ~1,2). Guardar O en registros rinde ~25 % menos que en
 // memoria threadgroup; 4 cabezas por threadgroup (32 KiB de memoria threadgroup), ~20 % menos.
@@ -157,8 +159,10 @@ constant ushort BC = 64;                  // claves por bloque
 constant ushort NSGF = 4;                 // simdgroups
 #if defined(FA_Q_F32)
 typedef float q_t;                        // variante exacta (PrefillPrecision::F32)
+typedef float4 o4_t;                      // salida en f32
 #else
 typedef half q_t;
+typedef half4 o4_t;                       // salida en f16, para el GEMM de o_proj
 #endif
 
 #if defined(KV_F16)
@@ -180,7 +184,7 @@ inline kv_frag load_frag(device const KV_T* cache, uint j, uint hkv, uint kh, ui
 kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, D]
                            device const KV_T*  k    [[buffer(1)]],   // [cap, hkv, D]
                            device const KV_T*  v    [[buffer(2)]],   // [cap, hkv, D]
-                           device float*       o    [[buffer(3)]],   // [T, hq, D]
+                           device o4_t*        o    [[buffer(3)]],   // [T, hq, D / 4]
                            constant uint& tokens [[buffer(4)]],
                            constant uint& hkv    [[buffer(5)]],
                            constant uint& pos0   [[buffer(6)]],
@@ -310,7 +314,7 @@ kernel void flash_attn_gqa(device const float* q    [[buffer(0)]],   // [T, hq, 
         const uint t = q0 + j % FQ, h = h0 + j / FQ;
         if (t < tokens) {
             const float inv = 1.0f / L[jj];
-            ((device float4*)(o + (t * hq + h) * D))[lane] = ((threadgroup float4*)(so + j * D))[lane] * inv;
+            o[(t * hq + h) * (D / 4) + lane] = o4_t(((threadgroup float4*)(so + j * D))[lane] * inv);
         }
     }
 }

@@ -4,7 +4,7 @@
 use brasa_kernels::testutil::{Rng, max_rel};
 use brasa_kernels::{Kernels, PrefillPrecision, QMatrix, RopeTable, WeightType, reference};
 use brasa_metal::{Arg, Context};
-use brasa_quant::QType;
+use brasa_quant::{QType, f32_to_f16};
 
 fn setup() -> (Context, Kernels) {
     let ctx = Context::new().unwrap();
@@ -173,6 +173,10 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
         reference::matmul(q, &w, rows, cols, &x, &mut expected)
     };
     let (gw, gx) = (ctx.buffer_from(&w).unwrap(), ctx.buffer_from(&x).unwrap());
+    // Con PrefillPrecision::F16 el GEMM recibe x en f16.
+    let gxh = ctx
+        .buffer_from(&x.iter().map(|v| f32_to_f16(*v)).collect::<Vec<u16>>())
+        .unwrap();
     let mut y = ctx.buffer::<f32>(tokens * rows).unwrap();
     let m = QMatrix {
         data: &gw,
@@ -185,7 +189,15 @@ fn check_matmul(qtype: WeightType, path: Path, rows: usize, cols: usize, tokens:
         Path::Gemv => k.gemv(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
         Path::GemvSimple => k.gemv_simple(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
         Path::Naive => k.gemm_naive(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
-        Path::Tiled => k.gemm(&mut cmd, m, Arg::buf(&gx), Arg::buf(&y), tokens),
+        Path::Tiled if tiled_f16 => k.gemm(&mut cmd, m, Arg::buf(&gxh), Arg::buf(&y), tokens),
+        Path::Tiled => k.gemm_with(
+            &mut cmd,
+            m,
+            Arg::buf(&gx),
+            Arg::buf(&y),
+            tokens,
+            PrefillPrecision::F32,
+        ),
         Path::TiledF32 => k.gemm_with(
             &mut cmd,
             m,
@@ -277,7 +289,10 @@ fn gemm_f16_contra_referencia_sin_redondear() {
         let x = rng.vec(tokens * cols, 4.0);
         let mut expected = vec![0.0; tokens * rows];
         let abs_sum = reference::matmul(QType::Q4_0, &w, rows, cols, &x, &mut expected);
-        let (gw, gx) = (ctx.buffer_from(&w).unwrap(), ctx.buffer_from(&x).unwrap());
+        let gw = ctx.buffer_from(&w).unwrap();
+        let gx = ctx
+            .buffer_from(&x.iter().map(|v| f32_to_f16(*v)).collect::<Vec<u16>>())
+            .unwrap();
         let mut y = ctx.buffer::<f32>(tokens * rows).unwrap();
         let m = QMatrix {
             data: &gw,
@@ -299,4 +314,55 @@ fn gemm_f16_contra_referencia_sin_redondear() {
     }
     eprintln!("gemm f16 vs referencia sin redondear: error máximo / Σ|w·x| {worst:.2e}");
     assert!(worst <= 2f32.powi(-10), "{worst}");
+}
+
+#[test]
+fn salidas_f16_de_prefill_iguales_a_f32_redondeado() {
+    // rms_norm_f16 y swiglu_f16 (ADR 0030) hacen la misma cuenta que sus versiones f32 y solo
+    // redondean al escribir: la salida debe ser exactamente f32_to_f16 de la versión f32.
+    let (ctx, k) = setup();
+    let mut rng = Rng::new(31);
+    let (rows, n) = (70, 2560);
+    let x = ctx.buffer_from(&rng.vec(rows * n, 3.0)).unwrap();
+    let w = ctx.buffer_from(&rng.vec(n, 1.0)).unwrap();
+    let mut o32 = ctx.buffer::<f32>(rows * n).unwrap();
+    let mut o16 = ctx.buffer::<u16>(rows * n).unwrap();
+    let m = rows * 9728;
+    let g = ctx.buffer_from(&rng.vec(m, 6.0)).unwrap();
+    let u = ctx.buffer_from(&rng.vec(m, 3.0)).unwrap();
+    let mut s32 = ctx.buffer::<f32>(m).unwrap();
+    let mut s16 = ctx.buffer::<u16>(m).unwrap();
+    let mut cmd = ctx.command().unwrap();
+    k.rms_norm(
+        &mut cmd,
+        Arg::buf(&x),
+        Arg::buf(&w),
+        Arg::buf(&o32),
+        rows,
+        n,
+        1e-6,
+    );
+    k.rms_norm_f16(
+        &mut cmd,
+        Arg::buf(&x),
+        Arg::buf(&w),
+        Arg::buf(&o16),
+        rows,
+        n,
+        1e-6,
+    );
+    k.swiglu(&mut cmd, &g, &u, &s32, m);
+    k.swiglu_f16(&mut cmd, &g, &u, &s16, m);
+    cmd.commit_and_wait().unwrap();
+    let r = |v: &mut [f32]| v.iter().map(|x| f32_to_f16(*x)).collect::<Vec<u16>>();
+    assert_eq!(
+        o16.as_mut_slice(),
+        r(o32.as_mut_slice()).as_slice(),
+        "rms_norm_f16"
+    );
+    assert_eq!(
+        s16.as_mut_slice(),
+        r(s32.as_mut_slice()).as_slice(),
+        "swiglu_f16"
+    );
 }
