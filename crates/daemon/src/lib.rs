@@ -6,6 +6,7 @@ mod anthropic;
 mod bench;
 mod common;
 pub mod connect;
+pub mod connect_apply;
 pub mod engine;
 mod local_models;
 mod metrics;
@@ -136,6 +137,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/plan", get(plan::plan))
         .route("/api/bench", get(bench::bench))
         .route("/api/agents", get(connect::agents))
+        .route("/api/agents/{tool}/connect", post(connect_apply::connect))
         .route("/api/model/load", post(model::load))
         .route("/api/model/idle", post(model::idle))
         .route("/api/model/pause", post(model::pause))

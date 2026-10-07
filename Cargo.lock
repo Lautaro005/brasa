@@ -242,6 +242,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "toml",
  "tower",
 ]
 

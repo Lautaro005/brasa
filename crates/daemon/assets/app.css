@@ -475,12 +475,33 @@ body.resizing { cursor: col-resize; user-select: none; }
 .plan-msg { margin: 0 0 14px; color: var(--ink-2); max-width: 75ch; white-space: pre-wrap; }
 
 /* ---------- Agentes ---------- */
-.agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 0 28px; }
-.agent .panel-head { justify-content: space-between; }
+/* Todas las tarjetas miden lo mismo: el código se ve en una caja de alto fijo que se despliega. */
+.agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 0 28px; align-items: start; }
+.agent { display: flex; flex-direction: column; }
+.agent .panel-head { justify-content: space-between; align-items: center; flex-wrap: nowrap; min-height: 36px; }
+.agent .panel-head h2 { font-family: var(--mono); font-size: 14px; }
+.agent .actions { display: flex; gap: 8px; }
 .agent pre {
-  margin: 0; padding: 12px; border-radius: 6px; background: var(--ground);
-  border: 1px solid var(--line); overflow-x: auto; white-space: pre; font-size: 12.5px; line-height: 1.5;
+  margin: 0; padding: 12px; border-radius: 6px 6px 0 0; background: var(--ground);
+  border: 1px solid var(--line); border-bottom: 0; overflow-x: auto; white-space: pre;
+  font-size: 12.5px; line-height: 1.5; height: 264px; overflow-y: hidden;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
 }
+.agent.open { grid-column: 1 / -1; }
+.agent.open pre { height: auto; mask-image: none; }
+.agent .expand {
+  width: 100%; height: 34px; justify-content: center; border-radius: 0 0 6px 6px; color: var(--ink-2);
+  background: var(--ground); border-color: var(--line);
+}
+.agent .expand .ic { transition: transform 150ms ease-out; }
+.agent.open .expand .ic { transform: rotate(180deg); }
+.agent.fits pre { mask-image: none; }
+.connect-msg { font-size: 12px; color: var(--ink-2); }
+.connect-msg:not(:empty) { margin: -4px 0 10px; }
+.connect-msg p { margin: 2px 0; overflow-wrap: anywhere; }
+.connect-msg .ok-line { color: var(--ink); font-weight: 600; font-size: 13px; }
+.connect-msg code { font-size: 11.5px; }
+.connect-msg.bad { color: var(--bad); }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 1100px) {

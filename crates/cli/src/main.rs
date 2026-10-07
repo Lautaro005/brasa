@@ -67,7 +67,7 @@ enum Command {
     Config(config::ConfigArgs),
     /// Scripts de autocompletado para zsh, bash o fish.
     Completions(completions::CompletionsArgs),
-    /// Imprime la configuración para Codex, Claude Code, Cline u OpenCode.
+    /// Imprime (o con --apply escribe) la configuración para Codex, Claude Code, Cline u OpenCode.
     Connect(connect::ConnectArgs),
     /// Una corrida medida para `brasa benchmark` (uso interno).
     #[command(hide = true)]

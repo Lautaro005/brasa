@@ -61,9 +61,12 @@ socket de loopback. No hay servicio remoto, cuentas ni datos de usuario.
   de la carpeta de reportes, o que tumbe el daemon.
 - **Pedidos desde el navegador.** Sin autenticación, una página web abierta en el navegador del
   usuario podría hacer que este envíe pedidos al daemon. Por eso:
-  - los pedidos que modifican estado (`POST` a `/v1/*` o a `/api/model/*`) que traen un `Origin`
-    distinto del propio daemon se rechazan con 403 (CSRF). Los SDKs y agentes no mandan `Origin`;
-    la GUI de `/ui` es del mismo origen;
+  - los pedidos que modifican estado (cualquier método que no sea `GET`, `HEAD` u `OPTIONS`: `/v1/*`,
+    `/api/model/*` y `/api/agents/<herramienta>/connect`) que traen un `Origin` distinto del propio
+    daemon se rechazan con 403 (CSRF). Los SDKs y agentes no mandan `Origin`; la GUI de `/ui` es del
+    mismo origen. `/api/agents/<herramienta>/connect` escribe archivos de configuración en la carpeta
+    del usuario (ADR 0028): solo rutas fijas debajo de `HOME`, sin caminos que vengan del pedido, y
+    con respaldo de lo que modifica;
   - escuchando en loopback, el `Host` tiene que ser `127.0.0.1`, `localhost` o `[::1]` (DNS
     rebinding).
 
@@ -107,6 +110,9 @@ Apache-2.0; ver [LICENSE](LICENSE).
 Referencias del modelo de amenazas (archivo:línea):
 - Pedidos desde el navegador (Origin y Host): crates/daemon/src/origin.rs (check, local_only)
   y crates/daemon/src/lib.rs (router, capa from_fn_with_state).
+- Conectar agentes (rutas fijas, respaldo, sin pisar archivos ajenos): crates/daemon/src/connect_apply.rs
+  (Paths, codex, claude_code, opencode) y sus tests con un HOME temporal; test de API
+  `connect_rechaza_cline_y_herramientas_desconocidas` (incluye el 403 por origen).
 - `brasa serve` en 127.0.0.1 sin autenticación: crates/cli/src/config.rs:12 (DEFAULT_HOST),
   crates/cli/src/serve.rs:17 (flag --host), crates/daemon/src/lib.rs:122 (router(), sin middleware
   de autenticación) y crates/daemon/src/lib.rs:198 (TcpListener::bind(cfg.addr)).

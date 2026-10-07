@@ -1009,6 +1009,44 @@ $('#plan-form').addEventListener('submit', async (e) => {
 });
 
 /* ---------- Agentes ---------- */
+const openAgents = new Set();
+
+/* Botón Conectar: el daemon escribe la configuración de la herramienta (ADR 0028). */
+async function connectTool(key, btn, msg) {
+  const ctx = $('#agents-ctx').value.trim();
+  const url = '/api/agents/' + encodeURIComponent(key) + '/connect' + (ctx ? '?ctx=' + encodeURIComponent(ctx) : '');
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  msg.className = 'connect-msg';
+  msg.replaceChildren(document.createTextNode('Conectando…'));
+  try {
+    const r = await getJSON(url, { method: 'POST' });
+    const a = r.applied;
+    msg.replaceChildren();
+    const line = (label, files) => {
+      if (!files.length) return;
+      const p = el('p');
+      p.append(el('strong', null, label + ': '));
+      files.forEach((f, i) => { if (i) p.append(', '); p.append(el('code', null, f)); });
+      msg.appendChild(p);
+    };
+    msg.appendChild(el('p', 'ok-line', a.written.length ? 'Conectado.' : 'Ya estaba conectado; no hubo cambios.'));
+    line('Escrito', a.written);
+    line('Respaldo', a.backups);
+    line('Sin cambios', a.unchanged);
+    a.notes.forEach((n) => msg.appendChild(el('p', null, n)));
+    const u = el('p');
+    u.append(el('strong', null, 'Uso: '), el('code', null, a.usage));
+    msg.appendChild(u);
+    btn.lastChild.textContent = 'Conectado';
+  } catch (e) {
+    msg.className = 'connect-msg bad';
+    msg.replaceChildren(document.createTextNode('No se pudo conectar: ' + e.message));
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+  }
+}
 async function loadAgents() {
   const out = $('#agents-out');
   // Si el campo quedó vacío, no mandar `ctx=`: el daemon responde 400 con vacío.
@@ -1027,16 +1065,51 @@ async function loadAgents() {
       if (sel._refresh) sel._refresh();
     }
     for (const key of keys.filter((k) => !sel.value || k === sel.value)) {
-      const card = el('section', 'panel agent');
+      const card = el('section', 'panel agent' + (openAgents.has(key) ? ' open' : ''));
       const head = el('div', 'panel-head');
       head.appendChild(el('h2', null, key));
+      const actions = el('div', 'actions');
       const b = el('button', 'btn', 'Copiar');
       b.type = 'button';
       b.addEventListener('click', () => copy(b, data.tools[key], 'Copiar'));
-      head.appendChild(b);
-      card.appendChild(head);
-      card.appendChild(el('pre', null, data.tools[key]));
+      actions.appendChild(b);
+      const msg = el('div', 'connect-msg');
+      msg.setAttribute('role', 'status');
+      if (key !== 'cline') {
+        const c = el('button', 'btn primary');
+        c.type = 'button';
+        c.innerHTML = '<svg class="ic"><use href="#i-plug"/></svg>Conectar';
+        c.title = 'Escribe la configuración de ' + key + ' para usar este servidor (con respaldo de lo que modifique)';
+        c.addEventListener('click', () => connectTool(key, c, msg));
+        actions.appendChild(c);
+      }
+      head.appendChild(actions);
+      const pre = el('pre', null, data.tools[key]);
+      pre.id = 'agent-' + key;
+      const ex = el('button', 'btn expand');
+      ex.type = 'button';
+      ex.setAttribute('aria-controls', pre.id);
+      const sync = () => {
+        const open = card.classList.contains('open');
+        ex.setAttribute('aria-expanded', String(open));
+        ex.replaceChildren(document.createTextNode(open ? 'Plegar' : 'Ver todo'));
+        ex.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-chevron"/></svg>');
+      };
+      ex.addEventListener('click', () => {
+        card.classList.toggle('open');
+        if (card.classList.contains('open')) openAgents.add(key); else openAgents.delete(key);
+        sync();
+      });
+      sync();
+      card.append(head, msg, pre, ex);
       out.appendChild(card);
+      // Si el texto entra entero en la caja, no hay nada que desplegar (la tarjeta mantiene su alto).
+      if (!card.classList.contains('open') && pre.scrollHeight <= pre.clientHeight + 2) {
+        card.classList.add('fits');
+        ex.disabled = true;
+        ex.replaceChildren(document.createTextNode('Se ve completo'));
+        ex.removeAttribute('aria-expanded');
+      }
     }
   } catch (e) {
     out.replaceChildren(el('p', 'msg-note bad', 'Error: ' + e.message));

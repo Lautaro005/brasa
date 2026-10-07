@@ -56,8 +56,20 @@ Ninguna cifra sale de la GUI: todo viene de `/api/*` o de `/v1/*`.
    y variante) y la tabla completa de `docs/bench/`, desde `GET /api/bench`.
 5. **Plan de memoria.** El planner de `brasa plan` (`GET /api/plan`), con el veredicto, la barra del
    plan contra el presupuesto y el desglose.
-6. **Agentes.** Lo que imprime `brasa connect` para cada herramienta (`GET /api/agents`), con filtro
-   por herramienta y botón de copiar.
+6. **Agentes.** Una tarjeta por herramienta, todas del mismo alto: el texto de `brasa connect` en una
+   caja fija con "Ver todo" para desplegarla (la tarjeta pasa a ocupar el ancho completo). Filtro
+   por herramienta y botones Copiar y **Conectar**. Conectar llama a
+   `POST /api/agents/<herramienta>/connect`, que escribe la configuración (ADR 0028; lo mismo que
+   `brasa connect --apply`):
+   - Codex: `brasa.config.toml` y `brasa-models.json` en `$CODEX_HOME`, más la tabla
+     `[model_providers.brasa]` al final de `config.toml` si falta, con respaldo. Uso:
+     `codex --profile brasa`.
+   - Claude Code: el lanzador `~/.local/bin/claude-brasa`, sin tocar `~/.claude`.
+   - OpenCode: `provider.brasa` en `opencode.json`, con respaldo; con JSONC no se toca.
+   - Cline: guarda su configuración dentro de VS Code, así que no tiene botón.
+
+   Probado el 2026-10-06 con un `HOME` aislado: Codex 0.153.4 (`codex exec --profile brasa`) y
+   Claude Code 2.1.274 (`claude-brasa -p`) respondieron a través de Brasa.
 
 Los formularios usan campos propios de la app, no los controles nativos del navegador: números
 con botones − y +, listas desplegables accesibles (teclado: flechas, Enter, Esc) e interruptores,

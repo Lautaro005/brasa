@@ -504,3 +504,23 @@ async fn models_lista_disco_y_catalogo() {
         .collect();
     assert!(names.contains(&"qwen3-4b-q4"), "{names:?}");
 }
+
+#[tokio::test]
+async fn connect_rechaza_cline_y_herramientas_desconocidas() {
+    let app = brasa_daemon::router(state());
+    let resp = post(app.clone(), "/api/agents/cline/connect", json!({})).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = post(app.clone(), "/api/agents/nope/connect", json!({})).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Una página de otro origen no puede disparar la escritura de configs.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agents/codex/connect")
+        .header("origin", "https://evil.example")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+}
