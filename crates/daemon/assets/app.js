@@ -813,13 +813,35 @@ function renderChatStats() {
 }
 
 /* ---------- Modelos ---------- */
+/* Ícono del sprite, armado con nodos (sin innerHTML). */
+function icon(id) {
+  const NS = document.querySelector('svg.sprite').namespaceURI;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'ic');
+  const use = document.createElementNS(NS, 'use');
+  use.setAttribute('href', '#' + id);
+  svg.appendChild(use);
+  return svg;
+}
+const pct = (done, total) => (total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0);
+const pullState = { status: null, timer: null, catalog: [] };
+
+function setMsg(node, text, bad) {
+  node.classList.toggle('bad', !!bad);
+  node.textContent = text || '';
+}
+
 async function loadModels() {
   const tbody = $('#inst-table tbody');
-  const cbody = $('#cat-table tbody');
   try {
-    const [m, st] = await Promise.all([getJSON('/api/models'), getJSON('/api/status')]);
+    const [m, st, pull] = await Promise.all([getJSON('/api/models'), getJSON('/api/status'), getJSON('/api/models/pull')]);
     state.status = st;
-    $('#models-sub').textContent = 'Carpeta ' + m.dir + ' · el plan usa el contexto ' + m.ctx.toLocaleString('es') + ' y KV ' + m.kv + ' de este servidor.';
+    pullState.status = pull;
+    pullState.catalog = m.catalog;
+    $('#models-sub').textContent = 'El plan usa el contexto ' + m.ctx.toLocaleString('es') + ' y KV ' + m.kv + ' de este servidor.';
+    $('#dir-path').textContent = m.dir;
+    $('#dir-path').title = m.dir;
+    $('#dir-note').textContent = (m.dir_source_label || m.dir_source) + (typeof m.free_bytes === 'number' ? ' · ' + gib(m.free_bytes) + ' libres' : '');
     tbody.replaceChildren();
     for (const x of m.installed) {
       const tr = el('tr');
@@ -842,27 +864,192 @@ async function loadModels() {
       tbody.appendChild(tr);
     }
     $('#inst-note').textContent = m.installed.length ? m.installed.length + (m.installed.length === 1 ? ' modelo' : ' modelos') : 'No hay modelos .brasa en la carpeta.';
-    cbody.replaceChildren();
-    for (const c of m.catalog) {
-      const tr = el('tr');
-      const cmd = el('td');
-      const code = el('code', null, 'brasa pull ' + c.name);
-      const b = el('button', 'btn ghost');
-      b.type = 'button';
-      b.setAttribute('aria-label', 'Copiar el comando');
-      b.innerHTML = '<svg class="ic"><use href="#i-copy"/></svg>';
-      b.addEventListener('click', () => copy(b, 'brasa pull ' + c.name, null));
-      cmd.append(code, ' ', b);
-      [el('td', null, c.name), el('td', null, c.family), el('td', null, c.quant || '—'), el('td', null, c.license || '—'),
-        el('td', 'n', int(c.max_context)), el('td', 'n', gib(c.download_bytes)), cmd].forEach((td) => tr.appendChild(td));
-      cbody.appendChild(tr);
-    }
-    $('#cat-table').hidden = !m.catalog.length;
-    $('#cat-empty').hidden = m.catalog.length > 0;
+    renderCatalog();
+    if (pull.state === 'running') watchPull();
   } catch (e) {
     $('#models-sub').textContent = 'No se pudo leer la lista de modelos: ' + e.message;
   }
 }
+
+/* Fila de progreso debajo del modelo que se baja: barra, bytes, porcentaje y Cancelar. */
+function pullRow(p, cols) {
+  const tr = el('tr', 'dl-row');
+  tr.dataset.name = p.name;
+  const td = el('td');
+  td.colSpan = cols;
+  const wrap = el('div', 'dl');
+  const bar = el('div', 'dl-bar');
+  bar.setAttribute('role', 'progressbar');
+  bar.setAttribute('aria-label', 'Descarga de ' + p.name);
+  bar.setAttribute('aria-valuemin', '0');
+  bar.setAttribute('aria-valuemax', '100');
+  bar.appendChild(el('div', 'dl-fill'));
+  const cancel = el('button', 'btn');
+  cancel.type = 'button';
+  cancel.append(icon('i-x'), 'Cancelar');
+  cancel.addEventListener('click', () => cancelPull(cancel));
+  wrap.append(bar, el('span', 'dl-text'), el('span', 'dl-file'), cancel);
+  td.appendChild(wrap);
+  tr.appendChild(td);
+  fillPullRow(tr, p);
+  return tr;
+}
+
+function fillPullRow(tr, p) {
+  const q = pct(p.done_bytes, p.total_bytes);
+  const bar = tr.querySelector('.dl-bar');
+  bar.setAttribute('aria-valuenow', String(q));
+  bar.firstChild.style.width = q + '%';
+  tr.querySelector('.dl-text').textContent = gib(p.done_bytes) + ' de ' + gib(p.total_bytes) + ' · ' + q + ' %';
+  const cur = (p.files || []).find((f) => f.size == null || f.done < f.size);
+  tr.querySelector('.dl-file').textContent = cur ? cur.path + ': ' + mib(cur.done) + ' de ' + mib(cur.size) : '';
+}
+
+/* Celda de descarga: botón, o la etiqueta mientras baja (el progreso va en la fila de abajo). */
+function pullCell(c) {
+  const td = el('td', 'dl-cell');
+  const p = pullState.status;
+  const mine = p && p.name === c.name;
+  if (mine && p.state === 'running') {
+    td.appendChild(el('span', 'tag live', 'Descargando'));
+    return td;
+  }
+  if (!c.prebuilt) {
+    td.appendChild(el('span', 'dl-none', 'Solo desde la fuente'));
+    td.title = 'No hay pesos convertidos: usá brasa pull --desde-fuente y brasa convert.';
+    return td;
+  }
+  const busy = p && p.state === 'running';
+  const b = el('button', 'btn');
+  b.type = 'button';
+  const resume = c.partial_bytes > 0;
+  b.append(icon('i-download'), resume ? 'Reanudar' : 'Descargar');
+  if (resume) b.title = gib(c.partial_bytes) + ' ya en disco';
+  b.disabled = busy;
+  b.addEventListener('click', () => startPull(c.name, b));
+  td.appendChild(b);
+  return td;
+}
+
+function renderCatalog() {
+  const cbody = $('#cat-table tbody');
+  const cat = pullState.catalog;
+  cbody.replaceChildren();
+  for (const c of cat) {
+    const tr = el('tr');
+    tr.dataset.name = c.name;
+    const cmd = el('td');
+    const command = 'brasa pull ' + c.name;
+    const code = el('code', null, command);
+    const b = el('button', 'btn ghost');
+    b.type = 'button';
+    b.setAttribute('aria-label', 'Copiar el comando');
+    b.appendChild(icon('i-copy'));
+    b.addEventListener('click', () => copy(b, command, null));
+    cmd.append(code, ' ', b);
+    [el('td', null, c.name), el('td', 'n', gib(c.download_bytes)), pullCell(c), el('td', null, c.quant || '—'),
+      el('td', null, c.family), el('td', null, c.license || '—'), el('td', 'n', int(c.max_context)), cmd].forEach((td) => tr.appendChild(td));
+    cbody.appendChild(tr);
+    const p = pullState.status;
+    if (p && p.state === 'running' && p.name === c.name) {
+      tr.classList.add('pulling');
+      cbody.appendChild(pullRow(p, tr.children.length));
+    }
+  }
+  $('#cat-table').hidden = !cat.length;
+  $('#cat-empty').hidden = cat.length > 0;
+}
+
+async function startPull(name, btn) {
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  setMsg($('#dl-msg'), '');
+  try {
+    pullState.status = await getJSON('/api/models/pull', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ name }),
+    });
+    renderCatalog();
+    watchPull();
+  } catch (e) {
+    setMsg($('#dl-msg'), 'No se pudo empezar la descarga de ' + name + ': ' + e.message, true);
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+  }
+}
+
+async function cancelPull(btn) {
+  btn.disabled = true;
+  try {
+    pullState.status = await getJSON('/api/models/pull/cancel', { method: 'POST' });
+  } catch (e) {
+    setMsg($('#dl-msg'), 'No se pudo cancelar: ' + e.message, true);
+    btn.disabled = false;
+  }
+}
+
+/* Actualiza la barra en su lugar (sin rehacer la fila, para no perder un clic en Cancelar). */
+function updatePullRow(p) {
+  const row = [...document.querySelectorAll('#cat-table tr.dl-row')].find((tr) => tr.dataset.name === p.name);
+  if (!row) return false;
+  fillPullRow(row, p);
+  return true;
+}
+
+/* Mientras haya una descarga, consulta el progreso; al terminar, recarga las tablas. */
+function watchPull() {
+  if (pullState.timer) return;
+  pullState.timer = setInterval(async () => {
+    let p;
+    try { p = await getJSON('/api/models/pull'); } catch (_) { return; }
+    pullState.status = p;
+    if (p.state === 'running') {
+      if (state.view === 'modelos' && !updatePullRow(p)) renderCatalog();
+      return;
+    }
+    clearInterval(pullState.timer);
+    pullState.timer = null;
+    const msg = $('#dl-msg');
+    if (p.state === 'done') setMsg(msg, p.name + ' quedó en ' + p.dest + '.');
+    else if (p.state === 'cancelled') setMsg(msg, 'Descarga de ' + p.name + ' cancelada. Lo bajado queda en disco para reanudar.');
+    else if (p.state === 'error') setMsg(msg, 'No se pudo descargar ' + p.name + ': ' + p.error, true);
+    if (state.view === 'modelos') loadModels();
+  }, 700);
+}
+
+async function changeDir(btn) {
+  const msg = $('#dir-msg');
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  setMsg(msg, 'Elegí la carpeta en la ventana de macOS…');
+  try {
+    const c = await getJSON('/api/models/dir/choose', { method: 'POST' });
+    if (c.cancelled) { setMsg(msg, ''); return; }
+    const r = await getJSON('/api/models/dir', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ path: c.path }),
+    });
+    setMsg(msg, 'Carpeta de modelos: ' + r.dir + '. Guardada en ' + r.config + '.' + (r.note ? ' ' + r.note : ''));
+    await loadModels();
+  } catch (e) {
+    setMsg(msg, 'No se pudo cambiar la carpeta: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+  }
+}
+
+async function openDir(btn) {
+  btn.disabled = true;
+  try {
+    await getJSON('/api/models/dir/open', { method: 'POST' });
+    setMsg($('#dir-msg'), '');
+  } catch (e) {
+    setMsg($('#dir-msg'), 'No se pudo abrir la carpeta: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('#dir-change').addEventListener('click', (e) => changeDir(e.currentTarget));
+$('#dir-open').addEventListener('click', (e) => openDir(e.currentTarget));
 
 async function copy(btn, text, label) {
   const old = btn.innerHTML;
