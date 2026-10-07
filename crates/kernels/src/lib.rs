@@ -695,19 +695,54 @@ impl Kernels {
         tokens: usize,
         input: PrefillPrecision,
     ) {
-        if w.rows % 64 != 0 || w.cols % 32 != 0 || w.qtype == WeightType::Q6_0 {
-            assert_eq!(
-                input,
-                PrefillPrecision::F32,
-                "el GEMM simple solo acepta x en f32"
-            );
-            return self.gemm_naive(cmd, w, x, y, tokens);
+        self.gemm_multi(cmd, &[w], x, &[y], tokens, input);
+    }
+
+    /// Hasta tres GEMM de prefill con la misma entrada `x` (q, k, v o gate, up) en un dispatch:
+    /// `ys[i][t, :] = ws[i] · x[t, :]`, con `x` como en [`Kernels::gemm_with`]. Las matrices que no
+    /// sean q4_0/q8_0 con filas % 64 == 0 y columnas % 32 == 0, o de otro tipo que la primera, se
+    /// encolan aparte (con el GEMM simple, que solo acepta `F32`).
+    pub fn gemm_multi<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        ws: &[QMatrix<'a>],
+        x: Arg<'a>,
+        ys: &[Arg<'a>],
+        tokens: usize,
+        input: PrefillPrecision,
+    ) {
+        assert!(ws.len() == ys.len() && (1..=3).contains(&ws.len()));
+        let tiled = |w: &QMatrix| {
+            w.rows % 64 == 0
+                && w.cols % 32 == 0
+                && w.cols == ws[0].cols
+                && w.qtype == ws[0].qtype
+                && w.qtype != WeightType::Q6_0
+        };
+        if !ws.iter().all(tiled) {
+            for (w, y) in ws.iter().zip(ys) {
+                if tiled(w) && ws.len() > 1 {
+                    self.gemm_multi(cmd, &[*w], x, &[*y], tokens, input);
+                } else {
+                    assert_eq!(
+                        input,
+                        PrefillPrecision::F32,
+                        "el GEMM simple solo acepta x en f32"
+                    );
+                    self.gemm_naive(cmd, *w, x, *y, tokens);
+                }
+            }
+            return;
         }
-        let qi = match w.qtype {
+        let qi = match ws[0].qtype {
             WeightType::Q4_0 => 0,
             WeightType::Q8_0 => 1,
             WeightType::Q6_0 => unreachable!(),
         };
+        let cols = ws[0].cols;
+        let xb = if input == PrefillPrecision::F16 { 2 } else { 4 };
+        let blocks: usize = ws.iter().map(|w| w.rows / 64).sum();
+        let m = |i: usize| ws.get(i).unwrap_or(&ws[0]);
         // Bloques completos de 64 tokens con el kernel de 64; el resto, con el de 32 sobre las
         // vistas de x e y desde el primer token que sobra. Con menos de 128 tokens, todo con el de
         // 32 (con un solo bloque de 64 hay pocos threadgroups; medido en M1 Pro con T = 100).
@@ -716,20 +751,24 @@ impl Kernels {
             if n == 0 {
                 continue;
             }
+            let y = |i: usize| offset(*ys.get(i).unwrap_or(&ys[0]), t0 * m(i).rows * 4);
             cmd.dispatch_groups(
                 &self.gemm_tiled[bi][qi][input as usize],
                 &[
-                    Arg::buf(w.data),
-                    offset(
-                        x,
-                        t0 * w.cols * if input == PrefillPrecision::F16 { 2 } else { 4 },
-                    ),
-                    offset(y, t0 * w.rows * 4),
-                    Arg::u32(w.rows as u32),
-                    Arg::u32(w.cols as u32),
+                    Arg::buf(m(0).data),
+                    Arg::buf(m(1).data),
+                    Arg::buf(m(2).data),
+                    offset(x, t0 * cols * xb),
+                    y(0),
+                    y(1),
+                    y(2),
+                    Arg::u32(ws[0].rows as u32),
+                    Arg::u32(ws.get(1).map_or(0, |w| w.rows as u32)),
+                    Arg::u32(ws.get(2).map_or(0, |w| w.rows as u32)),
+                    Arg::u32(cols as u32),
                     Arg::u32(n as u32),
                 ],
-                [w.rows / 64, groups(n, 64 >> bi), 1],
+                [blocks, groups(n, 64 >> bi), 1],
                 [128, 1, 1],
             );
         }

@@ -150,13 +150,21 @@ void gemm_tiled(device const Block* w, device const TA* x, device float* y,
     }
 }
 
+// Hasta tres matrices con la misma entrada x (q, k, v o gate, up) en un dispatch: el eje x de la
+// grilla recorre los bloques de 64 filas de w0, w1 y w2 seguidos (r1 = r2 = 0 para una sola).
 #define GEMM_KERNEL(name, BN, TA, Block)                                                      \
-kernel void name(device const Block* w [[buffer(0)]],                                        \
-                 device const TA*    x [[buffer(1)]],                                        \
-                 device float*       y [[buffer(2)]],                                        \
-                 constant uint& rows   [[buffer(3)]],                                        \
-                 constant uint& cols   [[buffer(4)]],                                        \
-                 constant uint& tokens [[buffer(5)]],                                        \
+kernel void name(device const Block* w0 [[buffer(0)]],                                       \
+                 device const Block* w1 [[buffer(1)]],                                       \
+                 device const Block* w2 [[buffer(2)]],                                       \
+                 device const TA*    x  [[buffer(3)]],                                       \
+                 device float*       y0 [[buffer(4)]],                                       \
+                 device float*       y1 [[buffer(5)]],                                       \
+                 device float*       y2 [[buffer(6)]],                                       \
+                 constant uint& r0      [[buffer(7)]],                                       \
+                 constant uint& r1      [[buffer(8)]],                                       \
+                 constant uint& r2      [[buffer(9)]],                                       \
+                 constant uint& cols    [[buffer(10)]],                                      \
+                 constant uint& tokens  [[buffer(11)]],                                      \
                  uint2 tg [[threadgroup_position_in_grid]],                                  \
                  ushort tid [[thread_index_in_threadgroup]],                                 \
                  ushort sg  [[simdgroup_index_in_threadgroup]]) {                            \
@@ -164,7 +172,15 @@ kernel void name(device const Block* w [[buffer(0)]],                           
     threadgroup float tgm[(BM + BN) * BK * sizeof(TA) / 4 < 1024 ? 1024                      \
                           : (BM + BN) * BK * sizeof(TA) / 4];                                \
     threadgroup TA* As = (threadgroup TA*)tgm;                                                \
-    gemm_tiled<BN>(w, x, y, rows, cols, tokens, As, As + BM * BK, tg, tid, sg);               \
+    const uint b0 = r0 / BM, b1 = r1 / BM;                                                    \
+    if (tg.x < b0)                                                                            \
+        gemm_tiled<BN>(w0, x, y0, r0, cols, tokens, As, As + BM * BK, tg, tid, sg);          \
+    else if (tg.x < b0 + b1)                                                                  \
+        gemm_tiled<BN>(w1, x, y1, r1, cols, tokens, As, As + BM * BK,                        \
+                       uint2(tg.x - b0, tg.y), tid, sg);                                      \
+    else                                                                                      \
+        gemm_tiled<BN>(w2, x, y2, r2, cols, tokens, As, As + BM * BK,                        \
+                       uint2(tg.x - b0 - b1, tg.y), tid, sg);                                 \
 }
 
 GEMM_KERNEL(gemm64_q4_0_f16, 64, half, block_q4_0)

@@ -366,3 +366,55 @@ fn salidas_f16_de_prefill_iguales_a_f32_redondeado() {
         "swiglu_f16"
     );
 }
+
+#[test]
+fn gemm_multi_igual_a_gemm_por_matriz() {
+    // q, k, v (tres matrices) y gate, up (dos) en un dispatch: mismos bits que un GEMM por matriz.
+    let (ctx, k) = setup();
+    let mut rng = Rng::new(77);
+    let cols = 2560;
+    for input in [PrefillPrecision::F16, PrefillPrecision::F32] {
+        for (shapes, tokens) in [(vec![512usize, 128, 128], 70usize), (vec![640, 640], 200)] {
+            let ws: Vec<_> = shapes
+                .iter()
+                .map(|&r| ctx.buffer_from(&rng.q4_0(r, cols)).unwrap())
+                .collect();
+            let xv = rng.vec(tokens * cols, 2.0);
+            let xh: Vec<u16> = xv.iter().map(|v| f32_to_f16(*v)).collect();
+            let (x32, x16) = (ctx.buffer_from(&xv).unwrap(), ctx.buffer_from(&xh).unwrap());
+            let x = if input == PrefillPrecision::F16 {
+                Arg::buf(&x16)
+            } else {
+                Arg::buf(&x32)
+            };
+            let ms: Vec<QMatrix> = ws
+                .iter()
+                .zip(&shapes)
+                .map(|(w, &rows)| QMatrix {
+                    data: w,
+                    qtype: WeightType::Q4_0,
+                    rows,
+                    cols,
+                })
+                .collect();
+            let fused: Vec<_> = shapes
+                .iter()
+                .map(|&r| ctx.buffer::<f32>(tokens * r).unwrap())
+                .collect();
+            let single: Vec<_> = shapes
+                .iter()
+                .map(|&r| ctx.buffer::<f32>(tokens * r).unwrap())
+                .collect();
+            let mut cmd = ctx.command().unwrap();
+            let ys: Vec<Arg> = fused.iter().map(Arg::buf).collect();
+            k.gemm_multi(&mut cmd, &ms, x, &ys, tokens, input);
+            for (m, y) in ms.iter().zip(&single) {
+                k.gemm_with(&mut cmd, *m, x, Arg::buf(y), tokens, input);
+            }
+            cmd.commit_and_wait().unwrap();
+            for (a, b) in fused.iter().zip(&single) {
+                assert_eq!(a.as_slice(), b.as_slice(), "{input:?} {shapes:?}");
+            }
+        }
+    }
+}

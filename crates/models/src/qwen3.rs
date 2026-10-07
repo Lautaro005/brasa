@@ -459,6 +459,26 @@ impl Qwen3 {
         }
     }
 
+    /// Varias proyecciones con la misma entrada: en prefill, un solo dispatch (`gemm_multi`).
+    fn matmul_multi<'a, const N: usize>(
+        &self,
+        cmd: &mut Command<'a>,
+        ws: [&'a Matrix; N],
+        x: Arg<'a>,
+        ys: [Arg<'a>; N],
+        tokens: usize,
+    ) {
+        if tokens <= GEMV_MAX_TOKENS {
+            for (w, y) in ws.into_iter().zip(ys) {
+                self.matmul(cmd, w, x, y, tokens);
+            }
+        } else {
+            let qs = ws.map(|w| w.q());
+            self.kernels
+                .gemm_multi(cmd, &qs, x, &ys, tokens, self.precision(tokens));
+        }
+    }
+
     /// RMSNorm de prefill hacia la entrada del GEMM: `ws.h` en f32 o `ws.xh` en f16.
     fn prefill_norm<'a>(
         &'a self,
@@ -518,9 +538,13 @@ impl Qwen3 {
             );
         } else {
             let h = self.prefill_norm(cmd, &l.attn_norm, tokens);
-            self.matmul(cmd, &l.wq, h, Arg::buf(&ws.q), tokens);
-            self.matmul(cmd, &l.wk, h, Arg::buf(&ws.k_new), tokens);
-            self.matmul(cmd, &l.wv, h, Arg::buf(&ws.v_new), tokens);
+            self.matmul_multi(
+                cmd,
+                [&l.wq, &l.wk, &l.wv],
+                h,
+                [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
+                tokens,
+            );
         }
         // QK-norm, RoPE y K/V a la caché (en su tipo), en un dispatch (T3.5).
         let kvt = self.limits.kv;
@@ -598,8 +622,13 @@ impl Qwen3 {
         } else {
             k.add(cmd, &ws.x, &ws.h, &ws.x, tokens * c.hidden);
             let h = self.prefill_norm(cmd, &l.ffn_norm, tokens);
-            self.matmul(cmd, &l.gate, h, Arg::buf(&ws.gate), tokens);
-            self.matmul(cmd, &l.up, h, Arg::buf(&ws.up), tokens);
+            self.matmul_multi(
+                cmd,
+                [&l.gate, &l.up],
+                h,
+                [Arg::buf(&ws.gate), Arg::buf(&ws.up)],
+                tokens,
+            );
         }
         // Entrada de down: SwiGLU (en prefill f16, en `ws.xh`); en decode ya está en ws.gate.
         let act = if decode {
