@@ -52,9 +52,18 @@ pub struct ModelsDir {
     pub source: DirSource,
 }
 
-/// Claves de primer nivel que entiende el archivo de configuración (ADR 0022 + `models_dir`).
-/// `brasa-cli` tiene un test que verifica que coincidan con su `Config`.
-pub const CONFIG_KEYS: &[&str] = &["model", "host", "port", "kv", "models_dir", "run", "serve"];
+/// Claves de primer nivel que entiende el archivo de configuración (ADR 0022 + `models_dir` +
+/// `[storage]` de ADR 0034). `brasa-cli` tiene un test que verifica que coincidan con su `Config`.
+pub const CONFIG_KEYS: &[&str] = &[
+    "model",
+    "host",
+    "port",
+    "kv",
+    "models_dir",
+    "run",
+    "serve",
+    "storage",
+];
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)

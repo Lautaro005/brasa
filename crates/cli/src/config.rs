@@ -35,7 +35,7 @@ impl Perfil {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub model: Option<String>,
@@ -48,6 +48,22 @@ pub struct Config {
     pub run: Section,
     #[serde(default)]
     pub serve: Section,
+    #[serde(default)]
+    pub storage: StorageSection,
+}
+
+/// Sección `[storage]` (ADR 0034). Sin valores, los de `brasa_catalog::storage::Settings`.
+///
+/// ```toml
+/// [storage]
+/// reserve_gib = 2            # GiB del volumen que una descarga no puede usar
+/// partial_max_age_days = 7   # una descarga a medias con más días es vieja (`brasa storage clean`)
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageSection {
+    pub reserve_gib: Option<f64>,
+    pub partial_max_age_days: Option<u64>,
 }
 
 /// Sección por subcomando (`[run]`, `[serve]`).
@@ -120,6 +136,15 @@ impl Config {
         Self::load_from(&Self::path())
     }
 
+    /// Ajustes de almacenamiento validados (`[storage]`, ADR 0034).
+    pub fn storage(&self) -> Result<brasa_catalog::storage::Settings, String> {
+        brasa_catalog::storage::Settings::new(
+            self.storage.reserve_gib,
+            self.storage.partial_max_age_days,
+        )
+        .map_err(|e| format!("{}: {e}", Self::path().display()))
+    }
+
     /// Carga el archivo; su ausencia no es error (queda todo por defecto).
     pub fn load_from(path: &Path) -> Result<Self, String> {
         match std::fs::read_to_string(path) {
@@ -171,6 +196,10 @@ fn show(json: bool) -> Result<(), String> {
     // `serve` toma la KV por defecto del perfil de memoria de esta Mac (ADR 0029).
     let profile = brasa_memory::planner::Profile::this_machine();
     let kv_serve = v(None, cfg.kv.clone(), profile.agent_kv());
+    let st = cfg.storage()?;
+    let src = |set: bool| if set { Source::File } else { Source::Default };
+    let reserve_src = src(cfg.storage.reserve_gib.is_some());
+    let age_src = src(cfg.storage.partial_max_age_days.is_some());
     if json {
         let item = |value: String, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
         let n = |value: usize, source: Source| serde_json::json!({"value": value, "source": source.as_str()});
@@ -193,6 +222,13 @@ fn show(json: bool) -> Result<(), String> {
                     "value": md_path,
                     "source": md.source.as_str(),
                 }),
+                "storage": {
+                    "reserve_bytes": {"value": st.reserve_bytes, "source": reserve_src.as_str()},
+                    "partial_max_age_days": {
+                        "value": st.partial_max_age_days,
+                        "source": age_src.as_str(),
+                    },
+                },
             }))
             .unwrap()
         );
@@ -222,6 +258,17 @@ fn show(json: bool) -> Result<(), String> {
             kv_serve.0,
             kv_serve.1.as_str(),
             profile.name()
+        );
+        // `[storage]` (ADR 0034): reserva que una descarga no usa y umbral de `storage clean`.
+        println!(
+            "reserva   {:>10}   ({}; [storage] reserve_gib)",
+            format!("{:.2} GiB", st.reserve_gib()),
+            reserve_src.as_str()
+        );
+        println!(
+            "parciales {:>10}   ({}; [storage] partial_max_age_days)",
+            format!("{} días", st.partial_max_age_days),
+            age_src.as_str()
         );
     }
     Ok(())
@@ -270,15 +317,41 @@ mod tests {
         // `brasa_catalog::dirs::save_models_dir` se niega a tocar archivos con claves que no
         // conoce: su lista tiene que ser exactamente la de `Config`.
         let text = "model = \"x\"\nhost = \"x\"\nport = 1\nkv = \"x\"\nmodels_dir = \"x\"\n\
-                    [run]\nctx = 1\n[serve]\nctx = 1\n";
+                    [run]\nctx = 1\n[serve]\nctx = 1\n\
+                    [storage]\nreserve_gib = 1.5\npartial_max_age_days = 3\n";
         let c: Config = toml::from_str(text).unwrap();
         assert_eq!(c.models_dir.as_deref(), Some("x"));
+        assert_eq!(c.storage.reserve_gib, Some(1.5));
+        assert_eq!(c.storage.partial_max_age_days, Some(3));
         let table: toml::Table = toml::from_str(text).unwrap();
         let mut keys: Vec<&str> = table.keys().map(String::as_str).collect();
         let mut want = brasa_catalog::dirs::CONFIG_KEYS.to_vec();
         keys.sort_unstable();
         want.sort_unstable();
         assert_eq!(keys, want);
+    }
+
+    #[test]
+    fn storage_tiene_defectos_y_valida() {
+        let c = Config::default();
+        let s = c.storage().unwrap();
+        assert_eq!(s, brasa_catalog::storage::Settings::default());
+        assert_eq!(s.reserve_bytes, 2 << 30);
+        assert_eq!(s.partial_max_age_days, 7);
+        let c: Config = toml::from_str("[storage]\nreserve_gib = 0\n").unwrap();
+        assert_eq!(c.storage().unwrap().reserve_bytes, 0);
+        // Un entero también vale como GiB.
+        let c: Config = toml::from_str("[storage]\nreserve_gib = 4\n").unwrap();
+        assert_eq!(c.storage().unwrap().reserve_bytes, 4 << 30);
+        for malo in [
+            "[storage]\nreserve_gib = -1\n",
+            "[storage]\npartial_max_age_days = 0\n",
+        ] {
+            let c: Config = toml::from_str(malo).unwrap();
+            assert!(c.storage().is_err(), "{malo}");
+        }
+        // Un error de tipeo en la sección falla, no se ignora.
+        assert!(toml::from_str::<Config>("[storage]\nreserva = 1\n").is_err());
     }
 
     #[test]
