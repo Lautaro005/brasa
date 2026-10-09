@@ -112,44 +112,46 @@ Apache-2.0; see [LICENSE](LICENSE).
 
 <!--
 Threat model references (file:line):
-- Pedidos desde el navegador (Origin y Host): crates/daemon/src/origin.rs (check, local_only)
-  y crates/daemon/src/lib.rs (router, capa from_fn_with_state).
-- Conectar agentes (rutas fijas, respaldo, sin pisar archivos ajenos): crates/daemon/src/connect_apply.rs
-  (Paths, codex, claude_code, opencode) y sus tests con un HOME temporal; test de API
-  `connect_rechaza_cline_y_herramientas_desconocidas` (incluye el 403 por origen).
-- Descarga y carpeta de modelos (ADR 0031): rutas en crates/daemon/src/lib.rs:164-174, detrás de la
-  misma capa de origen; crates/daemon/src/models_admin.rs:226 (pull_start: el nombre se busca en el
-  catálogo, nada más sale del pedido), :338 (pull_cancel), :364 (set_dir), :406 (choose_dir) y :419
-  (open_dir, sin rutas del pedido); :71 (osascript con la carpeta como argumento, no interpolada).
-  Validación de la carpeta: crates/catalog/src/dirs.rs:163 (prepare_models_dir: absoluta, sin `..`,
-  se prueba la escritura) y :202 (save_models_dir: edita una sola línea y verifica que el resto quede
-  igual). URL armada solo del manifiesto: crates/catalog/src/pull.rs:219. Tests de API
-  `descarga_y_carpeta_rechazan_otro_origen` (403 para los seis POST/DELETE, con un escritorio que
-  entra en pánico si se lo llama), `pull_baja_los_pesos_convertidos_del_catalogo` (un `url` en el
-  pedido se ignora) y `dir_cambia_la_carpeta_y_la_guarda` (rutas relativas y `..` dan 400; un
-  archivo con claves desconocidas no se reescribe).
-- `brasa serve` en 127.0.0.1 sin autenticación: crates/cli/src/config.rs:12 (DEFAULT_HOST),
-  crates/cli/src/serve.rs:19 (flag --host), crates/daemon/src/lib.rs:157 (router(), sin middleware
-  de autenticación) y crates/daemon/src/lib.rs:261 (TcpListener::bind(cfg.addr)).
-- sha256 por tensor y del bloque de datos: crates/quant/src/brasa_file.rs:98 (verify),
-  crates/quant/src/brasa_file.rs:101 (sha256 por tensor), crates/quant/src/brasa_file.rs:110
-  (sha256 del conjunto); crates/catalog/src/verify.rs:19 (verify) y crates/cli/src/models.rs:133
+- Requests from the browser (Origin and Host): crates/daemon/src/origin.rs (check, local_only)
+  and crates/daemon/src/lib.rs (router, from_fn_with_state layer).
+- Connecting agents (fixed paths, backup, never overwriting files that aren't Brasa's):
+  crates/daemon/src/connect_apply.rs (Paths, codex, claude_code, opencode) and its tests with a
+  temporary HOME; API test `connect_rechaza_cline_y_herramientas_desconocidas` (includes the 403
+  by origin).
+- Download and models folder (ADR 0031): routes in crates/daemon/src/lib.rs:168-177, behind the
+  same origin layer; crates/daemon/src/models_admin.rs:219 (pull_start: the name is looked up in
+  the catalog, nothing else is taken from the request), :338 (pull_cancel), :364 (set_dir), :406
+  (choose_dir) and :419 (open_dir, no paths from the request); :71 (osascript with the folder as
+  an argument, not interpolated). Folder validation: crates/catalog/src/dirs.rs:163
+  (prepare_models_dir: absolute, no `..`, the write is tested) and :202 (save_models_dir: edits a
+  single line and checks that the rest stays the same). URL built only from the manifest:
+  crates/catalog/src/pull.rs:219. API tests `descarga_y_carpeta_rechazan_otro_origen` (403 for the
+  six POST/DELETE routes, with a desktop that panics if it is called),
+  `pull_baja_los_pesos_convertidos_del_catalogo` (a `url` in the request is ignored) and
+  `dir_cambia_la_carpeta_y_la_guarda` (relative paths and `..` give 400; a file with unknown keys
+  is not rewritten).
+- `brasa serve` on 127.0.0.1 without authentication: crates/cli/src/config.rs:12 (DEFAULT_HOST),
+  crates/cli/src/serve.rs:19-20 (--host flag), crates/daemon/src/lib.rs:160 (router(), no
+  authentication middleware) and crates/daemon/src/lib.rs:269 (TcpListener::bind(cfg.addr)).
+- sha256 per tensor and of the data block: crates/quant/src/brasa_file.rs:98 (verify),
+  crates/quant/src/brasa_file.rs:101 (sha256 per tensor), crates/quant/src/brasa_file.rs:110
+  (sha256 of the whole); crates/catalog/src/verify.rs:19 (verify) and crates/cli/src/models.rs:133
   (`brasa models verify`).
-- Manifiestos validados y sin rutas fuera de la carpeta de modelos: crates/catalog/src/manifest.rs:16
+- Manifests validated, with no paths outside the models folder: crates/catalog/src/manifest.rs:16
   (safe_relative), crates/catalog/src/manifest.rs:34 (validate_component),
-  crates/catalog/src/manifest.rs:159 (validate, incluido `[prebuilt]`); crates/catalog/src/pull.rs:186
-  (safe_relative del path antes de descargar).
-- `rm` acotado: crates/catalog/src/local.rs:88 (resolve_child), crates/catalog/src/local.rs:95
-  (resolve_child_with, que rechaza una base con symlink) y crates/cli/src/rm.rs:32/51
-  (resolve_child_with antes de remove_dir_all).
-- GUI embebida sin recursos remotos ni telemetría: crates/daemon/src/ui.rs:7-9 (include_str!),
-  crates/daemon/tests/api.rs:211-212 (test: ningún asset referencia http:// ni https://);
-  CLAUDE.md:23 (regla 9, sin telemetría saliente).
-- Archivos de pesos maliciosos: crates/quant/src/brasa_file.rs:64 (open valida magic, versión,
-  límites y alineación), crates/quant/src/brasa_file.rs:67 (magic BRSA) y
-  crates/quant/src/safetensors.rs:18 (open parsea el encabezado JSON con el tamaño declarado).
-- Presupuesto de memoria del planner: crates/memory/src/planner.rs:82 (plan).
-- Prompt injection fuera de alcance: crates/daemon/src/openai.rs:131 (el daemon traduce el pedido a
-  los tipos de brasa-core y sirve al modelo; no ejecuta herramientas).
-- `ctx` fuera de rango acotado: crates/daemon/src/lib.rs:141 (MAX_CTX).
+  crates/catalog/src/manifest.rs:159 (validate, including `[prebuilt]`); crates/catalog/src/pull.rs:186
+  (safe_relative of the path before downloading).
+- Bounded `rm`: crates/catalog/src/local.rs:88 (resolve_child), crates/catalog/src/local.rs:95
+  (resolve_child_with, which rejects a base with a symlink) and crates/cli/src/rm.rs:32/51
+  (resolve_child_with before remove_dir_all).
+- Embedded GUI with no remote resources or telemetry: crates/daemon/src/ui.rs:7-9 (include_str!),
+  crates/daemon/tests/api.rs:212-213 (test: no asset references http:// or https://);
+  CLAUDE.md:23 (rule 9, no outbound telemetry).
+- Malicious weights files: crates/quant/src/brasa_file.rs:64 (open validates magic, version,
+  bounds and alignment), crates/quant/src/brasa_file.rs:67 (BRSA magic) and
+  crates/quant/src/safetensors.rs:18 (open parses the JSON header with the declared size).
+- Planner memory budget: crates/memory/src/planner.rs:83 (plan).
+- Prompt injection out of scope: crates/daemon/src/openai.rs:131 (the daemon translates the request
+  to brasa-core types and serves the model; it does not run tools).
+- Bounded out-of-range `ctx`: crates/daemon/src/lib.rs:144 (MAX_CTX).
 -->
