@@ -17,12 +17,12 @@ Memoria = pico de footprint del proceso.
 | llama.cpp | default | 2048 | 3919 | 490.0 | 50.8 | 3.18 | sí | [llamacpp-qwen3-4b-q4-ctx2048-20261005T033424Z.json](m1pro-16gb/llamacpp-qwen3-4b-q4-ctx2048-20261005T033424Z.json) |
 | llama.cpp | default | 8192 | 22677 | 355.6 | 38.0 | 4.03 | sí | [llamacpp-qwen3-4b-q4-ctx8192-20261005T033709Z.json](m1pro-16gb/llamacpp-qwen3-4b-q4-ctx8192-20261005T033709Z.json) |
 | llama.cpp | default | 16384 | 62590 | 259.7 | 28.6 | 5.20 | sí | [llamacpp-qwen3-4b-q4-ctx16384-20261005T034415Z.json](m1pro-16gb/llamacpp-qwen3-4b-q4-ctx16384-20261005T034415Z.json) |
-| llama.cpp | kv-q8 | 16384 | 62527 | 260.0 | 19.7 | 4.13 | sí | [llamacpp-kv-q8-qwen3-4b-q4-ctx16384-20261005T035426Z.json](m1pro-16gb/llamacpp-kv-q8-qwen3-4b-q4-ctx16384-20261005T035426Z.json) |
+| llama.cpp | kv-q8 | 16384 | 62210 | 261.3 | 20.1 | 4.12 | sí | [llamacpp-kv-q8-qwen3-4b-q4-ctx16384-20261007T152845Z.json](m1pro-16gb/llamacpp-kv-q8-qwen3-4b-q4-ctx16384-20261007T152845Z.json) |
 | mlx-lm | default | 2048 | 5411 | 354.8 | 48.9 | 3.98 | sí | [mlxlm-qwen3-4b-q4-ctx2048-20261005T033518Z.json](m1pro-16gb/mlxlm-qwen3-4b-q4-ctx2048-20261005T033518Z.json) |
 | mlx-lm | default | 8192 | 27542 | 292.8 | 33.6 | 5.51 | sí | [mlxlm-qwen3-4b-q4-ctx8192-20261005T033937Z.json](m1pro-16gb/mlxlm-qwen3-4b-q4-ctx8192-20261005T033937Z.json) |
 | mlx-lm | default | 16384 | 68809 | 236.2 | 23.5 | 7.57 | sí | [mlxlm-qwen3-4b-q4-ctx16384-20261005T034942Z.json](m1pro-16gb/mlxlm-qwen3-4b-q4-ctx16384-20261005T034942Z.json) |
 
-Versiones: brasa 0.0.1 (444dfb12aee4), brasa 0.0.1 (8dc9fa30d3a2), llama.cpp 0.5.0 (build 11146, commit 7fe450e19), mlx-lm 0.32.0, mlx 0.32.3. Commit de Brasa: 444dfb12aee4, 8dc9fa30d3a2, d16f20500a1f. Pesos: Qwen/Qwen3-4B@1cfa9a72.
+Versiones: brasa 0.0.1 (444dfb12aee4), brasa 0.0.1 (8dc9fa30d3a2), llama.cpp 0.5.0 (build 11146, commit 7fe450e19), mlx-lm 0.32.0, mlx 0.32.3. Commit de Brasa: 444dfb12aee4, 8dc9fa30d3a2, d16f20500a1f, d5c9855fadaf. Pesos: Qwen/Qwen3-4B@1cfa9a72.
 
 ## Notas
 
