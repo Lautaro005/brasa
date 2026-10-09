@@ -479,7 +479,7 @@ function renderChatList() {
     del.type = 'button';
     del.setAttribute('aria-label', 'Borrar «' + titleOf(c) + '»');
     del.title = 'Borrar conversación';
-    del.innerHTML = '<svg class="ic"><use href="#i-clear"/></svg>';
+    del.appendChild(icon('i-clear'));
     let armed = null;
     del.addEventListener('click', () => {
       // Dos pasos: el primer clic arma, el segundo borra.
@@ -1052,14 +1052,14 @@ $('#dir-change').addEventListener('click', (e) => changeDir(e.currentTarget));
 $('#dir-open').addEventListener('click', (e) => openDir(e.currentTarget));
 
 async function copy(btn, text, label) {
-  const old = btn.innerHTML;
+  const old = Array.from(btn.childNodes);
   try {
     await navigator.clipboard.writeText(text);
     btn.textContent = 'Copiado';
   } catch (_) {
     btn.textContent = 'No se pudo copiar';
   }
-  setTimeout(() => { if (label) btn.textContent = label; else btn.innerHTML = old; }, 1500);
+  setTimeout(() => { if (label) btn.textContent = label; else btn.replaceChildren(...old); }, 1500);
 }
 
 /* ---------- Benchmarks ---------- */
@@ -1279,7 +1279,7 @@ async function loadAgents() {
       if (key !== 'cline') {
         const c = el('button', 'btn primary');
         c.type = 'button';
-        c.innerHTML = '<svg class="ic"><use href="#i-plug"/></svg>Conectar';
+        c.append(icon('i-plug'), 'Conectar');
         c.title = 'Escribe la configuración de ' + key + ' para usar este servidor (con respaldo de lo que modifique)';
         c.addEventListener('click', () => connectTool(key, c, msg));
         actions.appendChild(c);
@@ -1293,8 +1293,7 @@ async function loadAgents() {
       const sync = () => {
         const open = card.classList.contains('open');
         ex.setAttribute('aria-expanded', String(open));
-        ex.replaceChildren(document.createTextNode(open ? 'Plegar' : 'Ver todo'));
-        ex.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-chevron"/></svg>');
+        ex.replaceChildren(document.createTextNode(open ? 'Plegar' : 'Ver todo'), icon('i-chevron'));
       };
       ex.addEventListener('click', () => {
         card.classList.toggle('open');
@@ -1324,12 +1323,12 @@ $('#agents-tool').addEventListener('change', loadAgents);
 function enhanceNumber(input) {
   const wrap = el('div', 'num');
   input.parentNode.insertBefore(wrap, input);
-  const mk = (icon, dir, label) => {
+  const mk = (name, dir, label) => {
     const b = el('button');
     b.type = 'button';
     b.tabIndex = -1;
     b.setAttribute('aria-label', label);
-    b.innerHTML = '<svg class="ic"><use href="#' + icon + '"/></svg>';
+    b.appendChild(icon(name));
     b.addEventListener('click', () => {
       if (input.value === '' && input.min !== '') input.value = input.min;
       else if (dir > 0) input.stepUp(); else input.stepDown();
@@ -1356,7 +1355,7 @@ function enhanceSelect(select) {
   btn.setAttribute('aria-expanded', 'false');
   const val = el('span', 'val');
   btn.append(val);
-  btn.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-chevron"/></svg>');
+  btn.appendChild(icon('i-chevron'));
   const list = el('ul', 'select-list');
   list.id = select.id + '-list';
   list.setAttribute('role', 'listbox');
@@ -1375,7 +1374,7 @@ function enhanceSelect(select) {
       li.id = list.id + '-' + i;
       li.setAttribute('role', 'option');
       li.setAttribute('aria-selected', String(o.selected));
-      li.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-check"/></svg>');
+      li.appendChild(icon('i-check'));
       li.append(el('span', null, o.text));
       if (o.dataset.hint) li.append(el('span', 'hint', o.dataset.hint));
       li.addEventListener('mousedown', (e) => e.preventDefault());
