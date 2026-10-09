@@ -125,6 +125,9 @@ impl KvPair {
                     bufs: KvBufs::F16(ctx.buffer_from(&kh).unwrap(), ctx.buffer_from(&vh).unwrap()),
                 }
             }
+            crate::KvType::Tq4 => {
+                panic!("TQ4 tiene su propio arnés (tests/tq.rs): la rotación cambia el dominio")
+            }
             crate::KvType::Q8_0 => {
                 let q = |x: &[f32]| {
                     let mut b = vec![0u8; kv.bytes(x.len())];

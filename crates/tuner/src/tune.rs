@@ -245,6 +245,17 @@ fn kv_bytes(kv: KvType, n: usize) -> Vec<u8> {
             brasa_quant::quantize_kv_q8(&x, &mut b);
             b
         }
+        KvType::Tq4 => {
+            let rot = brasa_quant::turbo::rotation();
+            let mut b = vec![0u8; kv.bytes(n)];
+            for (row, o) in x
+                .chunks_exact(brasa_quant::turbo::TQ_DIM)
+                .zip(b.chunks_exact_mut(brasa_quant::turbo::KV_TQ4_ROW))
+            {
+                brasa_quant::turbo::quantize_row(row, &rot, o);
+            }
+            b
+        }
     }
 }
 

@@ -214,6 +214,7 @@ fn forward_igual_a_la_referencia(kv: KvType, fixtures: &str, gemm: PrefillPrecis
         KvType::F32 => LOGIT_TOL,
         KvType::F16 => LOGIT_TOL_KV16,
         KvType::Q8_0 => LOGIT_TOL_KVQ8,
+        KvType::Tq4 => panic!("TQ4 no tiene referencia con redondeo: ver examples/kv_quality"),
     }
     .max(if gemm == PrefillPrecision::F16 {
         LOGIT_TOL_F16
