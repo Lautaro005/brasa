@@ -5,6 +5,7 @@ pub mod convert;
 pub mod mmap;
 pub mod qtype;
 pub mod safetensors;
+pub mod turbo;
 
 use std::fmt;
 

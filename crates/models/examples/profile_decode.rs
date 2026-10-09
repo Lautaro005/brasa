@@ -19,7 +19,7 @@ fn main() {
         max_tokens: 512,
         max_logit_rows: 1,
         kv: std::env::args().nth(3).map_or(KvType::F16, |s| {
-            KvType::parse(&s).expect("--kv f32|f16|q8_0")
+            KvType::parse(&s).expect("--kv f32|f16|q8_0|tq4")
         }),
     };
     let path = std::env::args().nth(4).map_or_else(

@@ -240,9 +240,44 @@ fn main() {
                 flops,
             );
         }
-        for kv in [KvType::F32, KvType::F16, KvType::Q8_0] {
-            let cache = KvPair::new(&ctx, kv, kv_k.clone(), kv_v.clone());
-            let (kc, vc) = cache.args();
+        for kv in [KvType::F32, KvType::F16, KvType::Q8_0, KvType::Tq4] {
+            // TQ4 se escribe con el kernel (la rotación cambia el dominio, ver `KvPair`).
+            let tq = (kv == KvType::Tq4).then(|| {
+                let rot = ctx.buffer_from(&brasa_quant::turbo::rotation()).unwrap();
+                let (src_k, src_v) = (
+                    ctx.buffer_from(&kv_k).unwrap(),
+                    ctx.buffer_from(&kv_v).unwrap(),
+                );
+                let (ck, cv) = (
+                    ctx.buffer::<u8>(kv.bytes(kv_k.len())).unwrap(),
+                    ctx.buffer::<u8>(kv.bytes(kv_v.len())).unwrap(),
+                );
+                let mut cmd = ctx.command().unwrap();
+                let rows = kv_k.len() / hd;
+                k.tq_store(
+                    &mut cmd,
+                    Arg::buf(&src_k),
+                    Arg::buf(&ck),
+                    Arg::buf(&rot),
+                    rows,
+                );
+                k.tq_store(
+                    &mut cmd,
+                    Arg::buf(&src_v),
+                    Arg::buf(&cv),
+                    Arg::buf(&rot),
+                    rows,
+                );
+                cmd.commit_and_wait().unwrap();
+                (ck, cv)
+            });
+            let cache =
+                (kv != KvType::Tq4).then(|| KvPair::new(&ctx, kv, kv_k.clone(), kv_v.clone()));
+            let (kc, vc) = match (&cache, &tq) {
+                (Some(c), _) => c.args(),
+                (None, Some((ck, cv))) => (Arg::buf(ck), Arg::buf(cv)),
+                _ => unreachable!(),
+            };
             let shape = AttnShape { kv, ..shape };
             let kv_bytes = 2.0 * (kv.block_bytes() as f64 / 32.0) * (lk * hkv * hd) as f64;
             let kvn = kv.name();

@@ -70,6 +70,8 @@ cargo run --release -p brasa-cli -- storage clean [--apply]              # borra
 .venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
+cargo test -p brasa-kernels --test tq -- --nocapture       # TurboQuant TQ4 (ADR 0033): rotación, escritura y atención
+cargo run --release -p brasa-models --example kv_quality -- f16 q8_0 tq4   # calidad de la KV cache vs referencia FP32 (ADR 0033)
 cargo bench -p brasa-kernels                   # microbenchmarks de kernels (tiempo de GPU)
 cargo run --release -p brasa-kernels --example mma_peak   # techo de simdgroup MMA del chip (f32/f16)
 cargo run --release -p brasa-models --example profile_decode -- 16000 16064 q8_0   # decode: ms/token de GPU en una posición [ctx] [kv] (usa la base de tuning; BRASA_TUNING=off para A/B)

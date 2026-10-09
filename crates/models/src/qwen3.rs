@@ -6,9 +6,11 @@
 //!   x += Wo·o; h = RMSNorm(x); x += Wdown·(silu(Wgate·h) · Wup·h)
 //! Activaciones en f32 (el GEMM de prefill las redondea a f16 en memoria threadgroup y la atención
 //! de prefill redondea Q a f16, ADR 0030);
-//! KV cache en f32, f16 o Q8 (`Limits.kv`, ADR 0009): K y V se calculan en un
+//! KV cache en f32, f16, Q8 o TQ4 (`Limits.kv`, ADR 0009 y 0033): K y V se calculan en un
 //! scratch f32 y `qk_norm_rope_store` aplica QK-norm y RoPE y las escribe en la caché, en un solo
-//! dispatch. Todos los buffers se asignan en `Qwen3::load`; el forward solo encola dispatches.
+//! dispatch. Con TQ4, `qk_norm_rope_store` deja K y V en el scratch; después Q y la salida de la
+//! atención se rotan (R y Rᵀ) y K y V se cuantizan a la caché en el dominio rotado. Todos los
+//! buffers se asignan en `Qwen3::load`; el forward solo encola dispatches.
 
 use std::path::Path;
 
@@ -225,6 +227,11 @@ enum KvCache {
         k: Buffer<u8>,
         v: Buffer<u8>,
     },
+    /// Bytes: filas TQ4 de 68 bytes (ADR 0033).
+    Tq4 {
+        k: Buffer<u8>,
+        v: Buffer<u8>,
+    },
 }
 
 impl KvCache {
@@ -242,6 +249,15 @@ impl KvCache {
                 k: ctx.buffer(kv.bytes(len))?,
                 v: ctx.buffer(kv.bytes(len))?,
             },
+            KvType::Tq4 => {
+                // Ceros: norma 0 y códigos 0 son valores finitos, que `flash_attention` puede
+                // leer más allá de la longitud (KV_ALIGN).
+                let mut k = ctx.buffer::<u8>(kv.bytes(len))?;
+                let mut v = ctx.buffer::<u8>(kv.bytes(len))?;
+                k.as_mut_slice().fill(0);
+                v.as_mut_slice().fill(0);
+                KvCache::Tq4 { k, v }
+            }
         })
     }
 
@@ -252,6 +268,10 @@ impl KvCache {
             KvCache::F16 { k, v } => (Arg::buf_at(k, off), Arg::buf_at(v, off)),
             KvCache::Q8 { k, v } => {
                 let b = KvType::Q8_0.bytes(off);
+                (Arg::buf_at(k, b), Arg::buf_at(v, b))
+            }
+            KvCache::Tq4 { k, v } => {
+                let b = KvType::Tq4.bytes(off);
                 (Arg::buf_at(k, b), Arg::buf_at(v, b))
             }
         }
@@ -265,7 +285,7 @@ impl KvCache {
             KvCache::F16 { k, v } => {
                 buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
             }
-            KvCache::Q8 { k, v } => {
+            KvCache::Q8 { k, v } | KvCache::Tq4 { k, v } => {
                 buffer_bytes(k.byte_len() as u64) + buffer_bytes(v.byte_len() as u64)
             }
         }
@@ -289,6 +309,8 @@ pub struct Qwen3 {
     layers: Vec<Layer>,
     rope: RopeTable,
     kv: KvCache,
+    /// Rotación `R` de TQ4 (128 × 128, fila mayor), solo con `Limits.kv == Tq4` (ADR 0033).
+    rot: Option<Buffer<f32>>,
     ws: Workspace,
     /// Precisión de las entradas del GEMM y de Q en la atención de prefill (ADR 0030): f16 por
     /// defecto; f32 para verificar.
@@ -403,6 +425,10 @@ impl Qwen3 {
         Ok(Self {
             kernels: Kernels::new(ctx)?,
             kv: KvCache::new(ctx, limits.kv, kv_len)?,
+            rot: match limits.kv {
+                KvType::Tq4 => Some(ctx.buffer_from(&brasa_quant::turbo::rotation())?),
+                _ => None,
+            },
             cfg,
             limits,
             embed,
@@ -441,7 +467,9 @@ impl Qwen3 {
                 .sum::<u64>();
         }
         let w = &self.ws;
-        let workspace = b(&w.x)
+        let rot = self.rot.as_ref().map_or(0, b);
+        let workspace = rot
+            + b(&w.x)
             + b(&w.h)
             + b(&w.q)
             + b(&w.k_new)
@@ -589,10 +617,18 @@ impl Qwen3 {
             pos0,
             kv: kvt,
         };
-        let (k_dst, v_dst) = self.kv.args(kv_off);
+        // TQ4 (ADR 0033): QK-norm y RoPE dejan K y V en el scratch f32; después Q se rota con R y
+        // K y V se cuantizan a la caché en el dominio rotado.
+        let tq = self.rot.as_ref();
+        let (rope_kv, k_dst, v_dst) = if tq.is_some() {
+            (KvType::F32, Arg::buf(&ws.k_new), Arg::buf(&ws.v_new))
+        } else {
+            let (k_dst, v_dst) = self.kv.args(kv_off);
+            (kvt, k_dst, v_dst)
+        };
         k.qk_norm_rope_store(
             cmd,
-            kvt,
+            rope_kv,
             [Arg::buf(&ws.q), Arg::buf(&ws.k_new), Arg::buf(&ws.v_new)],
             [Arg::buf(&l.q_norm), Arg::buf(&l.k_norm)],
             c.eps,
@@ -600,6 +636,24 @@ impl Qwen3 {
             [k_dst, v_dst],
             shape,
         );
+        if let Some(r) = tq {
+            let (k_tq, v_tq) = self.kv.args(kv_off);
+            k.tq_rotate(cmd, Arg::buf(&ws.q), Arg::buf(r), tokens * c.heads, false);
+            k.tq_store(
+                cmd,
+                Arg::buf(&ws.k_new),
+                k_tq,
+                Arg::buf(r),
+                tokens * c.kv_heads,
+            );
+            k.tq_store(
+                cmd,
+                Arg::buf(&ws.v_new),
+                v_tq,
+                Arg::buf(r),
+                tokens * c.kv_heads,
+            );
+        }
         let (kc, vc) = self.kv.args(layer_off);
         let half_io = self.precision(tokens) == PrefillPrecision::F16;
         // Salida de la atención: entrada del GEMM de o_proj (f16 en `ws.xh` o f32 en `ws.attn`).
@@ -638,6 +692,14 @@ impl Qwen3 {
                 shape,
                 self.precision(tokens),
             );
+        }
+        // TQ4: la salida de la atención está en el dominio rotado; Rᵀ la lleva de vuelta antes de Wo.
+        if let Some(r) = tq {
+            if half_io {
+                k.tq_rotate_f16(cmd, attn, Arg::buf(r), tokens * c.heads, true);
+            } else {
+                k.tq_rotate(cmd, attn, Arg::buf(r), tokens * c.heads, true);
+            }
         }
         self.matmul(cmd, &l.wo, attn, Arg::buf(&ws.h), tokens);
         if decode {

@@ -40,6 +40,8 @@ pub mod sources {
     pub const DECODE_ATTENTION: &str = include_str!("metal/decode_attention.metal");
     pub const KV: &str = include_str!("metal/kv.metal");
     pub const QKV: &str = include_str!("metal/qkv.metal");
+    /// Rotación y escritura TQ4 de la KV cache (ADR 0033).
+    pub const TQ: &str = include_str!("metal/tq.metal");
     /// Acceso a la KV cache por tipo; [`super::kv_source`] lo antepone a los kernels de atención.
     pub const KV_ACCESS: &str = include_str!("metal/kv_access.metal");
 
@@ -59,6 +61,7 @@ pub mod sources {
         ("kv.metal", KV),
         ("qkv.metal", QKV),
         ("kv_access.metal", KV_ACCESS),
+        ("tq.metal", TQ),
     ];
 }
 
@@ -69,8 +72,19 @@ pub fn kv_source(kv: KvType, source: &str) -> String {
         KvType::F32 => "",
         KvType::F16 => "#define KV_F16 1\n",
         KvType::Q8_0 => "#define KV_Q8 1\n",
+        KvType::Tq4 => "#define KV_TQ4 1\n",
     };
-    format!("{define}{}\n{source}", sources::KV_ACCESS)
+    // TQ4 decodifica con el codebook (`TQ_CB`), que va antes del acceso a la caché.
+    let consts = match kv {
+        KvType::Tq4 => brasa_quant::turbo::metal_constants(),
+        _ => String::new(),
+    };
+    format!("{define}{consts}{}\n{source}", sources::KV_ACCESS)
+}
+
+/// Fuente de `tq.metal`: el codebook de TQ4 y el kernel (ADR 0033).
+fn tq_source() -> String {
+    format!("{}{}", brasa_quant::turbo::metal_constants(), sources::TQ)
 }
 
 /// Hilos por threadgroup para kernels elemento a elemento.
@@ -97,6 +111,9 @@ pub enum KvType {
     F16,
     /// Filas de 128 `int8` + 4 escalas f16 (136 bytes; ADR 0009).
     Q8_0,
+    /// TurboQuant a 4 bits (ADR 0033): filas de 64 bytes de índices, norma f16 y relleno (68
+    /// bytes). Los kernels de atención leen en el dominio rotado; ver `brasa_quant::turbo`.
+    Tq4,
 }
 
 impl KvType {
@@ -106,6 +123,7 @@ impl KvType {
             KvType::F32 => 128,
             KvType::F16 => 64,
             KvType::Q8_0 => 34,
+            KvType::Tq4 => 17,
         }
     }
 
@@ -116,6 +134,7 @@ impl KvType {
                 assert_eq!(n % KV_Q8_DIM, 0, "KV Q8: filas de {KV_Q8_DIM} valores");
                 n / KV_Q8_DIM * KV_Q8_ROW
             }
+            KvType::Tq4 => brasa_quant::turbo::tq4_bytes(n),
             _ => n * self.block_bytes() / 32,
         }
     }
@@ -129,6 +148,7 @@ impl KvType {
             KvType::F32 => "f32",
             KvType::F16 => "f16",
             KvType::Q8_0 => "q8_0",
+            KvType::Tq4 => "tq4",
         }
     }
 
@@ -137,6 +157,7 @@ impl KvType {
             "f32" => Some(KvType::F32),
             "f16" => Some(KvType::F16),
             "q8_0" | "q8" => Some(KvType::Q8_0),
+            "tq4" => Some(KvType::Tq4),
             _ => None,
         }
     }
@@ -185,16 +206,20 @@ pub struct Kernels {
     /// gate + up + SwiGLU en un kernel (q4_0, entradas f16, bloques de 64 tokens).
     gemm64_swiglu: Pipeline,
     /// Variantes por [`KvType`] (índice `KvType as usize`).
-    flash_attn: [Pipeline; 3],
+    flash_attn: [Pipeline; 4],
     /// `flash_attn_gqa` por precisión de Q ([`PrefillPrecision`]), tamaño de grupo GQA
     /// ([`GQA_GROUPS`]) y tipo de KV.
-    flash_attn_gqa: [[[Pipeline; 3]; 4]; 2],
-    attn_decode_partial: [Pipeline; 3],
+    flash_attn_gqa: [[[Pipeline; 4]; 4]; 2],
+    attn_decode_partial: [Pipeline; 4],
     /// `attn_decode_lanes` por tamaño de grupo GQA ([`GQA_GROUPS`]) y tipo de KV.
-    attn_decode_lanes: [[Pipeline; 3]; 4],
+    attn_decode_lanes: [[Pipeline; 4]; 4],
     store_kv: [Pipeline; 3],
     /// `qk_norm_rope_store` por tipo de KV (T3.5).
     qk_norm_rope_store: [Pipeline; 3],
+    /// Rotación de Q y de la salida (f32 y f16) y escritura TQ4 (ADR 0033).
+    tq_rotate_f32: Pipeline,
+    tq_rotate_f16: Pipeline,
+    tq_store: Pipeline,
     attn_decode_reduce: Pipeline,
     /// Parámetros de lanzamiento de decode (ADR 0029); por defecto, los fijados a mano.
     launch: Launch,
@@ -210,13 +235,29 @@ fn gqa_variants(
     ctx: &Context,
     source: &str,
     function: &str,
-) -> Result<[[Pipeline; 3]; 4], MetalError> {
+) -> Result<[[Pipeline; 4]; 4], MetalError> {
     let v = |g: usize| kv_variants(ctx, &format!("#define GQA_G {g}\n{source}"), function);
     Ok([v(1)?, v(2)?, v(4)?, v(8)?])
 }
 
 /// Compila `function` de `source` para cada tipo de KV (ver [`kv_source`]).
-fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline; 3], MetalError> {
+fn kv_variants(ctx: &Context, source: &str, function: &str) -> Result<[Pipeline; 4], MetalError> {
+    let v = |kv| ctx.pipeline(&kv_source(kv, source), function);
+    Ok([
+        v(KvType::F32)?,
+        v(KvType::F16)?,
+        v(KvType::Q8_0)?,
+        v(KvType::Tq4)?,
+    ])
+}
+
+/// Como [`kv_variants`] para los kernels que escriben la caché (`qk_norm_rope_store`): sin TQ4,
+/// que se escribe aparte con [`Kernels::tq_store`].
+fn kv_variants_escritura(
+    ctx: &Context,
+    source: &str,
+    function: &str,
+) -> Result<[Pipeline; 3], MetalError> {
     let v = |kv| ctx.pipeline(&kv_source(kv, source), function);
     Ok([v(KvType::F32)?, v(KvType::F16)?, v(KvType::Q8_0)?])
 }
@@ -287,7 +328,10 @@ impl Kernels {
                     "flash_attn_gqa",
                 )?,
             ],
-            qk_norm_rope_store: kv_variants(ctx, QKV, "qk_norm_rope_store")?,
+            qk_norm_rope_store: kv_variants_escritura(ctx, QKV, "qk_norm_rope_store")?,
+            tq_rotate_f32: ctx.pipeline(&tq_source(), "tq_rotate_f32")?,
+            tq_rotate_f16: ctx.pipeline(&tq_source(), "tq_rotate_f16")?,
+            tq_store: ctx.pipeline(&tq_source(), "tq_store_tq4")?,
             store_kv: [
                 ctx.pipeline(KV, "store_kv_f32")?,
                 ctx.pipeline(KV, "store_kv_f16")?,
@@ -993,6 +1037,10 @@ impl Kernels {
             ..
         } = shape;
         assert_eq!(dim, 128, "qk_norm_rope_store requiere head_dim 128");
+        assert!(
+            kv != KvType::Tq4,
+            "qk_norm_rope_store no escribe TQ4: ver `tq_store`"
+        );
         assert_eq!(dim, table.dim, "dimensión de la tabla RoPE");
         assert!(
             pos0 + tokens <= table.max_pos,
@@ -1024,6 +1072,54 @@ impl Kernels {
         );
     }
 
+    /// Rota en el lugar `rows` filas de 128 floats de `x` por `rot` (`R` de 128 × 128, fila mayor),
+    /// o por `Rᵀ` con `transpose` (ADR 0033). Q se rota con `R`; la salida de la atención, con `Rᵀ`.
+    pub fn tq_rotate<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        x: Arg<'a>,
+        rot: Arg<'a>,
+        rows: usize,
+        transpose: bool,
+    ) {
+        cmd.dispatch_groups(
+            &self.tq_rotate_f32,
+            &[x, rot, Arg::u32(transpose as u32)],
+            [rows, 1, 1],
+            [128, 1, 1],
+        );
+    }
+
+    /// Como [`Kernels::tq_rotate`], con `x` en f16 (la salida de la atención de prefill).
+    pub fn tq_rotate_f16<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        x: Arg<'a>,
+        rot: Arg<'a>,
+        rows: usize,
+        transpose: bool,
+    ) {
+        cmd.dispatch_groups(
+            &self.tq_rotate_f16,
+            &[x, rot, Arg::u32(transpose as u32)],
+            [rows, 1, 1],
+            [128, 1, 1],
+        );
+    }
+
+    /// Cuantiza `rows` filas de 128 floats de `src` (ya con RoPE) a filas TQ4 de `dst` (68 bytes),
+    /// con la rotación `rot` (ADR 0033). Especificación: `brasa_quant::turbo::quantize_row`.
+    pub fn tq_store<'a>(
+        &self,
+        cmd: &mut Command<'a>,
+        src: Arg<'a>,
+        dst: Arg<'a>,
+        rot: Arg<'a>,
+        rows: usize,
+    ) {
+        cmd.dispatch_groups(&self.tq_store, &[src, dst, rot], [rows, 1, 1], [128, 1, 1]);
+    }
+
     /// Copia `n` floats de `src` a la KV cache `dst` (de tipo `kv`), convirtiendo si hace falta.
     /// En Q8 `n` es múltiplo de 128 (filas completas) y hay un hilo por bloque de 32.
     pub fn store_kv<'a>(
@@ -1034,6 +1130,10 @@ impl Kernels {
         dst: Arg<'a>,
         n: usize,
     ) {
+        assert!(
+            kv != KvType::Tq4,
+            "TQ4 se escribe con `tq_store` (rota antes de cuantizar)"
+        );
         let threads = match kv {
             KvType::Q8_0 => {
                 assert_eq!(n % KV_Q8_DIM, 0, "KV Q8: filas de {KV_Q8_DIM} valores");

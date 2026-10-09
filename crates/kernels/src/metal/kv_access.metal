@@ -6,6 +6,9 @@
 //   kv1(fila, d)     valor d;
 //   load_kv(...)     fragmento 8×8 (claves × dimensiones, o transpuesto) como simdgroup_float8x8.
 // Q8: cada fila son 128 int8 y 4 escalas f16 (136 bytes); el valor es escala · q, exacto en f32.
+// TQ4 (ADR 0033): cada fila son 64 bytes de índices de 4 bits (dimensión 2b en el nibble bajo),
+// la norma f16 en el byte 64 y 2 de relleno (68 bytes). El valor es norma · TQ_CB[c], en el
+// dominio rotado; el host antepone `TQ_CB` (brasa_quant::turbo::metal_constants).
 #include <metal_stdlib>
 #include <metal_simdgroup_matrix>
 using namespace metal;
@@ -25,6 +28,24 @@ inline float4 kv4(device const KV_T* r, uint i) {
 inline float kv1(device const KV_T* r, uint d) {
     return float(((device const char*)r)[d]) * kv_scale(r, d / 32);
 }
+#elif defined(KV_TQ4)
+typedef uchar KV_T;
+constant uint KV_ROW = 68;
+inline device const KV_T* kv_row(device const KV_T* p, uint row) { return p + row * KV_ROW; }
+inline float kv_norm(device const KV_T* r) {
+    return float(((device const half*)(r + 64))[0]);
+}
+inline float kv1(device const KV_T* r, uint d) {
+    uint b = r[d >> 1];
+    uint c = (d & 1) != 0 ? (b >> 4) : (b & 15);
+    return kv_norm(r) * TQ_CB[c];
+}
+// Dimensiones 4i .. 4i + 3: el ushort i (bytes 2i, 2i + 1) tiene los cuatro nibbles en orden.
+inline float4 kv4(device const KV_T* r, uint i) {
+    uint w = ((device const ushort*)r)[i];
+    return kv_norm(r) * float4(TQ_CB[w & 15], TQ_CB[(w >> 4) & 15], TQ_CB[(w >> 8) & 15],
+                               TQ_CB[w >> 12]);
+}
 #else
 #if defined(KV_F16)
 typedef half  KV_T;
@@ -43,8 +64,8 @@ inline float kv1(device const KV_T* r, uint d) { return float(r[d]); }
 inline simdgroup_float8x8 load_kv(device const KV_T* cache, uint j, uint hkv, uint kh, uint d0,
                                   bool transpose, ushort lane) {
     simdgroup_float8x8 f;
-#if defined(KV_Q8)
-    // Cada lane arma sus dos elementos: fila fm, columnas fn y fn + 1 (layout de Apple).
+#if defined(KV_Q8) || defined(KV_TQ4)
+    // Cada lane arma sus dos elementos (Q8 y TQ4 se decodifican por elemento): fila fm, columnas fn y fn + 1 (layout de Apple).
     ushort qid = lane / 4;
     ushort fm = (qid & 4) + ((lane / 2) % 4);
     ushort fn = (qid & 2) * 2 + (lane % 2) * 2;
