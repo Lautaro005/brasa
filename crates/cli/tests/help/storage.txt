@@ -1,0 +1,17 @@
+Espacio de la carpeta de modelos: modelos, descargas a medias, reserva y limpieza
+
+Usage: storage [OPTIONS] [COMMAND]
+
+Commands:
+  clean  Borra las descargas a medias (`.part`) viejas. Sin --apply solo muestra qué borraría
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --dir <DIR>
+          Carpeta base de modelos (por defecto la efectiva; ver `brasa config show`)
+
+      --json
+          Salida en JSON (la misma forma que `GET /api/storage`)
+
+  -h, --help
+          Print help

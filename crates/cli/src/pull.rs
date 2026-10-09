@@ -5,9 +5,10 @@
 use std::path::PathBuf;
 
 use brasa_catalog::manifest::{FileSpec, Manifest};
-use brasa_catalog::pull;
+use brasa_catalog::{pull, storage};
 use clap::Args;
 
+use crate::config::Config;
 use crate::run::models_dir;
 
 #[derive(Debug, Args)]
@@ -86,6 +87,12 @@ pub fn run(a: PullArgs) -> Result<(), String> {
         format!("{} @ {} ({})", p.repo, short(p.revision), p.subdir)
     };
     let total: u64 = p.files.iter().filter_map(|f| f.size).sum();
+    // Chequeo previo de espacio (ADR 0034): lo que falta bajar tiene que entrar sin usar la
+    // reserva. Lo que ya está en disco (archivos completos y `.part`) no se vuelve a pedir.
+    let settings = Config::load()?.storage()?;
+    let remaining = storage::remaining_bytes(&p.dest, p.files);
+    let volume = storage::volume(&p.dest);
+    let available = volume.map(|v| v.free_bytes.saturating_sub(settings.reserve_bytes));
     if a.dry_run {
         if a.json {
             let files: Vec<_> = p
@@ -104,6 +111,10 @@ pub fn run(a: PullArgs) -> Result<(), String> {
                     "dest": p.dest.display().to_string(),
                     "files": files,
                     "total_bytes": total,
+                    "remaining_bytes": remaining,
+                    "free_bytes": volume.map(|v| v.free_bytes),
+                    "reserve_bytes": settings.reserve_bytes,
+                    "available_bytes": available,
                 }))
                 .unwrap()
             );
@@ -119,9 +130,22 @@ pub fn run(a: PullArgs) -> Result<(), String> {
                 );
             }
             println!("  total: {}", human(total));
+            println!(
+                "  falta bajar: {}; disponible: {}",
+                human(remaining),
+                available.map_or_else(
+                    || "no se pudo leer".into(),
+                    |b| format!(
+                        "{} (libre menos la reserva de {})",
+                        human(b),
+                        human(settings.reserve_bytes)
+                    )
+                )
+            );
         }
         return Ok(());
     }
+    storage::check_space(&p.dest, remaining, &settings).map_err(|e| e.0)?;
 
     if !from_source && m.prebuilt.as_ref().is_some_and(|p| !p.is_pinned()) {
         eprintln!(

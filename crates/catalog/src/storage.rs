@@ -81,12 +81,14 @@ impl Settings {
     }
 }
 
-/// Bytes en forma legible (`2.21 GiB`, `14.0 MiB`, `512 B`).
+/// Bytes en forma legible (`2.21 GiB`, `14.0 MiB`, `9.8 KiB`, `512 B`).
 pub fn human(b: u64) -> String {
     if b >= GIB {
         format!("{:.2} GiB", b as f64 / GIB as f64)
     } else if b >= MIB {
         format!("{:.1} MiB", b as f64 / MIB as f64)
+    } else if b >= 1024 {
+        format!("{:.1} KiB", b as f64 / 1024.0)
     } else {
         format!("{b} B")
     }
@@ -138,14 +140,15 @@ pub fn space_error(dir: &Path, need: u64, free: u64, reserve: u64) -> Option<Str
         return None;
     }
     Some(format!(
-        "no hay espacio para la descarga en {}: hacen falta {} y hay {} libres, de los que {} son \
-         la reserva que las descargas no usan; faltan {}. Liberá espacio (`brasa storage clean`, \
-         `brasa rm <modelo>`) o bajá la reserva (`reserve_gib` en la sección [storage] de la \
-         configuración)",
+        "no hay espacio para la descarga en {}: hacen falta {}; hay {} libres y la reserva que \
+         las descargas no usan es de {}, así que quedan {} disponibles; faltan {}. Liberá espacio \
+         (`brasa storage clean`, `brasa rm <modelo>`) o bajá la reserva (`reserve_gib` en la \
+         sección [storage] de la configuración)",
         dir.display(),
         human(need),
         human(free),
         human(reserve),
+        human(available),
         human(need - available)
     ))
 }
@@ -886,6 +889,7 @@ mod tests {
     #[test]
     fn formatos_legibles() {
         assert_eq!(human(512), "512 B");
+        assert_eq!(human(10_000), "9.8 KiB");
         assert_eq!(human(3 * MIB / 2), "1.5 MiB");
         assert_eq!(human(2 * GIB), "2.00 GiB");
         assert_eq!(human_age(30), "30 s");

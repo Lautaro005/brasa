@@ -16,6 +16,7 @@ mod pull;
 mod rm;
 mod run;
 mod serve;
+mod storage;
 mod tune;
 
 use clap::{Parser, Subcommand};
@@ -66,6 +67,8 @@ enum Command {
     Convert(convert::ConvertArgs),
     /// Borra un modelo local (pide confirmación).
     Rm(rm::RmArgs),
+    /// Espacio de la carpeta de modelos: modelos, descargas a medias, reserva y limpieza.
+    Storage(storage::StorageArgs),
     /// Configuración del usuario (~/.config/brasa/config.toml).
     Config(config::ConfigArgs),
     /// Scripts de autocompletado para zsh, bash o fish.
@@ -119,6 +122,12 @@ fn main() {
         }
         Command::Rm(args) => {
             if let Err(e) = rm::run(args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Storage(args) => {
+            if let Err(e) = storage::run(args) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
