@@ -422,6 +422,15 @@ color de la hoja, sobre pista `gui-cold`; una marca vertical de 2px en `gui-embe
 medido. A 95 % del presupuesto o más (o si el plan no entra), todos los segmentos pasan a `gui-bad`.
 Leyenda en una lista `dt/dd` con un cuadrado de 10px por segmento. Se reusa en la vista Plan.
 
+#### Barra de almacenamiento (Modelos)
+La misma barra de 14px de la memoria, contra el tamaño del volumen: segmentos grises para modelos
+(`gui-seg-weights`), descargas a medias (`gui-seg-kv`) y el resto de lo usado (`gui-seg-overhead`),
+pista `gui-cold` para lo libre y, al final, la reserva como un hueco de `gui-surface` con borde de 1px
+`gui-line-2` (espacio que se deja libre, no dato). Gris a propósito: lo guardado no es trabajo. Si lo
+libre no supera la reserva, los segmentos y el borde de la reserva pasan a `gui-bad`. Leyenda `dt/dd`
+como la de memoria. Debajo, tablas de modelos (con **Borrar** en dos pasos), descargas a medias
+(etiqueta "Vieja" o "Para reanudar") y lo no reconocido, que solo se informa.
+
 #### Buttons
 - **Shape:** 6px, borde 1px `gui-line-2`, 8px × 12px, 500 13px, ícono de 16px.
 - **Default:** fondo `gui-field`. Hover: `gui-hover` y borde `gui-ink-3`. Activo: baja 1px.

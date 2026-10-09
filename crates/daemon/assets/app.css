@@ -248,6 +248,25 @@ table.data { width: 100%; border-collapse: collapse; font-variant-numeric: tabul
 .dl-file { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .dl-none { color: var(--ink-3); font-size: 13px; }
 
+/* ---------- Modelos: almacenamiento (ADR 0034) ---------- */
+/* Lo guardado no es trabajo: grises, como la memoria reservada. La reserva es un hueco con borde
+   (espacio que se deja libre) y todo pasa a --bad cuando lo libre no supera la reserva. */
+.store { max-width: 640px; }
+.seg[data-k="models"] { background: var(--seg-weights); }
+.seg[data-k="partial"] { background: var(--seg-kv); }
+.seg[data-k="others"] { background: var(--seg-overhead); }
+.store-reserve {
+  position: absolute; top: 0; bottom: 0; right: 0; width: 0;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); border-radius: 0 3px 3px 0;
+}
+.stack.full .store-reserve { box-shadow: inset 0 0 0 1px var(--bad); }
+.kv dd.bad { color: var(--bad); }
+.store-sub { margin: 20px 0 8px; font-size: 13px; font-weight: 650; }
+.store-sub-note { margin-left: 8px; font-weight: 400; color: var(--ink-3); }
+.data th.act, .data td.act { text-align: right; padding-right: 0; }
+.store-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
+#store-msg { margin-top: 12px; }
+
 .tag {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; font-weight: 500; padding: 1px 8px 1px 6px; border-radius: 999px;

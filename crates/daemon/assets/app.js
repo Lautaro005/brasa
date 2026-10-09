@@ -833,11 +833,14 @@ function setMsg(node, text, bad) {
 
 async function loadModels() {
   const tbody = $('#inst-table tbody');
+  loadStorage();
   try {
     const [m, st, pull] = await Promise.all([getJSON('/api/models'), getJSON('/api/status'), getJSON('/api/models/pull')]);
     state.status = st;
     pullState.status = pull;
     pullState.catalog = m.catalog;
+    pullState.available = m.available_bytes;
+    pullState.reserve = m.reserve_bytes;
     $('#models-sub').textContent = 'El plan usa el contexto ' + m.ctx.toLocaleString('es') + ' y KV ' + m.kv + ' de este servidor.';
     $('#dir-path').textContent = m.dir;
     $('#dir-path').title = m.dir;
@@ -925,6 +928,11 @@ function pullCell(c) {
   const resume = c.partial_bytes > 0;
   b.append(icon('i-download'), resume ? 'Reanudar' : 'Descargar');
   if (resume) b.title = gib(c.partial_bytes) + ' ya en disco';
+  // Aviso previo; el que decide es el daemon (507 con el faltante, que se muestra abajo).
+  const need = Math.max(0, (c.download_bytes || 0) - (c.partial_bytes || 0));
+  if (typeof pullState.available === 'number' && need > pullState.available) {
+    b.title = 'No entra sin usar la reserva de ' + gib(pullState.reserve) + ': faltan ' + gib(need - pullState.available) + '. Liberá espacio en Almacenamiento.';
+  }
   b.disabled = busy;
   b.addEventListener('click', () => startPull(c.name, b));
   td.appendChild(b);
@@ -1050,6 +1058,182 @@ async function openDir(btn) {
 }
 $('#dir-change').addEventListener('click', (e) => changeDir(e.currentTarget));
 $('#dir-open').addEventListener('click', (e) => openDir(e.currentTarget));
+
+/* ---------- Modelos: almacenamiento (ADR 0034) ---------- */
+/* Todo sale de /api/storage; borrar y limpiar piden dos clics (el primero arma). */
+const size = (b) => (typeof b !== 'number' ? '—' : b >= GiB ? gib(b) : b >= 1048576 ? mib(b) : b >= 1024 ? Math.round(b / 1024) + ' KiB' : b + ' B');
+const pctOf = (b, total) => (total > 0 && b > 0 ? Math.min(100, (b / total) * 100) : 0);
+function ageText(s) {
+  if (typeof s !== 'number') return '—';
+  if (s >= 2 * 86400) return 'hace ' + Math.floor(s / 86400) + ' días';
+  if (s >= 86400) return 'hace 1 día';
+  if (s >= 3600) return 'hace ' + Math.floor(s / 3600) + ' h';
+  if (s >= 60) return 'hace ' + Math.floor(s / 60) + ' min';
+  return 'hace ' + Math.floor(s) + ' s';
+}
+const JSON_HEADERS = { 'Content-Type': 'application/json', Accept: 'application/json' };
+
+async function loadStorage() {
+  try {
+    renderStorage(await getJSON('/api/storage'));
+  } catch (e) {
+    $('#store-note').textContent = 'No se pudo leer el almacenamiento: ' + e.message;
+  }
+}
+
+function renderStorage(s) {
+  const v = s.volume;
+  const total = v ? v.total_bytes : 0;
+  const free = v ? v.free_bytes : null;
+  // Lo usado que no son modelos ni descargas de Brasa (otras apps, el sistema, lo no reconocido).
+  const rest = v ? Math.max(0, total - free - s.models_bytes - s.partial_bytes) : null;
+  const tight = !!v && free <= s.reserve_bytes;
+  const stack = $('#store-stack');
+  const widths = { models: s.models_bytes, partial: s.partial_bytes, others: rest || 0 };
+  for (const k of Object.keys(widths)) stack.querySelector('[data-k="' + k + '"]').style.width = pctOf(widths[k], total).toFixed(2) + '%';
+  $('#store-reserve').style.width = v ? pctOf(Math.min(s.reserve_bytes, free), total).toFixed(2) + '%' : '0';
+  stack.classList.toggle('full', tight);
+  stack.setAttribute('aria-label', v
+    ? 'Volumen: ' + gib(total - free) + ' usados de ' + gib(total) + ', ' + gib(free) + ' libres, reserva de ' + gib(s.reserve_bytes)
+    : 'No se pudo leer el volumen');
+  const colors = ['--seg-weights', '--seg-kv', '--seg-overhead'].map(cssVar);
+  kvList($('#store-list'), [
+    ['Modelos', size(s.models_bytes), colors[0]],
+    ['Descargas a medias', size(s.partial_bytes), colors[1]],
+    ['Otros datos del volumen', gib(rest), colors[2]],
+    ['Libre', gib(free)],
+    ['Reserva (no la usan las descargas)', gib(s.reserve_bytes), cssVar('--line-2')],
+    ['Disponible para descargas', gib(s.available_bytes), null, tight ? 'bad' : null],
+  ]);
+  $('#store-note').textContent = v
+    ? 'Volumen de ' + gib(total) + ' · ' + gib(free) + ' libres' + (tight ? ' · menos que la reserva: no se puede descargar' : '')
+    : 'No se pudo leer el volumen';
+
+  const mb = $('#store-models tbody');
+  mb.replaceChildren();
+  for (const m of s.models) {
+    const act = el('td', 'act');
+    if (m.loaded) act.appendChild(el('span', 'tag ok', 'Lo sirve este servidor'));
+    else if (!m.deletable) act.appendChild(el('span', 'tag live', 'Descargando'));
+    else act.appendChild(deleteButton(m));
+    const tr = el('tr');
+    tr.append(el('td', null, m.name), el('td', 'n', size(m.bytes)), act);
+    mb.appendChild(tr);
+  }
+  $('#store-models').hidden = !s.models.length;
+  $('#store-models-empty').hidden = s.models.length > 0;
+
+  const pb = $('#store-parts tbody');
+  pb.replaceChildren();
+  for (const p of s.partials) {
+    const tr = el('tr');
+    if (!p.old) tr.className = 'muted';
+    const st = el('td');
+    st.appendChild(el('span', p.old ? 'tag' : 'tag cold', p.old ? 'Vieja' : 'Para reanudar'));
+    tr.append(el('td', 'mono-v wrap', p.path), el('td', 'n', size(p.bytes)), el('td', 'n', ageText(p.age_secs)), st);
+    pb.appendChild(tr);
+  }
+  $('#store-parts').hidden = !s.partials.length;
+  $('#store-parts-empty').hidden = s.partials.length > 0;
+  const old = s.partials.filter((p) => p.old);
+  const clean = $('#store-clean');
+  if (!cleanArmed) clean.disabled = !old.length;
+  $('#store-clean-note').textContent = old.length
+    ? old.length + (old.length === 1 ? ' descarga' : ' descargas') + ' con ' + s.partial_max_age_days + ' días o más (' + size(s.old_partial_bytes) + ')'
+    : 'Ninguna descarga a medias tiene ' + s.partial_max_age_days + ' días o más; las más nuevas quedan para reanudar.';
+
+  const ob = $('#store-other tbody');
+  ob.replaceChildren();
+  for (const o of s.other) {
+    const tr = el('tr', 'muted');
+    tr.append(el('td', 'mono-v', o.name), el('td', 'n', o.target ? '—' : size(o.bytes)), el('td', 'wrap', o.label + (o.target ? ' → ' + o.target : '')));
+    ob.appendChild(tr);
+  }
+  $('#store-other-wrap').hidden = !s.other.length;
+}
+
+/* Borrar un modelo: dos pasos, como borrar una conversación del chat. */
+function deleteButton(m) {
+  const b = el('button', 'btn danger');
+  b.type = 'button';
+  const label = el('span', 'b-label', 'Borrar');
+  b.append(icon('i-clear'), label);
+  const idle = () => {
+    b.classList.remove('confirm');
+    label.textContent = 'Borrar';
+    b.setAttribute('aria-label', 'Borrar ' + m.name + ' (' + size(m.bytes) + ')');
+  };
+  idle();
+  let armed = null;
+  b.addEventListener('click', async () => {
+    if (!armed) {
+      b.classList.add('confirm');
+      label.textContent = '¿Borrar? Confirmar';
+      b.setAttribute('aria-label', 'Confirmar: borrar ' + m.name + ' del disco');
+      armed = setTimeout(() => { armed = null; idle(); }, 4000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
+    b.disabled = true;
+    b.setAttribute('aria-busy', 'true');
+    const msg = $('#store-msg');
+    try {
+      const r = await getJSON('/api/storage/models/' + encodeURIComponent(m.name), {
+        method: 'DELETE', headers: JSON_HEADERS, body: JSON.stringify({ confirm: m.name }),
+      });
+      setMsg(msg, 'Se borró ' + r.deleted + ': ' + size(r.bytes) + ' liberados.');
+    } catch (e) {
+      setMsg(msg, 'No se pudo borrar ' + m.name + ': ' + e.message, true);
+    }
+    loadModels();
+  });
+  return b;
+}
+
+/* Limpiar descargas viejas: el primer clic pide un dry-run y muestra qué se borraría; el segundo
+   borra. */
+let cleanArmed = null;
+function disarmClean() {
+  const b = $('#store-clean');
+  clearTimeout(cleanArmed);
+  cleanArmed = null;
+  b.classList.remove('danger', 'confirm');
+  b.querySelector('.b-label').textContent = 'Limpiar descargas viejas';
+}
+$('#store-clean').addEventListener('click', async (e) => {
+  const b = e.currentTarget;
+  const msg = $('#store-msg');
+  b.disabled = true;
+  b.setAttribute('aria-busy', 'true');
+  try {
+    if (!cleanArmed) {
+      const r = await getJSON('/api/storage/clean', { method: 'POST', headers: JSON_HEADERS, body: '{}' });
+      if (!r.items.length) {
+        setMsg(msg, 'No hay descargas a medias con ' + r.older_than_days + ' días o más.');
+        return;
+      }
+      const n = r.items.length;
+      setMsg(msg, (n === 1 ? 'Se borraría 1 archivo' : 'Se borrarían ' + n + ' archivos') + ' (' + size(r.bytes) + '): ' + r.items.map((i) => i.path).join(', ') + '. Clic de nuevo para borrar.');
+      b.classList.add('danger', 'confirm');
+      b.querySelector('.b-label').textContent = '¿Borrar? Confirmar';
+      cleanArmed = setTimeout(disarmClean, 6000);
+      return;
+    }
+    disarmClean();
+    const r = await getJSON('/api/storage/clean', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ apply: true }) });
+    const n = r.items.length;
+    const skipped = r.skipped.length ? ' Sin tocar: ' + r.skipped.map((x) => x.path + ' (' + x.reason + ')').join(', ') + '.' : '';
+    setMsg(msg, (n ? (n === 1 ? 'Se borró 1 archivo' : 'Se borraron ' + n + ' archivos') + ': ' + size(r.bytes) + ' liberados.' : 'No se borró nada.') + skipped);
+    loadModels();
+  } catch (err) {
+    disarmClean();
+    setMsg(msg, 'No se pudo limpiar: ' + err.message, true);
+  } finally {
+    b.disabled = false;
+    b.removeAttribute('aria-busy');
+  }
+});
 
 async function copy(btn, text, label) {
   const old = Array.from(btn.childNodes);

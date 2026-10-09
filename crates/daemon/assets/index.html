@@ -239,6 +239,55 @@
         </div>
         <p id="dir-msg" class="control-msg dir-msg" role="status" aria-live="polite"></p>
       </section>
+      <section class="panel" aria-labelledby="h-store">
+        <div class="panel-head">
+          <h2 id="h-store">Almacenamiento</h2>
+          <p id="store-note" class="panel-note"></p>
+        </div>
+        <div class="store">
+          <div class="stack store-stack" id="store-stack" role="img" aria-label="Uso del volumen">
+            <span class="seg" data-k="models"></span><span class="seg" data-k="partial"></span><span class="seg" data-k="others"></span>
+            <span class="store-reserve" id="store-reserve"></span>
+          </div>
+          <dl class="kv" id="store-list"></dl>
+        </div>
+        <h3 class="store-sub">Modelos en la carpeta</h3>
+        <div class="table-wrap">
+          <table class="data" id="store-models">
+            <thead><tr>
+              <th scope="col">Modelo</th><th scope="col" class="n">En disco</th><th scope="col" class="act"><span class="sr-only">Acción</span></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="store-models-empty" class="empty-inline" hidden>No hay modelos completos en la carpeta.</p>
+        <h3 class="store-sub">Descargas a medias</h3>
+        <div class="table-wrap">
+          <table class="data" id="store-parts">
+            <thead><tr>
+              <th scope="col">Archivo</th><th scope="col" class="n">Tamaño</th><th scope="col" class="n">Última escritura</th><th scope="col">Estado</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="store-parts-empty" class="empty-inline" hidden>No hay descargas a medias.</p>
+        <div class="store-actions">
+          <button type="button" class="btn" id="store-clean"><svg class="ic"><use href="#i-clear"/></svg><span class="b-label">Limpiar descargas viejas</span></button>
+          <p id="store-clean-note" class="panel-note"></p>
+        </div>
+        <p id="store-msg" class="control-msg dl-msg" role="status" aria-live="polite"></p>
+        <div id="store-other-wrap" hidden>
+          <h3 class="store-sub">Otros archivos <span class="store-sub-note">Brasa no los toca</span></h3>
+          <div class="table-wrap">
+            <table class="data" id="store-other">
+              <thead><tr>
+                <th scope="col">Nombre</th><th scope="col" class="n">Tamaño</th><th scope="col">Qué es</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
       <section class="panel" aria-labelledby="h-inst">
         <div class="panel-head">
           <h2 id="h-inst">En disco</h2>
