@@ -228,6 +228,13 @@ fn walk(dir: &Path, out: &mut Walk) {
     }
 }
 
+/// Bytes de los archivos regulares bajo `dir` (incluidos los `.part`), sin seguir symlinks.
+pub fn dir_bytes(dir: &Path) -> u64 {
+    let mut w = Walk::default();
+    walk(dir, &mut w);
+    w.bytes + w.parts.iter().map(|p| p.1).sum::<u64>()
+}
+
 fn age_secs(now: SystemTime, mtime: SystemTime) -> u64 {
     now.duration_since(mtime).map_or(0, |d| d.as_secs())
 }
@@ -743,6 +750,9 @@ mod tests {
             ]
         );
         assert_eq!(r.partial_bytes, 350);
+        assert_eq!(dir_bytes(&base.join("bajando")), 320);
+        // El symlink `m1/trampa.part` no se cuenta.
+        assert_eq!(dir_bytes(&base.join("m1")), 1010);
         assert_eq!(r.old_partial_bytes, 300);
         let kinds: Vec<(&str, OtherKind, u64)> = r
             .other

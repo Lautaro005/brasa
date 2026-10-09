@@ -17,6 +17,7 @@ mod origin;
 mod plan;
 mod responses;
 mod status;
+mod storage_api;
 mod ui;
 
 use std::net::SocketAddr;
@@ -28,8 +29,9 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use brasa_catalog::dirs::ModelsDir;
+use brasa_catalog::storage::Settings as StorageSettings;
 use brasa_memory::planner::Budget;
 use brasa_runtime::Limits;
 use brasa_tokenizer::Tokenizer;
@@ -58,6 +60,8 @@ pub struct ServeConfig {
     /// Presupuesto de memoria del planner; `None` es el de esta máquina. `serve --perfil` pasa el
     /// del perfil simulado (ADR 0029).
     pub budget: Option<Budget>,
+    /// Reserva de espacio y umbral de descargas a medias (`[storage]`, ADR 0034).
+    pub storage: StorageSettings,
 }
 
 /// Estado compartido por los handlers.
@@ -92,6 +96,8 @@ pub struct AppState {
     pub desktop: Desktop,
     /// Descarga en curso o la última (`/api/models/pull`).
     pub pull: Arc<Mutex<PullStatus>>,
+    /// Reserva de espacio y umbral de descargas a medias (`[storage]`, ADR 0034).
+    pub storage: StorageSettings,
 }
 
 /// Datos de configuración del servidor que se fijan al arrancar.
@@ -108,6 +114,7 @@ pub struct ServerMeta {
     pub hf_endpoint: String,
     pub catalog: Catalog,
     pub desktop: Desktop,
+    pub storage: StorageSettings,
 }
 
 impl AppState {
@@ -134,6 +141,7 @@ impl AppState {
             catalog: meta.catalog,
             desktop: meta.desktop,
             pull: Arc::new(Mutex::new(PullStatus::default())),
+            storage: meta.storage,
         })
     }
 }
@@ -175,6 +183,12 @@ pub fn router(state: Shared) -> Router {
         .route("/api/models/dir", post(models_admin::set_dir))
         .route("/api/models/dir/choose", post(models_admin::choose_dir))
         .route("/api/models/dir/open", post(models_admin::open_dir))
+        .route("/api/storage", get(storage_api::status))
+        .route("/api/storage/clean", post(storage_api::clean))
+        .route(
+            "/api/storage/models/{name}",
+            delete(storage_api::delete_model),
+        )
         .route("/api/plan", get(plan::plan))
         .route("/api/bench", get(bench::bench))
         .route("/api/agents", get(connect::agents))
@@ -258,6 +272,7 @@ pub fn serve(cfg: ServeConfig) -> Result<(), String> {
         hf_endpoint: cfg.hf_endpoint.clone(),
         catalog: Catalog::System,
         desktop: Desktop::system(),
+        storage: cfg.storage,
     };
     let state = AppState::new(engine, tok, model, meta);
     let shutdown = state.shutdown.clone();

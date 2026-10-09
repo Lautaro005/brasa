@@ -10,6 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use brasa_catalog::dirs::{DirSource, ModelsDir};
 use brasa_catalog::manifest::{FileSpec, Manifest, Prebuilt};
+use brasa_catalog::storage::Settings as StorageSettings;
 use brasa_core::chat::{ChatEvent, FinishReason, Usage};
 use brasa_daemon::engine::{Engine, LoadedModel};
 use brasa_daemon::models_admin::{Catalog, Desktop};
@@ -101,6 +102,7 @@ fn base_meta() -> ServerMeta {
         hf_endpoint: "http://127.0.0.1:9".into(),
         catalog: Catalog::System,
         desktop: fake_desktop(),
+        storage: StorageSettings::default(),
     }
 }
 
@@ -211,6 +213,15 @@ async fn gui_assets_se_sirven_con_su_content_type() {
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(!text.contains("http://"), "{uri} referencia http");
         assert!(!text.contains("https://"), "{uri} referencia https");
+        // Regla de la GUI: todo se arma con nodos; nada de HTML desde texto.
+        for prohibido in [
+            ".innerHTML",
+            ".outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+        ] {
+            assert!(!text.contains(prohibido), "{uri} usa {prohibido}");
+        }
     }
 }
 
@@ -982,6 +993,8 @@ async fn descarga_y_carpeta_rechazan_otro_origen() {
         ),
         ("POST", "/api/models/dir/choose", json!({})),
         ("POST", "/api/models/dir/open", json!({})),
+        ("POST", "/api/storage/clean", json!({"apply": true})),
+        ("DELETE", "/api/storage/models/m", json!({"confirm": "m"})),
     ] {
         let req = Request::builder()
             .method(method)
@@ -1001,4 +1014,279 @@ async fn descarga_y_carpeta_rechazan_otro_origen() {
     assert!(!tmp.path().join("evil").exists());
     assert!(!tmp.path().join("config").exists());
     assert!(!tmp.path().join("modelos").exists());
+}
+
+// ---------- Almacenamiento (ADR 0034) ----------
+
+/// Estado de prueba para el almacenamiento: carpeta de modelos temporal, reserva configurable y el
+/// modelo "servido" dentro de esa carpeta.
+fn storage_state(
+    tmp: &Path,
+    endpoint: &str,
+    catalog: Vec<Manifest>,
+    storage: StorageSettings,
+) -> Arc<AppState> {
+    let mut meta = base_meta();
+    meta.models_dir = ModelsDir {
+        path: tmp.join("modelos"),
+        source: DirSource::Default,
+    };
+    meta.model_dir = tmp.join("modelos/servido");
+    meta.config_path = tmp.join("config/brasa/config.toml");
+    meta.hf_endpoint = endpoint.to_string();
+    meta.catalog = Catalog::Fixed(catalog);
+    meta.storage = storage;
+    AppState::new(Engine::simulated(|_, _| {}), tok(), loaded(), meta)
+}
+
+fn put(p: &Path, n: usize) {
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, vec![1u8; n]).unwrap();
+}
+
+fn envejecer(p: &Path, dias: u64) {
+    let f = std::fs::File::options().write(true).open(p).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(dias * 86_400))
+        .unwrap();
+}
+
+async fn send(
+    app: Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> axum::response::Response {
+    let mut b = Request::builder().method(method).uri(uri);
+    let body = match body {
+        Some(v) => {
+            b = b.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    app.oneshot(b.body(body).unwrap()).await.unwrap()
+}
+
+#[tokio::test]
+async fn storage_informa_y_limpia_parciales_viejos() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = tmp.path().join("modelos");
+    put(&m.join("m1/model.brasa"), 1000);
+    put(&m.join("servido/model.brasa"), 2000);
+    put(&m.join("viejo/model.brasa.part"), 300);
+    envejecer(&m.join("viejo/model.brasa.part"), 10);
+    put(&m.join("nuevo/model.brasa.part"), 40);
+    put(&m.join("suelto.bin"), 7);
+    let app = brasa_daemon::router(storage_state(
+        tmp.path(),
+        "http://127.0.0.1:9",
+        vec![],
+        StorageSettings::default(),
+    ));
+
+    let v = json_body(get(app.clone(), "/api/storage").await).await;
+    assert_eq!(v["dir"], m.display().to_string());
+    assert_eq!(v["reserve_bytes"], 2u64 << 30);
+    assert_eq!(v["partial_max_age_days"], 7);
+    assert!(v["volume"]["free_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(v["models"][0]["name"], "m1");
+    assert_eq!(v["models"][0]["deletable"], true);
+    assert_eq!(v["models"][1]["name"], "servido");
+    assert_eq!(v["models"][1]["loaded"], true);
+    assert_eq!(v["models"][1]["deletable"], false);
+    assert_eq!(v["partials"].as_array().unwrap().len(), 2);
+    assert_eq!(v["old_partial_bytes"], 300);
+    assert_eq!(v["other"][0]["name"], "suelto.bin");
+    assert_eq!(v["pull"], Value::Null);
+
+    // Sin cuerpo (o sin apply): dry-run.
+    let r = send(app.clone(), "POST", "/api/storage/clean", None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let c = json_body(r).await;
+    assert_eq!(c["dry_run"], true);
+    assert_eq!(c["items"][0]["path"], "viejo/model.brasa.part");
+    assert!(m.join("viejo/model.brasa.part").is_file());
+    let c = json_body(post(app.clone(), "/api/storage/clean", json!({})).await).await;
+    assert_eq!(c["dry_run"], true);
+    // Un campo mal escrito no se toma como un dry-run silencioso.
+    let r = post(app.clone(), "/api/storage/clean", json!({"aply": true})).await;
+    assert!(r.status().is_client_error());
+    assert!(m.join("viejo/model.brasa.part").is_file());
+
+    let c = json_body(post(app.clone(), "/api/storage/clean", json!({"apply": true})).await).await;
+    assert_eq!(c["dry_run"], false);
+    assert_eq!(c["bytes"], 300);
+    assert_eq!(c["kept"], 1);
+    assert!(!m.join("viejo").exists(), "la carpeta vacía también se va");
+    assert!(m.join("nuevo/model.brasa.part").is_file());
+    assert!(m.join("suelto.bin").is_file());
+    let r = post(
+        app.clone(),
+        "/api/storage/clean",
+        json!({"older_than_days": 0}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn borrar_un_modelo_pide_el_nombre_exacto() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = tmp.path().join("modelos");
+    put(&m.join("m1/model.brasa"), 1000);
+    put(&m.join("m1/tokenizer.json"), 10);
+    put(&m.join("servido/model.brasa"), 2000);
+    put(&m.join("sin-pesos/x"), 1);
+    put(&tmp.path().join("afuera/model.brasa"), 5);
+    std::os::unix::fs::symlink(tmp.path().join("afuera"), m.join("enlace")).unwrap();
+    let app = brasa_daemon::router(storage_state(
+        tmp.path(),
+        "http://127.0.0.1:9",
+        vec![],
+        StorageSettings::default(),
+    ));
+
+    let r = send(app.clone(), "DELETE", "/api/storage/models/m1", None).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(r).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirm")
+    );
+    let r = send(
+        app.clone(),
+        "DELETE",
+        "/api/storage/models/m1",
+        Some(json!({"confirm": "M1"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert!(m.join("m1/model.brasa").is_file());
+
+    let del = |name: &str| {
+        let (app, name) = (app.clone(), name.to_string());
+        async move {
+            let uri = format!("/api/storage/models/{name}");
+            send(app, "DELETE", &uri, Some(json!({"confirm": name}))).await
+        }
+    };
+    assert_eq!(del("no-existe").await.status(), StatusCode::NOT_FOUND);
+    // Symlink a una carpeta de afuera: no se sigue ni se borra.
+    assert_eq!(del("enlace").await.status(), StatusCode::BAD_REQUEST);
+    assert!(tmp.path().join("afuera/model.brasa").is_file());
+    // Sin model.brasa no es un modelo.
+    assert_eq!(del("sin-pesos").await.status(), StatusCode::BAD_REQUEST);
+    // `..` codificado en la ruta.
+    assert!(del("..%2Fafuera").await.status().is_client_error());
+    assert!(tmp.path().join("afuera/model.brasa").is_file());
+    // El modelo que sirve este servidor no se borra.
+    let r = del("servido").await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert!(m.join("servido/model.brasa").is_file());
+
+    let r = del("m1").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_body(r).await;
+    assert_eq!(v["deleted"], "m1");
+    assert_eq!(v["bytes"], 1010);
+    assert!(!m.join("m1").exists());
+    let s = json_body(get(app, "/api/storage").await).await;
+    let names: Vec<&str> = s["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x["name"].as_str())
+        .collect();
+    assert_eq!(names, ["servido"]);
+}
+
+#[tokio::test]
+async fn pull_respeta_la_reserva() {
+    let tmp = tempfile::tempdir().unwrap();
+    let weights = b"pesos".to_vec();
+    let hf = fake_hf(vec![("model.brasa", weights.clone())], 0);
+    let cat = vec![test_manifest(
+        "m",
+        Some(vec![spec("model.brasa", &weights)]),
+    )];
+    // Una reserva más grande que cualquier disco: nada entra.
+    let enorme = StorageSettings::new(Some(1024.0), None).unwrap();
+    let app = brasa_daemon::router(storage_state(tmp.path(), &hf.endpoint, cat, enorme));
+    let m = json_body(get(app.clone(), "/api/models").await).await;
+    assert_eq!(m["reserve_bytes"], 1024u64 << 30);
+    assert_eq!(m["available_bytes"], 0);
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "m"})).await;
+    assert_eq!(r.status(), StatusCode::INSUFFICIENT_STORAGE);
+    let e = json_body(r).await["error"].as_str().unwrap().to_string();
+    assert!(e.contains("reserva") && e.contains("faltan"), "{e}");
+    assert!(hf.log.lock().unwrap().is_empty(), "no pidió nada a la red");
+    assert_eq!(
+        json_body(get(app, "/api/models/pull").await).await["state"],
+        "idle"
+    );
+}
+
+#[tokio::test]
+async fn pull_cancelado_sobrevive_a_la_limpieza_y_se_reanuda() {
+    let tmp = tempfile::tempdir().unwrap();
+    let weights: Vec<u8> = (0..3_000_000).map(|i| (i % 229) as u8).collect();
+    let hf = fake_hf(vec![("model.brasa", weights.clone())], 10);
+    let cat = vec![test_manifest(
+        "lento",
+        Some(vec![spec("model.brasa", &weights)]),
+    )];
+    let app = brasa_daemon::router(storage_state(
+        tmp.path(),
+        &hf.endpoint,
+        cat,
+        StorageSettings::default(),
+    ));
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "lento"})).await;
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    for _ in 0..200 {
+        let v = json_body(get(app.clone(), "/api/models/pull").await).await;
+        if v["done_bytes"].as_u64().unwrap() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // Mientras baja: el inventario la marca, no se puede borrar y la limpieza no la toca.
+    let s = json_body(get(app.clone(), "/api/storage").await).await;
+    assert_eq!(s["pull"]["name"], "lento");
+    let c = json_body(post(app.clone(), "/api/storage/clean", json!({"apply": true})).await).await;
+    assert!(c["items"].as_array().unwrap().is_empty(), "{c}");
+    let r = send(
+        app.clone(),
+        "DELETE",
+        "/api/storage/models/lento",
+        Some(json!({"confirm": "lento"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let r = post(app.clone(), "/api/models/pull/cancel", json!({})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    wait_pull(&app, "cancelled").await;
+    let part = tmp.path().join("modelos/lento/model.brasa.part");
+    assert!(part.is_file());
+    // Cancelada y reciente: la limpieza la deja para reanudar.
+    let c = json_body(post(app.clone(), "/api/storage/clean", json!({"apply": true})).await).await;
+    assert!(c["items"].as_array().unwrap().is_empty(), "{c}");
+    assert_eq!(c["kept"], 1);
+    assert!(part.is_file());
+    let s = json_body(get(app.clone(), "/api/storage").await).await;
+    assert_eq!(s["partials"][0]["path"], "lento/model.brasa.part");
+    assert_eq!(s["partials"][0]["old"], false);
+
+    let r = post(app.clone(), "/api/models/pull", json!({"name": "lento"})).await;
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    wait_pull(&app, "done").await;
+    assert_eq!(
+        std::fs::read(tmp.path().join("modelos/lento/model.brasa")).unwrap(),
+        weights
+    );
+    // Terminada: es un modelo y ya no hay parciales.
+    let s = json_body(get(app, "/api/storage").await).await;
+    assert_eq!(s["models"][0]["name"], "lento");
+    assert!(s["partials"].as_array().unwrap().is_empty());
 }

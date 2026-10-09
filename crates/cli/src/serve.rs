@@ -128,6 +128,7 @@ pub fn run(a: ServeArgs) -> Result<(), String> {
             .filter(|e| !e.is_empty())
             .unwrap_or_else(|| brasa_catalog::pull::HF_ENDPOINT.to_string()),
         budget,
+        storage: cfg.storage()?,
     })
 }
 

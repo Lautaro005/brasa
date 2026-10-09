@@ -5,7 +5,7 @@ use std::path::Path;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use brasa_catalog::{dirs, local};
+use brasa_catalog::{local, storage};
 use brasa_memory::planner::Fit;
 use brasa_runtime::{KvType, Limits, Session};
 use serde_json::{Value, json};
@@ -76,11 +76,16 @@ pub async fn models(State(s): State<Shared>) -> Response {
             })
         })
         .collect();
+    // Del volumen de la carpeta, o de su ancestro si todavía no existe (ADR 0034).
+    let free = storage::volume(base).map(|v| v.free_bytes);
     axum::Json(json!({
         "dir": base.display().to_string(),
         "dir_source": md.source.as_str(),
         "dir_source_label": md.source.describe(),
-        "free_bytes": dirs::free_bytes(base),
+        "free_bytes": free,
+        // Reserva de `[storage]` (ADR 0034): una descarga solo puede usar `available_bytes`.
+        "reserve_bytes": s.storage.reserve_bytes,
+        "available_bytes": free.map(|f| f.saturating_sub(s.storage.reserve_bytes)),
         "ctx": s.ctx,
         "kv": s.model.kv,
         "installed": installed,

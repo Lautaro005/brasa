@@ -24,6 +24,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use brasa_catalog::dirs::{self, DirSource, ModelsDir};
 use brasa_catalog::manifest::Manifest;
+use brasa_catalog::storage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -196,15 +197,7 @@ pub fn current_dir(s: &Shared) -> ModelsDir {
 /// Bytes ya en disco de una descarga a medias (archivos completos y `.part`).
 pub fn partial_bytes(dir: &Path, m: &Manifest) -> u64 {
     let Some(p) = &m.prebuilt else { return 0 };
-    let d = dir.join(&m.name);
-    p.files
-        .iter()
-        .map(|f| {
-            let done = std::fs::metadata(d.join(&f.path)).map_or(0, |x| x.len());
-            let part = std::fs::metadata(d.join(format!("{}.part", f.path))).map_or(0, |x| x.len());
-            done.max(part)
-        })
-        .sum()
+    storage::bytes_on_disk(&dir.join(&m.name), &p.files)
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,17 +247,11 @@ pub async fn pull_start(State(s): State<Shared>, body: Option<axum::Json<PullReq
         );
     }
     let total = pre.total_bytes();
-    let need = total.saturating_sub(partial_bytes(&base, &m));
-    if let Some(free) = dirs::free_bytes(&base) {
-        if free < need {
-            return err(
-                StatusCode::INSUFFICIENT_STORAGE,
-                format!(
-                    "no hay espacio en {}: faltan {need} bytes y hay {free} libres",
-                    base.display()
-                ),
-            );
-        }
+    // Chequeo previo (ADR 0034): lo que falta bajar tiene que entrar sin usar la reserva. Lo ya
+    // bajado (archivos completos y `.part`) no se vuelve a pedir.
+    let need = storage::remaining_bytes(&dest, &pre.files);
+    if let Err(e) = storage::check_space(&base, need, &s.storage) {
+        return err(StatusCode::INSUFFICIENT_STORAGE, e.0);
     }
     let cancel = Arc::new(AtomicBool::new(false));
     {
