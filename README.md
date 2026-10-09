@@ -88,6 +88,8 @@ brasa plan qwen3-4b-q4 --ctx 16384  # memory plan without loading the model
 brasa benchmark --ctx 2048          # comparable benchmark report
 brasa config show
 brasa completions zsh
+brasa storage                       # disk use: models, partial downloads, free space and reserve
+brasa storage clean --apply         # delete stale partial downloads (without --apply: dry run)
 brasa rm qwen3-4b-q4
 ```
 

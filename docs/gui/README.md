@@ -100,6 +100,10 @@ botón junto a la marca.
 - `POST /api/models/dir {path}`, `POST /api/models/dir/choose`, `POST /api/models/dir/open`:
   cambiar la carpeta de modelos (ruta absoluta; se crea y se prueba la escritura), el selector
   nativo (devuelve la ruta sin aplicarla) y abrirla en Finder.
+- `GET /api/storage`, `POST /api/storage/clean {apply?}`, `DELETE /api/storage/models/{name}
+  {"confirm": "<name>"}`: sección Almacenamiento (ADR 0034): uso del volumen, reserva, modelos,
+  descargas a medias; limpieza de `.part` viejos (dry-run sin `apply`) y borrado de un modelo con
+  el nombre exacto. `POST /api/models/pull` responde 507 si la descarga no entra sin la reserva.
 - `POST /api/model/{load,idle,pause,resume,stop}`: Model Manager (ADR 0025).
 
 ## Capturas

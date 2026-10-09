@@ -14,6 +14,22 @@ brasa pull qwen3-4b-q4
 brasa convert models/qwen3-4b-hf models/qwen3-4b-q4
 ```
 
+## No hay espacio para la descarga
+
+```
+no hay espacio para la descarga en ...: hacen falta 2.21 GiB; hay 3.10 GiB libres y la reserva ...
+```
+
+Una descarga no usa la reserva (`[storage] reserve_gib`, 2 GiB por defecto; ADR 0034). Mirá qué
+ocupa la carpeta de modelos y borrá descargas a medias viejas o un modelo que no uses:
+
+```bash
+brasa storage
+brasa storage clean            # muestra qué borraría
+brasa storage clean --apply    # borra los .part viejos
+brasa rm <modelo>
+```
+
 ## El contexto no entra en memoria
 
 El planner lo rechaza con el máximo que sí entra:

@@ -63,6 +63,8 @@ cargo run --release -p brasa-cli -- connect codex|claude-code|opencode --apply  
 cargo run --release -p brasa-cli -- pull qwen3-4b-q4 [--dry-run]         # pesos convertidos de HF (lautiss/brasa-v0.01-base) a la carpeta de modelos (ADR 0031)
 cargo run --release -p brasa-cli -- pull --desde-fuente qwen3-4b-q4      # safetensors de Qwen para `brasa convert` (ADR 0020)
 cargo run --release -p brasa-cli -- config show                          # config efectiva, incluida la carpeta de modelos y su origen
+cargo run --release -p brasa-cli -- storage [--json]                     # espacio: modelos, descargas a medias, reserva (ADR 0034)
+cargo run --release -p brasa-cli -- storage clean [--apply]              # borra .part viejos ([storage] partial_max_age_days); sin --apply es dry-run
 .venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
