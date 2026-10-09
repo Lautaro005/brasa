@@ -24,20 +24,34 @@ in Spanish.
 - A Rust toolchain (`rustup`); `rust-toolchain.toml` pins the version.
 - About 2.5 GB of disk for the default model.
 
-## Install from source
+## Install
+
+From a checkout:
 
 ```bash
 git clone https://github.com/lautaro005/brasa
 cd brasa
-cargo build --release -p brasa-cli
-./target/release/brasa --version
+./scripts/install.sh      # builds release and copies `brasa` to ~/.local/bin
+brasa --version
 ```
 
-Or install it in your `PATH`:
+`install.sh` does not install Rust. If `cargo` is missing it stops and points you to [rustup](https://rustup.rs). Set `BRASA_BIN_DIR` to copy the binary somewhere else.
+
+From a package, without git. `scripts/package.sh` writes `dist/brasa-<date>-<commit>.tar.gz` and a `.sha256` next to it:
 
 ```bash
-cargo install --path crates/cli
+tar -xzf brasa-*.tar.gz && cd brasa-*/ && ./scripts/install.sh
 ```
+
+In one line, once you have published the package at a URL (replace `<host>`; `BRASA_ARCHIVE_SHA256` is optional and is checked when set):
+
+```bash
+curl -fsSL https://<host>/install.sh | BRASA_ARCHIVE_URL=https://<host>/brasa.tar.gz BRASA_ARCHIVE_SHA256=<sha256> bash
+```
+
+Without `BRASA_ARCHIVE_URL`, the same command clones `https://github.com/Lautaro005/brasa.git` into `~/brasa`.
+
+To use cargo directly: `cargo install --path crates/cli`.
 
 ## Getting started
 

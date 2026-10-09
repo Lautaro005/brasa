@@ -7,6 +7,7 @@
 __pycache__/
 *.brasa
 /.qwen
+/dist
 /.impeccable
 
 # Planificación y encargos internos: se mantienen solo en local.

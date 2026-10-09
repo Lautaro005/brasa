@@ -65,6 +65,8 @@ cargo run --release -p brasa-cli -- pull --desde-fuente qwen3-4b-q4      # safet
 cargo run --release -p brasa-cli -- config show                          # config efectiva, incluida la carpeta de modelos y su origen
 cargo run --release -p brasa-cli -- storage [--json]                     # espacio: modelos, descargas a medias, reserva (ADR 0034)
 cargo run --release -p brasa-cli -- storage clean [--apply]              # borra .part viejos ([storage] partial_max_age_days); sin --apply es dry-run
+./scripts/install.sh                           # compila brasa en release y lo copia a BRASA_BIN_DIR (~/.local/bin); con BRASA_ARCHIVE_URL instala desde un paquete (ADR 0035)
+./scripts/package.sh                           # empaqueta el código en dist/brasa-<fecha>-<commit>.tar.gz + .sha256 (sin pesos ni build; ADR 0035)
 .venv/bin/python tools/conformance/run.py      # suite conformance contra `brasa serve` (SDKs oficiales)
 ./scripts/validate-8gb.sh                      # solo en la M2 8 GB; evidencia en docs/bench/m2-8gb/
 cargo test -p brasa-kernels -- --nocapture     # equivalencia numérica GPU vs referencia CPU
