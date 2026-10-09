@@ -1,10 +1,11 @@
-//! Catálogo de modelos: manifiestos (ADR 0020), descubrimiento local, verificación por hash y
-//! descarga desde Hugging Face.
+//! Catálogo de modelos: manifiestos (ADR 0020), descubrimiento local, almacenamiento (ADR 0034),
+//! verificación por hash y descarga desde Hugging Face.
 
 pub mod dirs;
 pub mod local;
 pub mod manifest;
 pub mod pull;
+pub mod storage;
 pub mod verify;
 
 use std::fmt;

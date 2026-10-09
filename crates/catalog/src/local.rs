@@ -157,8 +157,9 @@ fn es_firmlink_del_sistema(p: &Path) -> bool {
 }
 
 /// Primer componente del camino (resuelto contra el cwd si es relativo) que es un symlink y no es
-/// un firmlink del sistema. `None` si la carpeta es real.
-fn primer_symlink_del_usuario(path: &Path) -> Option<PathBuf> {
+/// un firmlink del sistema. `None` si la carpeta es real. Lo usan también los borrados de
+/// `storage` (ADR 0034).
+pub(crate) fn primer_symlink_del_usuario(path: &Path) -> Option<PathBuf> {
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else {

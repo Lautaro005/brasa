@@ -150,12 +150,23 @@ pub fn models_dir(flag: Option<PathBuf>) -> Result<ModelsDir> {
 
 /// Bytes libres para el usuario en el volumen de `path` (`statvfs`), o `None` si no se puede leer.
 pub fn free_bytes(path: &Path) -> Option<u64> {
+    volume_bytes(path).map(|(_, free)| free)
+}
+
+/// Tamaño total y bytes libres para el usuario del volumen de `path` (`statvfs`), o `None` si no
+/// se puede leer (por ejemplo, si `path` no existe).
+pub fn volume_bytes(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     // SAFETY: `st` es un struct plano que `statvfs` llena; `c` es una cadena C válida.
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::statvfs(c.as_ptr(), &raw mut st) };
-    (rc == 0).then(|| u64::from(st.f_bavail) * st.f_frsize)
+    (rc == 0).then(|| {
+        (
+            u64::from(st.f_blocks) * st.f_frsize,
+            u64::from(st.f_bavail) * st.f_frsize,
+        )
+    })
 }
 
 /// Valida una carpeta de modelos nueva: absoluta, sin `..`; la crea si falta y comprueba que se
